@@ -9,6 +9,7 @@
 #include "../vulkan_debug.hpp"
 #include "../vulkan_renderer.hpp"
 #include "../vulkan_texture.hpp"
+#include "cluster_lighting_pass.hpp"
 
 #include <array>
 #include <cstring>
@@ -24,7 +25,88 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 
 namespace renderer {
-MeshPass::MeshPass(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent) {
+
+namespace {
+
+/// @brief Uploads a single RGBA8 pixel into a freshly-created 1x1 texture via a blocking one-time submit;
+/// used for both the default white-albedo and default flat-normal fallback textures
+void uploadSinglePixelTexture(
+    const renderer::VulkanCore& core, renderer::VulkanTexture& texture, std::array<uint8_t, 4> pixel, vk::Format format,
+    std::string_view debug_name
+) {
+	const auto& device = core.getDevice();
+
+	renderer::VulkanTexture::Params params {};
+	params.format = format;
+	params.extent = vk::Extent3D {1, 1, 1};
+	params.mip_levels = 1;
+	params.layer_count = 1;
+	texture.create(core, params, debug_name);
+
+	vk::BufferCreateInfo staging_ci {};
+	staging_ci.size = pixel.size();
+	staging_ci.usage = vk::BufferUsageFlagBits::eTransferSrc;
+
+	vma::AllocationCreateInfo alloc_ci {};
+	alloc_ci.usage = vma::MemoryUsage::eAuto;
+	alloc_ci.flags = vma::AllocationCreateFlagBits::eMapped | vma::AllocationCreateFlagBits::eHostAccessSequentialWrite;
+
+	auto staging_buffer = core.getAllocator().createBuffer(staging_ci, alloc_ci);
+	setDebugName(core, *staging_buffer, std::format("{} StagingBuffer", debug_name));
+	std::memcpy(staging_buffer.getAllocation().getInfo().pMappedData, pixel.data(), pixel.size());
+
+	// This only runs once, at startup, so a blocking one-time submit is fine
+	vk::raii::CommandPool one_shot_pool(device, vk::CommandPoolCreateInfo({}, core.getGraphicsQueueFamilyIndex()));
+	const vk::CommandBufferAllocateInfo cmd_alloc_info(*one_shot_pool, vk::CommandBufferLevel::ePrimary, 1);
+	auto cmd_buffers = device.allocateCommandBuffers(cmd_alloc_info);
+	vk::raii::CommandBuffer cmd = std::move(cmd_buffers[0]);
+
+	cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+	vk::ImageMemoryBarrier to_dst {};
+	to_dst.oldLayout = vk::ImageLayout::eUndefined;
+	to_dst.newLayout = vk::ImageLayout::eTransferDstOptimal;
+	to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	to_dst.image = texture.getImage();
+	to_dst.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+	to_dst.srcAccessMask = {};
+	to_dst.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, nullptr, nullptr, to_dst);
+
+	vk::BufferImageCopy region {};
+	region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+	region.imageExtent = vk::Extent3D {1, 1, 1};
+	cmd.copyBufferToImage(*staging_buffer, texture.getImage(), vk::ImageLayout::eTransferDstOptimal, region);
+
+	vk::ImageMemoryBarrier to_read = to_dst;
+	to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+	to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	to_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	to_read.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+	cmd.pipelineBarrier(
+	    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr, to_read
+	);
+
+	cmd.end();
+
+	const vk::raii::Fence fence(device, vk::FenceCreateInfo {});
+	const vk::CommandBuffer raw_cmd = *cmd;
+	vk::SubmitInfo submit {};
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &raw_cmd;
+	core.getGraphicsQueue().submit(submit, *fence);
+	std::ignore = device.waitForFences(*fence, true, std::numeric_limits<uint64_t>::max());
+
+	texture.markReady();
+}
+
+}    // namespace
+
+MeshPass::MeshPass(
+    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent,
+    const ClusterLightingPass& cluster_lighting_pass
+) {
 	auto shader_spirv = renderer::ShaderCompiler::compileShaderModuleFromSource("./mesh.slang");
 
 	// Use hardcoded layout keyed by "mesh"
@@ -46,7 +128,7 @@ MeshPass::MeshPass(const renderer::VulkanCore& core, vk::Format color_format, vk
 
 	m_pipeline.rebuild(core, config);
 
-	createResources(core);
+	createResources(core, cluster_lighting_pass);
 
 	m_asset_listener.subscribe<event::ClearUnusedAssets>([this] {
 		m_pending_material_cache_clear.store(true, std::memory_order_release);
@@ -105,6 +187,18 @@ void MeshPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t imag
 	    {}
 	);
 
+	// Set 2 (clustered lighting buffers) is likewise the same for every draw this frame; ClusterLightingPass
+	// writes the underlying buffers in its own update(), which runs before this pass's record() every frame
+	if (frame_index < m_light_descriptor_sets.size()) {
+		cmd.bindDescriptorSets(
+		    vk::PipelineBindPoint::eGraphics,
+		    *shader_layout.getPipelineLayout(),
+		    2,
+		    std::array<vk::DescriptorSet, 1> {*m_light_descriptor_sets[frame_index]},
+		    {}
+		);
+	}
+
 	// Track the last-bound set 1 so we only issue a bindDescriptorSets when the material actually changes
 	vk::DescriptorSet bound_material_set {};
 
@@ -128,9 +222,14 @@ void MeshPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t imag
 			bound_material_set = material_set;
 		}
 
+		const auto render_mode = static_cast<float>(frame->render_mode);
+
 		DrawPushConstants data {};
 		data.model = proxy.model;
 		data.color = proxy.material != nullptr ? proxy.material->color() : glm::vec4(1.0f);
+		data.pbr_params = proxy.material != nullptr
+		                      ? glm::vec4(proxy.material->metallic(), proxy.material->roughness(), render_mode, 0.0f)
+		                      : glm::vec4(0.0f, 0.5f, render_mode, 0.0f);
 		cmd.pushConstants(
 		    *shader_layout.getPipelineLayout(),
 		    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
@@ -144,10 +243,12 @@ void MeshPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t imag
 	}
 }
 
-void MeshPass::createResources(const renderer::VulkanCore& core) {
+void MeshPass::createResources(const renderer::VulkanCore& core, const ClusterLightingPass& cluster_lighting_pass) {
 	const auto& layouts = shader_layout.getDescriptorSetLayouts();
-	if (layouts.size() < 2) {
-		TOAST_CRITICAL("MeshPass", "ShaderLayout must provide both the frame (set 0) and material (set 1) descriptor set layouts");
+	if (layouts.size() < 3) {
+		TOAST_CRITICAL(
+		    "MeshPass", "ShaderLayout must provide the frame (set 0), material (set 1), and lighting (set 2) descriptor set layouts"
+		);
 		return;
 	}
 
@@ -182,77 +283,57 @@ void MeshPass::createResources(const renderer::VulkanCore& core) {
 	}
 
 	createDefaultMaterialResources(core);
+	createClusterLightingResources(core, cluster_lighting_pass);
+}
+
+void MeshPass::createClusterLightingResources(
+    const renderer::VulkanCore& core, const ClusterLightingPass& cluster_lighting_pass
+) {
+	const auto& device = core.getDevice();
+	const vk::DescriptorSetLayout light_set_layout = *shader_layout.getDescriptorSetLayouts()[2];
+	const vk::DescriptorPool pool = VulkanRenderer::instance->getDescriptorPoolHandle();
+
+	m_light_descriptor_sets.clear();
+	m_light_descriptor_sets.reserve(VulkanRenderer::k_frames_in_flight);
+
+	for (uint32_t i = 0; i < VulkanRenderer::k_frames_in_flight; ++i) {
+		const vk::DescriptorSetAllocateInfo alloc_info(pool, 1, &light_set_layout);
+		auto allocated = device.allocateDescriptorSets(alloc_info);
+		m_light_descriptor_sets.push_back(std::move(allocated[0]));
+		setDebugName(core, *m_light_descriptor_sets[i], std::format("MeshPass LightSet[{}]", i));
+
+		const vk::DescriptorBufferInfo params_info(cluster_lighting_pass.getClusterParamsBuffer(i), 0, VK_WHOLE_SIZE);
+		const vk::DescriptorBufferInfo lights_info(cluster_lighting_pass.getLightsBuffer(i), 0, VK_WHOLE_SIZE);
+		const vk::DescriptorBufferInfo cluster_light_grid_info(cluster_lighting_pass.getClusterLightGridBuffer(i), 0, VK_WHOLE_SIZE);
+		const vk::DescriptorBufferInfo light_index_list_info(cluster_lighting_pass.getLightIndexListBuffer(i), 0, VK_WHOLE_SIZE);
+
+		const std::array<vk::WriteDescriptorSet, 4> writes {
+		  vk::WriteDescriptorSet(*m_light_descriptor_sets[i], 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &params_info),
+		  vk::WriteDescriptorSet(*m_light_descriptor_sets[i], 1, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &lights_info),
+		  vk::WriteDescriptorSet(
+		      *m_light_descriptor_sets[i], 2, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &cluster_light_grid_info
+		  ),
+		  vk::WriteDescriptorSet(
+		      *m_light_descriptor_sets[i], 3, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &light_index_list_info
+		  ),
+		};
+		device.updateDescriptorSets(writes, {});
+	}
 }
 
 void MeshPass::createDefaultMaterialResources(const renderer::VulkanCore& core) {
 	const auto& device = core.getDevice();
 
-	// 1x1 opaque white pixel so meshes without a material
-	renderer::VulkanTexture::Params params {};
-	params.format = vk::Format::eR8G8B8A8Unorm;
-	params.extent = vk::Extent3D {1, 1, 1};
-	params.mip_levels = 1;
-	params.layer_count = 1;
-	m_default_texture.create(core, params, "MeshPass DefaultWhiteTexture");
-
-	const std::array<uint8_t, 4> white_pixel {255, 255, 255, 255};
-
-	vk::BufferCreateInfo staging_ci {};
-	staging_ci.size = white_pixel.size();
-	staging_ci.usage = vk::BufferUsageFlagBits::eTransferSrc;
-
-	vma::AllocationCreateInfo alloc_ci {};
-	alloc_ci.usage = vma::MemoryUsage::eAuto;
-	alloc_ci.flags = vma::AllocationCreateFlagBits::eMapped | vma::AllocationCreateFlagBits::eHostAccessSequentialWrite;
-
-	auto staging_buffer = core.getAllocator().createBuffer(staging_ci, alloc_ci);
-	setDebugName(core, *staging_buffer, "MeshPass DefaultWhiteTexture StagingBuffer");
-	std::memcpy(staging_buffer.getAllocation().getInfo().pMappedData, white_pixel.data(), white_pixel.size());
-
-	// This only runs once, at startup, so a blocking one-time submit is fine
-	vk::raii::CommandPool one_shot_pool(device, vk::CommandPoolCreateInfo({}, core.getGraphicsQueueFamilyIndex()));
-	const vk::CommandBufferAllocateInfo cmd_alloc_info(*one_shot_pool, vk::CommandBufferLevel::ePrimary, 1);
-	auto cmd_buffers = device.allocateCommandBuffers(cmd_alloc_info);
-	vk::raii::CommandBuffer cmd = std::move(cmd_buffers[0]);
-
-	cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-	vk::ImageMemoryBarrier to_dst {};
-	to_dst.oldLayout = vk::ImageLayout::eUndefined;
-	to_dst.newLayout = vk::ImageLayout::eTransferDstOptimal;
-	to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	to_dst.image = m_default_texture.getImage();
-	to_dst.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-	to_dst.srcAccessMask = {};
-	to_dst.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-	cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, nullptr, nullptr, to_dst);
-
-	vk::BufferImageCopy region {};
-	region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-	region.imageExtent = vk::Extent3D {1, 1, 1};
-	cmd.copyBufferToImage(*staging_buffer, m_default_texture.getImage(), vk::ImageLayout::eTransferDstOptimal, region);
-
-	vk::ImageMemoryBarrier to_read = to_dst;
-	to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-	to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-	to_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-	to_read.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-	cmd.pipelineBarrier(
-	    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, nullptr, nullptr, to_read
+	// 1x1 opaque white pixel so meshes without a material (or without an albedo map) still shade something,
+	// and a 1x1 flat tangent-space normal (0.5, 0.5, 1.0 -> 128, 128, 255) so meshes without a normal map
+	// sample a neutral "no perturbation" normal instead of garbage. Both UNORM, not sRGB - a normal map is
+	// data, not color, and sRGB decoding would corrupt it
+	uploadSinglePixelTexture(
+	    core, m_default_texture, {255, 255, 255, 255}, vk::Format::eR8G8B8A8Unorm, "MeshPass DefaultWhiteTexture"
 	);
-
-	cmd.end();
-
-	const vk::raii::Fence fence(device, vk::FenceCreateInfo {});
-	const vk::CommandBuffer raw_cmd = *cmd;
-	vk::SubmitInfo submit {};
-	submit.commandBufferCount = 1;
-	submit.pCommandBuffers = &raw_cmd;
-	core.getGraphicsQueue().submit(submit, *fence);
-	std::ignore = device.waitForFences(*fence, true, std::numeric_limits<uint64_t>::max());
-
-	m_default_texture.markReady();
+	uploadSinglePixelTexture(
+	    core, m_default_normal_texture, {128, 128, 255, 255}, vk::Format::eR8G8B8A8Unorm, "MeshPass DefaultNormalTexture"
+	);
 
 	vk::SamplerCreateInfo sampler_ci {};
 	sampler_ci.magFilter = vk::Filter::eNearest;
@@ -270,13 +351,21 @@ void MeshPass::createDefaultMaterialResources(const renderer::VulkanCore& core) 
 	m_default_material_set = std::move(allocated[0]);
 	setDebugName(core, *m_default_material_set, "MeshPass DefaultMaterialSet");
 
-	vk::DescriptorImageInfo image_info {};
-	image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-	image_info.imageView = m_default_texture.getView();
-	image_info.sampler = *m_default_sampler;
+	vk::DescriptorImageInfo albedo_info {};
+	albedo_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	albedo_info.imageView = m_default_texture.getView();
+	albedo_info.sampler = *m_default_sampler;
 
-	const vk::WriteDescriptorSet write(*m_default_material_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &image_info);
-	device.updateDescriptorSets(write, {});
+	vk::DescriptorImageInfo normal_info {};
+	normal_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	normal_info.imageView = m_default_normal_texture.getView();
+	normal_info.sampler = *m_default_sampler;
+
+	const std::array<vk::WriteDescriptorSet, 2> writes {
+	  vk::WriteDescriptorSet(*m_default_material_set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &albedo_info),
+	  vk::WriteDescriptorSet(*m_default_material_set, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &normal_info),
+	};
+	device.updateDescriptorSets(writes, {});
 }
 
 auto MeshPass::getMaterialDescriptorSet(const renderer::VulkanCore& core, assets::Material& material) -> vk::DescriptorSet {
@@ -303,17 +392,53 @@ auto MeshPass::getMaterialDescriptorSet(const renderer::VulkanCore& core, assets
 		setDebugName(core, *binding.set, std::format("MeshPass MaterialSet ({})", material.albedoMap().path()));
 	}
 
-	// Only re-issue the descriptor write when the underlying image view actually changed, instead of on every draw/frame like the
-	// previous implementation
-	if (binding.bound_view != view) {
-		vk::DescriptorImageInfo image_info {};
-		image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-		image_info.imageView = view;
-		image_info.sampler = sampler;
+	// Normal map is optional per-material; fall back to the default flat normal (reusing the albedo sampler -
+	// materials only ever reach this point with a valid one, since the caller already gated on albedoMap()
+	// having a value)
+	const auto normal_map = material.normalMap();
+	const bool has_normal_map = normal_map.hasValue() && normal_map->gpuTexture().isReady();
+	const vk::ImageView normal_view = has_normal_map ? normal_map->gpuTexture().getView() : m_default_normal_texture.getView();
+	const VkSampler normal_sampler = has_normal_map ? sampler : static_cast<VkSampler>(*m_default_sampler);
 
-		const vk::WriteDescriptorSet write(*binding.set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &image_info);
-		core.getDevice().updateDescriptorSets(write, {});
+	// Only re-issue a descriptor write when its underlying image view actually changed, instead of on every draw/frame
+	// like the previous implementation
+	const bool albedo_changed = binding.bound_view != view;
+	const bool normal_changed = binding.bound_normal_view != normal_view;
+
+	// A texture (typically the normal map - it loads asynchronously and can finish a frame or more after
+	// albedo) can become ready after this material's descriptor set was already bound into a command buffer
+	// on an earlier, still-in-flight frame (k_frames_in_flight keeps several frames' command buffers pending
+	// at once). Rewriting a descriptor set while it's in that state is invalid without VK_EXT_descriptor_indexing's
+	// update-after-bind flags, which this pipeline doesn't opt into - wait for the GPU to catch up first. Only
+	// possible on an already-existing entry (a freshly-allocated set can't be in use by anything yet), and only
+	// happens once per material on this exact loading-order race, so the stall is negligible - same justification
+	// as the ClearUnusedAssets waitIdle() above.
+	if (!inserted && (albedo_changed || normal_changed)) {
+		core.getDevice().waitIdle();
+	}
+
+	std::vector<vk::WriteDescriptorSet> writes;
+	vk::DescriptorImageInfo albedo_info {};
+	vk::DescriptorImageInfo normal_info {};
+
+	if (albedo_changed) {
+		albedo_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		albedo_info.imageView = view;
+		albedo_info.sampler = sampler;
+		writes.emplace_back(*binding.set, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &albedo_info);
 		binding.bound_view = view;
+	}
+
+	if (normal_changed) {
+		normal_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		normal_info.imageView = normal_view;
+		normal_info.sampler = normal_sampler;
+		writes.emplace_back(*binding.set, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &normal_info);
+		binding.bound_normal_view = normal_view;
+	}
+
+	if (!writes.empty()) {
+		core.getDevice().updateDescriptorSets(writes, {});
 	}
 
 	return *binding.set;

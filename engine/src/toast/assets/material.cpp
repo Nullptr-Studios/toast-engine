@@ -45,6 +45,16 @@ auto readColor(const DataValue& v) -> glm::vec4 {
 	return result;
 }
 
+auto readFloat(const DataValue& v, float fallback) -> float {
+	if (auto d = v.value<double>()) {
+		return static_cast<float>(*d);
+	}
+	if (auto n = v.value<int64_t>()) {
+		return static_cast<float>(*n);
+	}
+	return fallback;
+}
+
 }
 
 Material::Material(const toml::table& table, Handle<Schema> schema) : Data(table, std::move(schema), Data::keep_all_keys) { }
@@ -94,6 +104,20 @@ auto Material::color() const -> glm::vec4 {
 	return readColor(m_root["color"]);
 }
 
+auto Material::metallic() const -> float {
+	if (!m_root.contains("metallic")) {
+		return 0.0f;
+	}
+	return readFloat(m_root["metallic"], 0.0f);
+}
+
+auto Material::roughness() const -> float {
+	if (!m_root.contains("roughness")) {
+		return 0.5f;
+	}
+	return readFloat(m_root["roughness"], 0.5f);
+}
+
 void Material::resolveTextureHandles() {
 	const Handle<Texture> albedo_map = albedoMap();
 	if (!albedo_map.hasValue()) {
@@ -111,9 +135,13 @@ void Material::resolveTextureHandles() {
 
 	sampler_info.magFilter = vk::Filter::eLinear;
 	sampler_info.minFilter = vk::Filter::eLinear;
-	sampler_info.addressModeU = vk::SamplerAddressMode::eRepeat;
-	sampler_info.addressModeV = vk::SamplerAddressMode::eRepeat;
-	sampler_info.addressModeW = vk::SamplerAddressMode::eRepeat;
+	// Clamp, not repeat: these are unique-UV asset textures (albedo/normal), not tiling patterns. Repeat
+	// wrap mode plus linear filtering blends texels straddling a UV seam with texels from the opposite edge
+	// of the texture, producing a visible seam - most noticeable on normal maps since it directly corrupts
+	// the lighting direction right at the seam
+	sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+	sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+	sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
 	sampler_info.anisotropyEnable = core.supportsSamplerAnisotropy() ? vk::True : vk::False;
 	sampler_info.maxAnisotropy = core.supportsSamplerAnisotropy() ? std::min(16.0f, core.maxSamplerAnisotropy()) : 1.0f;
 	sampler_info.compareEnable = vk::False;

@@ -14,6 +14,15 @@
 
 namespace renderer {
 
+/// @brief Which Nsight Graphics SDK activity (if any) got injected/initialized into this process. Only one
+/// activity can be active per process, chosen once at startup via the TOAST_NSIGHT_MODE env var - see
+/// VulkanCore::VulkanCore() for the selection logic
+enum class NsightMode : uint8_t {
+	none,
+	graphics_capture,
+	gpu_trace
+};
+
 /**
  * @brief Represents the suitability score of a Vulkan physical device based on various criteria
  */
@@ -108,6 +117,21 @@ public:
 		return rdoc_api;
 	}
 
+	/// @brief Which Nsight Graphics activity (if any) is initialized for this process - none if no Nsight
+	/// Graphics installation was found, or its SDK init failed
+	[[nodiscard]]
+	auto getNsightMode() const noexcept -> NsightMode {
+		return m_nsight_mode;
+	}
+
+#if defined(_WIN32)
+	/// @brief Lazily activates Nsight GPU Trace on its first call (no-op afterwards, and a no-op entirely
+	/// when getNsightMode() isn't gpu_trace). Blocks until the Nsight Graphics host application attaches -
+	/// must only be called from the render thread's F12 handler, never eagerly at startup, or it can hang
+	/// the engine indefinitely waiting for a host that may never come. See vulkan_core.cpp for the full story
+	void activateNsightGpuTraceIfNeeded() const;
+#endif
+
 	/// @brief Whether validation layers are enabled
 	[[nodiscard]]
 	auto validationEnabled() const noexcept -> bool {
@@ -159,6 +183,12 @@ private:
 	[[nodiscard]]
 	auto checkValidationLayerSupport() -> bool;
 
+#if defined(_WIN32)
+	/// @brief Detects an Nsight Graphics installation and injects+initializes whichever activity
+	/// TOAST_NSIGHT_MODE selects; sets m_nsight_mode on success. Must run before the VkInstance is created
+	void initializeNsightActivity();
+#endif
+
 	bool m_validation_enabled = false;
 
 	vk::raii::Context m_context;
@@ -184,5 +214,11 @@ private:
 
 	// renderdoc api
 	RENDERDOC_API_1_6_0* rdoc_api = nullptr;
+
+	// Mutated lazily from activateNsightGpuTraceIfNeeded(), which callers reach through a const VulkanCore*
+	// (see VulkanRenderer::m_core) - the activation is logically a one-time cache fill, not a state change
+	// callers need to observe through a non-const handle
+	mutable NsightMode m_nsight_mode = NsightMode::none;
+	mutable bool m_nsight_gputrace_activated = false;
 };
 }

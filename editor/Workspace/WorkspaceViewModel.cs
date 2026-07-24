@@ -16,6 +16,9 @@ namespace editor.Workspace;
 
 public enum GizmoTool { Select, Translate, Rotate, Scale, Ruler }
 
+// Must stay in sync with the SetRenderMode proto (0 Lit, 1 ClusterHeatmap)
+public enum RenderMode { Lit, ClusterHeatmap }
+
 public enum PlayState { Stopped, Playing, PlayingExternal }
 
 public partial class WorkspaceViewModel : Document, IAutosavable {
@@ -56,6 +59,7 @@ public partial class WorkspaceViewModel : Document, IAutosavable {
 
 	public string? RootUid { get; private set; }
 	public GizmoTool ActiveTool { get; private set; } = GizmoTool.Select;
+	public RenderMode ActiveRenderMode { get; private set; } = RenderMode.Lit;
 
 	public bool WorldSpace { get; private set; }
 
@@ -108,6 +112,13 @@ public partial class WorkspaceViewModel : Document, IAutosavable {
 		// always raise so re-clicking the checked toggle re-asserts its visual state
 		OnPropertyChanged(nameof(ActiveTool));
 		Events.Send(new SetGizmoTool { Tool = (uint)ActiveTool });
+	}
+
+	[RelayCommand]
+	private void SetRenderMode(string mode) {
+		ActiveRenderMode = Enum.Parse<RenderMode>(mode);
+		OnPropertyChanged(nameof(ActiveRenderMode));
+		Events.Send(new SetRenderMode { Mode = (uint)ActiveRenderMode });
 	}
 
 	[RelayCommand]

@@ -13,6 +13,7 @@
 #include "logger.hpp"
 #include "project_settings.hpp"
 #include "reflect/reflect.hpp"
+#include "renderer/passes/cluster_lighting_pass.hpp"
 #include "renderer/passes/debug_pass.hpp"
 #include "renderer/passes/mesh_pass.hpp"
 #include "renderer/sdl_output_target.hpp"
@@ -375,8 +376,15 @@ void Engine::createSDLWindow(const char* w_name) {
 
 	m->renderer->setActiveCamera(camera);
 
+	// Constructed before MeshPass so MeshPass's set2 can read the culled light buffers straight away.
+	// addComputePass() takes ownership via unique_ptr, so the reference is captured before the move
+	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
+	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
+	m->renderer->addComputePass(std::move(cluster_lighting_pass));
+
 	// create debug pipeline
-	auto pass = std::make_unique<renderer::MeshPass>(*m->vulkan_core, color_format, depth_format, extent);
+	auto pass =
+	    std::make_unique<renderer::MeshPass>(*m->vulkan_core, color_format, depth_format, extent, cluster_lighting_pass_ref);
 
 	// create renderer
 
@@ -409,15 +417,24 @@ void Engine::createAvaloniaWindow() {
 	m->renderer->setActiveCamera(camera);
 	m->editor_camera = std::make_unique<EditorCameraController>();
 
+	// Constructed before MeshPass so MeshPass's set2 can read the culled light buffers straight away.
+	// addComputePass() takes ownership via unique_ptr, so the reference is captured before the move
+	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
+	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
+	m->renderer->addComputePass(std::move(cluster_lighting_pass));
+
 	// create debug pipeline
-	auto pass = std::make_unique<renderer::MeshPass>(*m->vulkan_core, color_format, depth_format, extent);
+	auto pass =
+	    std::make_unique<renderer::MeshPass>(*m->vulkan_core, color_format, depth_format, extent, cluster_lighting_pass_ref);
 
 	// create renderer
 
 	m->renderer->addRenderPass(std::move(pass));
 
 	// Editor viewport gets the ground grid / debug lines / gizmo overlay
-	m->renderer->addRenderPass(std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent));
+	m->renderer->addRenderPass(
+	    std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent, cluster_lighting_pass_ref)
+	);
 
 	m->renderer->setFrameRateLimit(240.0);
 
@@ -601,23 +618,14 @@ void Engine::startGame() {
 }
 }
 
-// Tracy memory profiling
-#ifdef DEBUG
-// NOLINTBEGIN(cppcoreguidelines-no-malloc)
-auto operator new(std::size_t count) -> void* {
-	auto* ptr = malloc(count);
-	tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	return ptr;
-}
-
-// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
-void operator delete(void* ptr) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-// NOLINTEND(cppcoreguidelines-no-malloc)
-#endif
+// Tracy global memory profiling used to live here (overriding ::operator new/delete to report every
+// allocation), but it's fundamentally unsafe in this process: it only instruments allocations made by code
+// compiled into toast_engine.dll. The game DLL is a separate PE module loaded dynamically (see
+// ToastEngine's constructor on the C# side) with its own CRT heap and its own uninstrumented new/delete -
+// any object allocated there and later freed through toast_engine.dll's overridden delete (or vice versa)
+// reports a free Tracy never saw a matching alloc for. Loading a large scene (e.g. Bistro) creates enough
+// game-thread allocations to hit this reliably and crash. Per-zone CPU profiling (ZoneScoped etc.) is
+// unaffected and still works fully - only the global allocation/free memory graph required this override
 
 // ffi stuff
 extern "C" {

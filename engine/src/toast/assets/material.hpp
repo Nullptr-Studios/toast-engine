@@ -46,6 +46,12 @@ public:
 	auto color() const -> glm::vec4;
 
 	[[nodiscard]]
+	auto metallic() const -> float;
+
+	[[nodiscard]]
+	auto roughness() const -> float;
+
+	[[nodiscard]]
 	auto albedoSampler() const -> VkSampler;
 
 	void resolveTextureHandles();

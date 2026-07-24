@@ -5,6 +5,7 @@
 
 using System;
 using Avalonia;
+using editor.Engine;
 
 namespace editor;
 
@@ -16,21 +17,27 @@ internal sealed class Program {
 	}
 
 	public static AppBuilder BuildAvaloniaApp() {
-		return AppBuilder.Configure<App>()
+		var builder = AppBuilder.Configure<App>()
 			.UsePlatformDetect()
 #if DEBUG
 			.WithDeveloperTools()
 #endif
-			.WithInterFont()
-			// HACK: Find a proper solution for this
-			// renderdoc crashes when trying to attach to the internal avalonia
-			// hardware accelerated renderer
-			.With(new Win32PlatformOptions {
-				RenderingMode = [ Win32RenderingMode.Software ]
-			})
-			.With(new X11PlatformOptions {
-				RenderingMode = [ X11RenderingMode.Software ]
-			})
-			.LogToTrace();
+			.WithInterFont();
+
+		// RenderDoc hooks the first graphics API it sees process-wide; if it's already attached (editor
+		// launched through RenderDoc), Avalonia's own hardware-accelerated renderer creating a second,
+		// unrelated context is what crashes on startup. Software rendering sidesteps that entirely.
+		// When RenderDoc isn't attached, use the normal hardware-accelerated path
+		if (RenderDocDetector.IsAttached) {
+			builder = builder
+				.With(new Win32PlatformOptions {
+					RenderingMode = [ Win32RenderingMode.Software ]
+				})
+				.With(new X11PlatformOptions {
+					RenderingMode = [ X11RenderingMode.Software ]
+				});
+		}
+
+		return builder.LogToTrace();
 	}
 }

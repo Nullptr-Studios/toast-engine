@@ -403,6 +403,22 @@ struct ProtoTraits<SetGizmoTool> {
 TOAST_PROTO_EVENT(SetGizmoTool);
 
 template<>
+struct ProtoTraits<SetRenderMode> {
+	using Proto = proto::events::SetRenderMode;
+	using Event = SetRenderMode;
+
+	static auto toProto(const Event& e) -> Proto {
+		Proto p;
+		p.set_mode(e.mode);
+		return p;
+	}
+
+	static auto fromProto(const Proto& p) -> Event { return {p.mode()}; }
+};
+
+TOAST_PROTO_EVENT(SetRenderMode);
+
+template<>
 struct ProtoTraits<SetCoordinateSpace> {
 	using Proto = proto::events::SetCoordinateSpace;
 	using Event = SetCoordinateSpace;
@@ -469,6 +485,18 @@ struct ProtoTraits<EditorCameraFlyMode> {
 };
 
 TOAST_PROTO_EVENT(EditorCameraFlyMode);
+
+template<>
+struct ProtoTraits<CaptureFrame> {
+	using Proto = proto::events::CaptureFrame;
+	using Event = CaptureFrame;
+
+	static auto toProto(const Event& e) -> Proto { return {}; }
+
+	static auto fromProto(const Proto& p) -> Event { return {}; }
+};
+
+TOAST_PROTO_EVENT(CaptureFrame);
 
 template<>
 struct ProtoTraits<EditorCameraMoveState> {

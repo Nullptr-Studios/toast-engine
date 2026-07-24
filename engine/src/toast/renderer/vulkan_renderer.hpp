@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "compute_pass_base.hpp"
 #include "output_target_base.hpp"
 #include "render_pass_base.hpp"
 #include "vulkan_core.hpp"
@@ -36,6 +37,7 @@ class Material;
 namespace toast {
 class Camera;
 class MeshNode;
+class Light;
 }
 
 namespace renderer {
@@ -58,11 +60,23 @@ public:
 	struct FrameContext {
 		vk::raii::CommandBuffer command_buffer = nullptr;
 		vk::raii::CommandBuffer transfer_command_buffer = nullptr;
+		vk::raii::CommandBuffer compute_command_buffer = nullptr;
 		vk::raii::Semaphore image_available = nullptr;
 		vk::raii::Semaphore transfer_finished = nullptr;
+		vk::raii::Semaphore compute_to_graphics = nullptr;    ///< signaled by the compute submit, waited on by the graphics submit
 		vk::raii::Fence in_flight = nullptr;
+		vk::raii::Fence compute_in_flight = nullptr;          ///< defense in depth, separate from in_flight per the review
 		uint32_t last_image_index = 0;
 		bool has_submitted = false;
+	};
+
+	static constexpr uint32_t k_max_directional_lights = 4;
+
+	/// @brief One AmbientLight/DirectionalLight is unbounded/unculled, so it rides along in FrameUBO
+	/// instead of going through the clustered PointLight/Spotlight system
+	struct DirectionalLightData {
+		glm::vec4 direction;          // world-space, w unused
+		glm::vec4 color_intensity;    // rgb color, a intensity
 	};
 
 	struct FrameUBO {
@@ -73,6 +87,29 @@ public:
 		glm::vec3 camera_position;
 
 		float time;
+
+		// Global (unclustered) lighting - AmbientLight pre-summed on the CPU into one value (no position/
+		// direction to cull by), DirectionalLight as a small fixed array. PointLight/Spotlight instead go
+		// through RenderFrame::lights + the clustered system (inert until Stage 3b)
+		glm::vec4 ambient_color_intensity {0.0f};    // rgb color, a intensity; zero if there's no AmbientLight
+
+		// x = directional_light_count, yzw unused padding. A scalar directly followed by a vec3 packs
+		// differently under std140 (16-byte-aligned, so it pads 12 bytes first) vs HLSL cbuffer rules (packs
+		// tight into the same 16-byte slot) - collapsing to one uvec4 sidesteps the ambiguity entirely instead
+		// of relying on whichever convention Slang's Vulkan backend happens to use for ConstantBuffer<T>
+		glm::uvec4 directional_light_count_pad {0};
+
+		std::array<DirectionalLightData, k_max_directional_lights> directional_lights {};
+	};
+
+	/// @brief One PointLight/Spotlight, resolved to POD on the main thread same as MeshInstanceProxy;
+	/// inert until Stage 3b's clustered light culling reads RenderFrame::lights
+	struct GpuLight {
+		glm::vec4 world_pos_range;    // xyz world-space position, w = attenuation range (sphere radius, falloff distance)
+		glm::vec4 view_pos_type;      // xyz view-space position (culling only), w = type (0=point,1=spot)
+		glm::vec4 color_intensity;    // rgb color, a intensity
+		glm::vec4 direction_pad;      // xyz world-space direction (spot only)
+		glm::vec4 cone_angles;        // x = cos(outer), y = cos(inner)
 	};
 
 	struct MeshInstanceProxy {
@@ -110,10 +147,45 @@ public:
 		float drag_scale_factor = 1.0f;
 	};
 
+	/// @brief One key transition, in the same SDL keycode encoding as event::WindowKey::key (a printable
+	/// ASCII/unicode codepoint, or (1<<30)|scancode for non-printable keys). DebugPass maps this to an
+	/// ImGuiKey on the render thread - keeping ImGui types entirely out of this widely-included header
+	struct ImGuiKeyEvent {
+		int32_t key = 0;
+		bool down = false;
+	};
+
+	/// @brief Per-frame ImGui input, resolved main-thread-side from WindowMousePosition/WindowMouseButton/
+	/// WindowMouseScroll/WindowKey/WindowChar - ImGui isn't thread-safe, so the render thread (where
+	/// DebugPass actually calls ImGui::NewFrame()) never touches raw input events directly
+	struct ImGuiInputSnapshot {
+		glm::vec2 mouse_pos {-1.0f, -1.0f};    // -1,-1 = outside window, matches ImGui's own convention
+		std::array<bool, 3> mouse_down {};     // 0=left, 1=right, 2=middle - matches ImGui's own indexing
+		float mouse_wheel_x = 0.0f;
+		float mouse_wheel_y = 0.0f;
+		std::vector<ImGuiKeyEvent> key_events;
+		std::vector<uint32_t> char_events;    // typed unicode codepoints
+	};
+
 	struct RenderFrame {
 		FrameUBO frame_data;
 
 		std::vector<MeshInstanceProxy> mesh_instances;
+
+		// PointLight/Spotlight entries; inert until Stage 3b's clustered light culling consumes it
+		std::vector<GpuLight> lights;
+
+		// Resolved main-thread-side so ClusterLightingPass::update() never touches Camera/output-target
+		// state directly from the render thread - same POD-snapshot pattern as everything else here
+		glm::vec2 viewport_extent {0.0f};
+		float camera_near = 0.01f;
+		float camera_far = 5000.0f;
+
+		ImGuiInputSnapshot imgui_input;
+
+		// Viewport shading mode from the toolbar's "Mode" dropdown - 0 Lit, 1 ClusterHeatmap. Threaded
+		// through MeshPass's push constants rather than a UBO field, so no cross-language packing to worry about
+		uint32_t render_mode = 0;
 
 		// Immediate-mode debug draw data queued via debugDrawLine()/debugDrawBox()/debugDrawSphere()/
 		// debugDrawAxes() dnd consumed by DebugPass
@@ -161,6 +233,12 @@ public:
 	/// @brief Unregisters @p node so it stops being drawn
 	void unregisterMeshNodeProxy(toast::MeshNode* node);
 
+	/// @brief Registers @p node so it's collected into the per-frame light list each frame; no-op if already registered
+	void registerLightNodeProxy(toast::Light* node);
+
+	/// @brief Unregisters @p node so it stops contributing to lighting
+	void unregisterLightNodeProxy(toast::Light* node);
+
 	/**
 	 * @brief Caps how often the render thread draws & presents a frame
 	 *
@@ -179,6 +257,8 @@ public:
 	void stop();
 
 	void addRenderPass(std::unique_ptr<IRenderPass> pass);
+
+	void addComputePass(std::unique_ptr<IComputePass> pass);
 
 	void applyResize(vk::Extent2D extent);
 
@@ -259,6 +339,7 @@ private:
 
 	void createGraphicsCommandPool();
 	void createTransferCommandPool();
+	void createComputeCommandPool();
 	void createFrameContexts();
 	void createPerImageSync();
 	void createDepthResources();
@@ -287,6 +368,7 @@ private:
 
 	std::unique_ptr<IOutputTarget> m_output_target;
 	std::vector<std::unique_ptr<IRenderPass>> m_render_passes;
+	std::vector<std::unique_ptr<IComputePass>> m_compute_passes;
 	vk::Format m_depth_format = vk::Format::eUndefined;
 	DepthResources m_depth_resources;
 	vk::ImageLayout m_depth_layout = vk::ImageLayout::eUndefined;
@@ -294,6 +376,8 @@ private:
 	vk::raii::CommandPool m_command_pool = nullptr;
 
 	vk::raii::CommandPool m_transfer_command_pool = nullptr;
+
+	vk::raii::CommandPool m_compute_command_pool = nullptr;
 
 	vk::raii::DescriptorPool m_descriptor_pool = nullptr;
 
@@ -309,8 +393,33 @@ private:
 	/// Main-thread-only, written by setGizmoState(), read back inside tick() on the same thread
 	GizmoState m_gizmo_state;
 
+	/// Set by event::CaptureFrame (F12 in the editor viewport), consumed once by the render thread's next
+	/// iteration to wrap that one drawFrame() call in whichever capture tool is attached - RenderDoc's
+	/// StartFrameCapture/EndFrameCapture, or Nsight Graphics Capture/GPU Trace's Start/Stop pair
+	event::Listener m_capture_listener;
+	std::atomic_bool m_capture_frame_requested {false};
+
+	/// Main-thread-only, accumulated from WindowMousePosition/WindowMouseButton/WindowMouseScroll/WindowKey/
+	/// WindowChar and resolved into RenderFrame::imgui_input inside tick() on the same thread - mirrors
+	/// m_gizmo_state's pattern exactly
+	event::Listener m_imgui_input_listener;
+	glm::vec2 m_imgui_mouse_pos {-1.0f, -1.0f};
+	std::array<bool, 3> m_imgui_mouse_down {};
+	float m_imgui_wheel_x_accum = 0.0f;
+	float m_imgui_wheel_y_accum = 0.0f;
+	std::vector<ImGuiKeyEvent> m_imgui_key_events_accum;
+	std::vector<uint32_t> m_imgui_char_events_accum;
+
+	/// Main-thread-only, set by event::SetRenderMode (the viewport toolbar's "Mode" dropdown), read back
+	/// inside tick() on the same thread
+	event::Listener m_render_mode_listener;
+	uint32_t m_render_mode = 0;
+
 	std::mutex m_mesh_proxy_mutex;
 	std::vector<toast::MeshNode*> m_mesh_proxy_nodes;
+
+	std::mutex m_light_proxy_mutex;
+	std::vector<toast::Light*> m_light_proxy_nodes;
 
 	// FrameUBO and related resources
 	std::vector<FrameUBO> m_frame_ubos;
@@ -357,6 +466,14 @@ inline void registerMeshNodeProxy(toast::MeshNode* node) {
 
 inline void unregisterMeshNodeProxy(toast::MeshNode* node) {
 	VulkanRenderer::instance->unregisterMeshNodeProxy(node);
+}
+
+inline void registerLightNodeProxy(toast::Light* node) {
+	VulkanRenderer::instance->registerLightNodeProxy(node);
+}
+
+inline void unregisterLightNodeProxy(toast::Light* node) {
+	VulkanRenderer::instance->unregisterLightNodeProxy(node);
 }
 
 inline void queueResourceUpload(std::unique_ptr<PendingResourceUpload> upload) {
@@ -440,6 +557,33 @@ inline void debugDrawSphere(glm::vec3 center, float radius, glm::vec4 color = {1
 inline void debugDrawAxes(const glm::mat4& transform) {
 	VulkanRenderer::instance->beginFrameBuild().debug_gizmo_instances.push_back(transform);
 }
+
+/// @brief Queues a simple arrow (shaft + a small V-shaped head) pointing from @p from to @p to - used for
+/// DirectionalLight, which has no meaningful radius/range to draw a bounded shape for
+inline void debugDrawArrow(glm::vec3 from, glm::vec3 to, glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f}, float head_size = 0.2f) {
+	debugDrawLine(from, to, color);
+
+	const glm::vec3 dir = to - from;
+	const float len = glm::length(dir);
+	if (len < 0.0001f) {
+		return;
+	}
+	const glm::vec3 axis = dir / len;
+	const glm::vec3 up = std::abs(axis.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+	const glm::vec3 side = glm::normalize(glm::cross(up, axis));
+
+	const glm::vec3 back = to - axis * head_size;
+	debugDrawLine(to, back + side * head_size * 0.5f, color);
+	debugDrawLine(to, back - side * head_size * 0.5f, color);
+}
+
+/// @brief Queues a wireframe cone (base ring + a few spokes back to the apex) - used for Spotlight's cone,
+/// @p apex is the light position, @p direction the light's forward vector, @p length its attenuation range,
+/// @p half_angle_degrees its outer cone angle
+void debugDrawCone(
+    glm::vec3 apex, glm::vec3 direction, float length, float half_angle_degrees, glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f},
+    int segments = 24
+);
 
 /**
  * @brief Queues a wireframe frustum for @p camera

@@ -31,6 +31,7 @@ find_package(tinysplinecxx CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
 find_package(Lua REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 find_path(LUABRIDGE3_INCLUDE_DIRS "luabridge3/LuaBridge/Array.h")
 
 # External paths
@@ -94,6 +95,7 @@ target_link_libraries(toast_engine
         unofficial::VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
         slang::gfx slang::slang protobuf::libprotobuf tinysplinecxx::tinysplinecxx
         LZ4::lz4
+        imgui::imgui
         $<$<CONFIG:Debug>:${EXTERNAL_LIBS_DEBUG}>
         $<$<NOT:$<CONFIG:Debug>>:${EXTERNAL_LIBS_RELEASE}>
         ${LUA_LIBRARIES}

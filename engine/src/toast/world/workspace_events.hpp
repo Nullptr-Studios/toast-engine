@@ -183,6 +183,14 @@ struct SetGizmoTool : Event<SetGizmoTool> {
 	SetGizmoTool(uint32_t tool) : tool(tool) { }
 };
 
+/// @brief Viewport shading mode, sent by the toolbar's "Mode" dropdown - 0 Lit, 1 ClusterHeatmap (clustered
+/// forward+ per-pixel light-count debug view). Consumed straight by VulkanRenderer, not per-workspace state
+struct SetRenderMode : Event<SetRenderMode> {
+	uint32_t mode;
+
+	SetRenderMode(uint32_t mode) : mode(mode) { }
+};
+
 struct SetCoordinateSpace : Event<SetCoordinateSpace> {
 	bool world;
 
@@ -209,6 +217,10 @@ struct EditorCameraFlyMode : Event<EditorCameraFlyMode> {
 
 	EditorCameraFlyMode(bool active) : active(active) { }
 };
+
+/// @brief Requests a single RenderDoc frame capture around the next rendered frame, sent on F12 in the
+/// viewport; no-op if RenderDoc isn't attached
+struct CaptureFrame : Event<CaptureFrame> { };
 
 /// @brief Held-key snapshot for the editor fly camera
 struct EditorCameraMoveState : Event<EditorCameraMoveState> {

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <glm/gtc/matrix_transform.hpp>
@@ -21,7 +22,16 @@
 #include <toast/time.hpp>
 #include <toast/window/window_events.hpp>
 #include <toast/world/camera.hpp>
+#include <toast/world/light.hpp>
 #include <toast/world/mesh_node.hpp>
+#include <toast/world/point_light.hpp>
+#include <toast/world/spotlight.hpp>
+#include <toast/world/workspace_events.hpp>
+
+#if defined(_WIN32)
+#include <external/inc/nsight/NGFX_GPUTrace_Vulkan.h>
+#include <external/inc/nsight/NGFX_GraphicsCapture_Vulkan.h>
+#endif
 
 namespace renderer {
 
@@ -104,7 +114,7 @@ VulkanRenderer::VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTa
 
 	createGraphicsCommandPool();
 	createTransferCommandPool();
-	// TODO: Compute Command Pool
+	createComputeCommandPool();
 
 	createFrameContexts();
 	createPerImageSync();
@@ -117,6 +127,44 @@ VulkanRenderer::VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTa
 
 	// Create FrameData UBO
 	createFrameResources();
+
+	m_capture_listener.subscribe<event::CaptureFrame>([this](const auto&) {
+		m_capture_frame_requested.store(true, std::memory_order_release);
+		return true;
+	});
+
+	// ImGui input - accumulated here (main thread, via event::pollEvents()), resolved into
+	// RenderFrame::imgui_input inside tick() (also main thread). Never consumes (returns false) so the
+	// gizmo drag system downstream still sees the same raw events
+	m_imgui_input_listener.subscribe<event::WindowMousePosition>([this](const auto& e) {
+		m_imgui_mouse_pos = {e.x, e.y};
+		return false;
+	});
+	m_imgui_input_listener.subscribe<event::WindowMouseButton>([this](const auto& e) {
+		const int idx = e.button == 1 ? 0 : e.button == 3 ? 1 : e.button == 2 ? 2 : -1;
+		if (idx >= 0) {
+			m_imgui_mouse_down[static_cast<size_t>(idx)] = (e.action == 1);
+		}
+		return false;
+	});
+	m_imgui_input_listener.subscribe<event::WindowMouseScroll>([this](const auto& e) {
+		m_imgui_wheel_x_accum += e.x;
+		m_imgui_wheel_y_accum += e.y;
+		return false;
+	});
+	m_imgui_input_listener.subscribe<event::WindowKey>([this](const auto& e) {
+		m_imgui_key_events_accum.push_back({e.key, e.action != 0});
+		return false;
+	});
+	m_imgui_input_listener.subscribe<event::WindowChar>([this](const auto& e) {
+		m_imgui_char_events_accum.push_back(e.key);
+		return false;
+	});
+
+	m_render_mode_listener.subscribe<event::SetRenderMode>([this](const auto& e) {
+		m_render_mode = e.mode;
+		return true;
+	});
 }
 
 VulkanRenderer::~VulkanRenderer() {
@@ -142,6 +190,15 @@ auto VulkanRenderer::createTransferCommandPool() -> void {
 	TOAST_TRACE("VulkanRenderer", "Transfer command pool created (transfer family {})", m_core->getTransferQueueFamilyIndex());
 }
 
+auto VulkanRenderer::createComputeCommandPool() -> void {
+	const vk::CommandPoolCreateInfo pool_ci(
+	    vk::CommandPoolCreateFlagBits::eResetCommandBuffer, m_core->getComputeQueueFamilyIndex()
+	);
+	m_compute_command_pool = vk::raii::CommandPool(m_core->getDevice(), pool_ci);
+	setDebugName(*m_core, *m_compute_command_pool, "VulkanRenderer ComputeCommandPool");
+	TOAST_TRACE("VulkanRenderer", "Compute command pool created (compute family {})", m_core->getComputeQueueFamilyIndex());
+}
+
 auto VulkanRenderer::createFrameContexts() -> void {
 	m_frames.clear();
 	m_frames.resize(k_frames_in_flight);
@@ -152,15 +209,22 @@ auto VulkanRenderer::createFrameContexts() -> void {
 	const vk::CommandBufferAllocateInfo transfer_command_buffer_ci(
 	    *m_transfer_command_pool, vk::CommandBufferLevel::ePrimary, k_frames_in_flight
 	);
+	const vk::CommandBufferAllocateInfo compute_command_buffer_ci(
+	    *m_compute_command_pool, vk::CommandBufferLevel::ePrimary, k_frames_in_flight
+	);
 	auto allocated_command_buffers = m_core->getDevice().allocateCommandBuffers(command_buffer_ci);
 	auto allocated_transfer_command_buffers = m_core->getDevice().allocateCommandBuffers(transfer_command_buffer_ci);
+	auto allocated_compute_command_buffers = m_core->getDevice().allocateCommandBuffers(compute_command_buffer_ci);
 
 	for (uint32_t frame_index = 0; frame_index < k_frames_in_flight; ++frame_index) {
 		m_frames[frame_index].command_buffer = std::move(allocated_command_buffers[frame_index]);
 		m_frames[frame_index].transfer_command_buffer = std::move(allocated_transfer_command_buffers[frame_index]);
+		m_frames[frame_index].compute_command_buffer = std::move(allocated_compute_command_buffers[frame_index]);
 		m_frames[frame_index].image_available = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
 		m_frames[frame_index].transfer_finished = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
+		m_frames[frame_index].compute_to_graphics = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
 		m_frames[frame_index].in_flight = vk::raii::Fence(m_core->getDevice(), fence_ci);
+		m_frames[frame_index].compute_in_flight = vk::raii::Fence(m_core->getDevice(), fence_ci);
 
 		setDebugName(
 		    *m_core, *m_frames[frame_index].command_buffer, std::format("VulkanRenderer Frame[{}] CommandBuffer", frame_index)
@@ -171,12 +235,27 @@ auto VulkanRenderer::createFrameContexts() -> void {
 		    std::format("VulkanRenderer Frame[{}] TransferCommandBuffer", frame_index)
 		);
 		setDebugName(
+		    *m_core,
+		    *m_frames[frame_index].compute_command_buffer,
+		    std::format("VulkanRenderer Frame[{}] ComputeCommandBuffer", frame_index)
+		);
+		setDebugName(
 		    *m_core, *m_frames[frame_index].image_available, std::format("VulkanRenderer Frame[{}] ImageAvailable", frame_index)
 		);
 		setDebugName(
 		    *m_core, *m_frames[frame_index].transfer_finished, std::format("VulkanRenderer Frame[{}] TransferFinished", frame_index)
 		);
+		setDebugName(
+		    *m_core,
+		    *m_frames[frame_index].compute_to_graphics,
+		    std::format("VulkanRenderer Frame[{}] ComputeToGraphics", frame_index)
+		);
 		setDebugName(*m_core, *m_frames[frame_index].in_flight, std::format("VulkanRenderer Frame[{}] InFlightFence", frame_index));
+		setDebugName(
+		    *m_core,
+		    *m_frames[frame_index].compute_in_flight,
+		    std::format("VulkanRenderer Frame[{}] ComputeInFlightFence", frame_index)
+		);
 	}
 
 	TOAST_TRACE("VulkanRenderer", "Frame command buffers created: {}", k_frames_in_flight);
@@ -457,6 +536,9 @@ auto VulkanRenderer::drawFrame(RenderFrame& frame_data) -> void {
 	// Frame rendering
 	auto& frame = m_frames[m_current_frame];
 	std::ignore = m_core->getDevice().waitForFences(*frame.in_flight, true, std::numeric_limits<uint64_t>::max());
+	// The compute submit below is unconditional every frame (even with zero compute passes registered), so
+	// its own fence needs the same wait-before-reuse treatment as the graphics one
+	std::ignore = m_core->getDevice().waitForFences(*frame.compute_in_flight, true, std::numeric_limits<uint64_t>::max());
 	if (frame.has_submitted) {
 		m_output_target->onImageRenderComplete(frame.last_image_index);
 		frame.has_submitted = false;
@@ -501,20 +583,45 @@ auto VulkanRenderer::drawFrame(RenderFrame& frame_data) -> void {
 	// const vk::SubmitInfo transfer_submit_info(0, nullptr, nullptr, 1, &transfer_command_buffer, 1, &transfer_wait_semaphore);
 	// m_core->getTransferQueue().submit(transfer_submit_info);
 
+	// Compute submission. This runs every frame unconditionally, even with zero compute passes registered,
+	// so the graphics submit below can always wait on compute_to_graphics without a branch. A conditional
+	// compute submit is how the dead transfer_finished semaphore above ended up permanently unsignaled -
+	// never make this path optional.
+	m_core->getDevice().resetFences(*frame.compute_in_flight);
+
+	const vk::CommandBuffer compute_command_buffer = *frame.compute_command_buffer;
+	compute_command_buffer.reset();
+	constexpr vk::CommandBufferBeginInfo compute_begin_info {};
+	compute_command_buffer.begin(compute_begin_info);
+	for (auto& pass : m_compute_passes) {
+		pass->update(m_current_frame, Time::renderDelta());
+		pass->dispatch(compute_command_buffer, m_current_frame);
+	}
+	compute_command_buffer.end();
+
+	const vk::Semaphore compute_to_graphics_semaphore = *frame.compute_to_graphics;
+	const vk::SubmitInfo compute_submit_info(0, nullptr, nullptr, 1, &compute_command_buffer, 1, &compute_to_graphics_semaphore);
+	m_core->getComputeQueue().submit(compute_submit_info, *frame.compute_in_flight);
+
 	// Starting graghics submission
-	// Always wait for the transfer
+	// Always wait for compute; only wait for image_available when actually presenting to a swapchain
 	const bool present_sync = m_output_target->usesAcquirePresentSemaphores();
 
 	const vk::CommandBuffer command_buffer = *frame.command_buffer;
 	const vk::Semaphore signal_semaphore = *m_render_finished_per_image.at(image_index);
 	const vk::Semaphore wait_semaphore = *frame.image_available;
-	const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-	vk::SubmitInfo submit_info {};
-	if (present_sync) {
-		submit_info.waitSemaphoreCount = 1;
-		submit_info.pWaitSemaphores = &wait_semaphore;
-		submit_info.pWaitDstStageMask = &wait_stage;
 
+	std::array<vk::Semaphore, 2> wait_semaphores {compute_to_graphics_semaphore, wait_semaphore};
+	std::array<vk::PipelineStageFlags, 2> wait_stages {
+	  vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eColorAttachmentOutput
+	};
+	const uint32_t wait_semaphore_count = present_sync ? 2 : 1;
+
+	vk::SubmitInfo submit_info {};
+	submit_info.waitSemaphoreCount = wait_semaphore_count;
+	submit_info.pWaitSemaphores = wait_semaphores.data();
+	submit_info.pWaitDstStageMask = wait_stages.data();
+	if (present_sync) {
 		// Only a real present actually waits on this. Off-screen output targets
 		// ignore the semaphore IOutputTarget::present() is handed
 		submit_info.signalSemaphoreCount = 1;
@@ -523,6 +630,26 @@ auto VulkanRenderer::drawFrame(RenderFrame& frame_data) -> void {
 	submit_info.commandBufferCount = 1;
 	submit_info.pCommandBuffers = &command_buffer;
 	m_core->getGraphicsQueue().submit(submit_info, *frame.in_flight);
+
+#if defined(_WIN32)
+	// The editor's viewport never calls vkQueuePresentKHR - it renders into a SharedTextureOutputTarget and
+	// hands the image to Avalonia by copy, so there's no swapchain present for Nsight to infer frame
+	// boundaries from. Without an explicit signal, Nsight's Attach/discovery can't find a graphics API to
+	// attach to at all (the editor genuinely never presents). Marking the boundary explicitly via the SDK
+	// is the documented fix for headless/no-present Vulkan apps; harmless to also call this on output
+	// targets that DO present (SDLOutputTarget), so it isn't conditioned on which target is active
+	if (m_core->getNsightMode() == NsightMode::graphics_capture) {
+		NGFX_ResourceDescription_Vulkan output_resource {NGFX_ResourceDescription_Vulkan_VER};
+		output_resource.type = NGFX_ResourceType_Vulkan_VkImage;
+		output_resource.image = static_cast<VkImage>(m_output_target->getColorImage(image_index));
+
+		NGFX_FrameBoundary_Vulkan_Params boundary_params {NGFX_FrameBoundary_Vulkan_Params_VER};
+		boundary_params.queue = static_cast<VkQueue>(m_core->getGraphicsQueue());
+		boundary_params.outputResources = &output_resource;
+		boundary_params.numOutputResources = 1;
+		NGFX_FrameBoundary_Vulkan(&boundary_params);
+	}
+#endif
 
 	// Present onto target texture
 	const auto present_result = m_output_target->present(image_index, present_sync ? signal_semaphore : vk::Semaphore {});
@@ -618,12 +745,53 @@ void VulkanRenderer::mainRenderThread() {
 
 		Time::get().renderTick();
 
-		// TODO: Make this a editor keybind
-		// m_core->getRenderDocAPI()->StartFrameCapture(nullptr, nullptr);
+		// One-shot: consumed here regardless of whether any capture tool is actually attached, so a stray
+		// F12 press before one attaches doesn't leave a stale request queued for whenever it eventually
+		// does. RenderDoc takes priority if both happen to be present; only one of RenderDoc/Nsight will
+		// realistically be hooked into the process at once anyway
+		const bool do_capture = m_capture_frame_requested.exchange(false, std::memory_order_acq_rel);
+		const auto* rdoc_api = m_core->getRenderDocAPI();
+		const auto nsight_mode = m_core->getNsightMode();
+
+		if (do_capture && rdoc_api != nullptr) {
+			rdoc_api->StartFrameCapture(nullptr, nullptr);
+		}
+#if defined(_WIN32)
+		else if (do_capture && nsight_mode == NsightMode::graphics_capture) {
+			NGFX_GraphicsCapture_StartCapture_Vulkan_Params params {NGFX_GraphicsCapture_StartCapture_Vulkan_Params_VER};
+			const NGFX_Result start_result = NGFX_GraphicsCapture_StartCapture_Vulkan(&params);
+			TOAST_INFO("VulkanRenderer", "NGFX_GraphicsCapture_StartCapture_Vulkan result={}", static_cast<int>(start_result));
+		} else if (do_capture && nsight_mode == NsightMode::gpu_trace) {
+			// Lazy on purpose: blocks until the Nsight Graphics host attaches, so it must only ever run in
+			// response to an explicit F12 press, never at startup - see VulkanCore::activateNsightGpuTraceIfNeeded()
+			m_core->activateNsightGpuTraceIfNeeded();
+			NGFX_GPUTrace_StartTrace_Vulkan_Params params {NGFX_GPUTrace_StartTrace_Vulkan_Params_VER};
+			const NGFX_Result start_result = NGFX_GPUTrace_StartTrace_Vulkan(&params);
+			TOAST_INFO("VulkanRenderer", "NGFX_GPUTrace_StartTrace_Vulkan result={}", static_cast<int>(start_result));
+		}
+#endif
 
 		drawFrame(frame_to_draw);
 
-		// m_core->getRenderDocAPI()->EndFrameCapture(nullptr, nullptr);
+		if (do_capture && rdoc_api != nullptr) {
+			rdoc_api->EndFrameCapture(nullptr, nullptr);
+			TOAST_INFO("VulkanRenderer", "RenderDoc frame capture triggered");
+		}
+#if defined(_WIN32)
+		else if (do_capture && nsight_mode == NsightMode::graphics_capture) {
+			NGFX_GraphicsCapture_StopCapture_Vulkan_Params params {NGFX_GraphicsCapture_StopCapture_Vulkan_Params_VER};
+			const NGFX_Result stop_result = NGFX_GraphicsCapture_StopCapture_Vulkan(&params);
+			TOAST_INFO("VulkanRenderer", "NGFX_GraphicsCapture_StopCapture_Vulkan result={}", static_cast<int>(stop_result));
+		} else if (do_capture && nsight_mode == NsightMode::gpu_trace) {
+			NGFX_GPUTrace_StopTrace_Vulkan_Params params {NGFX_GPUTrace_StopTrace_Vulkan_Params_VER};
+			params.flags = NGFX_GPUTrace_StopTraceFlag_None;
+			params.queue = m_core->getGraphicsQueue();
+			params.outputResources = nullptr;
+			params.numOutputResources = 0;
+			const NGFX_Result stop_result = NGFX_GPUTrace_StopTrace_Vulkan(&params);
+			TOAST_INFO("VulkanRenderer", "NGFX_GPUTrace_StopTrace_Vulkan result={}", static_cast<int>(stop_result));
+		}
+#endif
 
 		if (consumed_queued_frame) {
 			m_free_frames.release();
@@ -667,12 +835,33 @@ void VulkanRenderer::tick(float time) noexcept {
 	frame.debug_gizmo_instances.clear();
 	frame.transform_gizmo = TransformGizmoDraw {};
 
+	// ImGui input snapshot - mouse position/buttons are "latest state", wheel/key/char are drained queues
+	frame.imgui_input.mouse_pos = m_imgui_mouse_pos;
+	frame.imgui_input.mouse_down = m_imgui_mouse_down;
+	frame.imgui_input.mouse_wheel_x = m_imgui_wheel_x_accum;
+	frame.imgui_input.mouse_wheel_y = m_imgui_wheel_y_accum;
+	frame.imgui_input.key_events = std::move(m_imgui_key_events_accum);
+	frame.imgui_input.char_events = std::move(m_imgui_char_events_accum);
+	m_imgui_wheel_x_accum = 0.0f;
+	m_imgui_wheel_y_accum = 0.0f;
+	m_imgui_key_events_accum.clear();
+	m_imgui_char_events_accum.clear();
+
+	frame.render_mode = m_render_mode;
+
 	std::vector<toast::MeshNode*> mesh_nodes_snapshot;
 	{
 		std::scoped_lock lock(m_mesh_proxy_mutex);
 		mesh_nodes_snapshot = m_mesh_proxy_nodes;
 	}
 	frame.mesh_instances.reserve(mesh_nodes_snapshot.size());
+
+	std::vector<toast::Light*> light_nodes_snapshot;
+	{
+		std::scoped_lock lock(m_light_proxy_mutex);
+		light_nodes_snapshot = m_light_proxy_nodes;
+	}
+	frame.lights.clear();
 
 	for (auto* node : mesh_nodes_snapshot) {
 		if (node == nullptr || !node->enabled()) {
@@ -718,6 +907,84 @@ void VulkanRenderer::tick(float time) noexcept {
 		  .time = time
 		};
 
+		frame.viewport_extent = glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+		frame.camera_near = m_camera->near_plane;
+		frame.camera_far = m_camera->far_plane;
+
+		// Global (unclustered) lights fold straight into FrameUBO; PointLight/Spotlight resolve to
+		// GpuLight entries in frame.lights instead (inert until Stage 3b's clustering consumes them)
+		glm::vec3 ambient_sum(0.0f);
+		uint32_t directional_count = 0;
+		frame.lights.reserve(light_nodes_snapshot.size());
+
+		for (auto* light : light_nodes_snapshot) {
+			if (light == nullptr || !light->enabled()) {
+				continue;
+			}
+
+			switch (light->lightType()) {
+				case toast::LightType::ambient: {
+					ambient_sum += light->color() * light->intensity();
+					break;
+				}
+				case toast::LightType::directional: {
+					debugDrawArrow(light->worldPos(), light->worldPos() + light->forward() * 2.0f, glm::vec4(light->color(), 1.0f));
+
+					if (directional_count >= k_max_directional_lights) {
+						break;
+					}
+					frame.frame_data.directional_lights[directional_count] = DirectionalLightData {
+					  .direction = glm::vec4(light->forward(), 0.0f),
+					  .color_intensity = glm::vec4(light->color(), light->intensity()),
+					};
+					++directional_count;
+					break;
+				}
+				case toast::LightType::point: {
+					auto* point = static_cast<toast::PointLight*>(light);
+					const glm::vec3 world_pos = point->worldPos();
+					const glm::vec3 view_pos = glm::vec3(m_camera->getView() * glm::vec4(world_pos, 1.0f));
+
+					debugDrawSphere(world_pos, point->attenuation(), glm::vec4(point->color(), 1.0f));
+
+					frame.lights.push_back(
+					    GpuLight {
+					      .world_pos_range = glm::vec4(world_pos, point->attenuation()),
+					      .view_pos_type = glm::vec4(view_pos, 0.0f),
+					      .color_intensity = glm::vec4(point->color(), point->intensity()),
+					      .direction_pad = glm::vec4(0.0f),
+					      .cone_angles = glm::vec4(0.0f),
+					    }
+					);
+					break;
+				}
+				case toast::LightType::spot: {
+					auto* spot = static_cast<toast::Spotlight*>(light);
+					const glm::vec3 world_pos = spot->worldPos();
+					const glm::vec3 view_pos = glm::vec3(m_camera->getView() * glm::vec4(world_pos, 1.0f));
+
+					debugDrawCone(world_pos, spot->forward(), spot->attenuation(), spot->outerRadius(), glm::vec4(spot->color(), 1.0f));
+
+					frame.lights.push_back(
+					    GpuLight {
+					      .world_pos_range = glm::vec4(world_pos, spot->attenuation()),
+					      .view_pos_type = glm::vec4(view_pos, 1.0f),
+					      .color_intensity = glm::vec4(spot->color(), spot->intensity()),
+					      .direction_pad = glm::vec4(spot->forward(), 0.0f),
+					      .cone_angles = glm::vec4(
+					          std::cos(glm::radians(spot->outerRadius())), std::cos(glm::radians(spot->innerRadius())), 0.0f, 0.0f
+					      ),
+					    }
+					);
+					break;
+				}
+				default: break;    // LightType::none - a bare Light node, never emitted by any real subclass
+			}
+		}
+
+		frame.frame_data.ambient_color_intensity = glm::vec4(ambient_sum, 1.0f);
+		frame.frame_data.directional_light_count_pad.x = directional_count;
+
 		// TODO: compile this out if in non editor build or smth
 		if (m_gizmo_state.visible) {
 			const float scale = toast::gizmo_layout::k_screen_size * glm::distance(m_camera->worldPos(), m_gizmo_state.origin);
@@ -753,6 +1020,26 @@ void VulkanRenderer::unregisterMeshNodeProxy(toast::MeshNode* node) {
 
 	std::scoped_lock lock(m_mesh_proxy_mutex);
 	std::erase(m_mesh_proxy_nodes, node);
+}
+
+void VulkanRenderer::registerLightNodeProxy(toast::Light* node) {
+	if (node == nullptr) {
+		return;
+	}
+
+	std::scoped_lock lock(m_light_proxy_mutex);
+	if (!std::ranges::contains(m_light_proxy_nodes, node)) {
+		m_light_proxy_nodes.push_back(node);
+	}
+}
+
+void VulkanRenderer::unregisterLightNodeProxy(toast::Light* node) {
+	if (node == nullptr) {
+		return;
+	}
+
+	std::scoped_lock lock(m_light_proxy_mutex);
+	std::erase(m_light_proxy_nodes, node);
 }
 
 void VulkanRenderer::stop() {
@@ -809,6 +1096,10 @@ auto VulkanRenderer::applyResizeInternal(vk::Extent2D extent) -> void {
 
 void VulkanRenderer::addRenderPass(std::unique_ptr<IRenderPass> pass) {
 	m_render_passes.push_back(std::move(pass));
+}
+
+void VulkanRenderer::addComputePass(std::unique_ptr<IComputePass> pass) {
+	m_compute_passes.push_back(std::move(pass));
 }
 
 void VulkanRenderer::queueResourceUpload(std::unique_ptr<PendingResourceUpload> upload_job) {
@@ -914,6 +1205,36 @@ void debugDrawFrustum(const toast::Camera& camera, float aspect, glm::vec4 color
 	};
 	for (const auto& [a, b] : edges) {
 		debugDrawLine(world_corners[a], world_corners[b], color);
+	}
+}
+
+void debugDrawCone(glm::vec3 apex, glm::vec3 direction, float length, float half_angle_degrees, glm::vec4 color, int segments) {
+	const float dir_len = glm::length(direction);
+	const glm::vec3 axis = dir_len > 0.0001f ? direction / dir_len : glm::vec3(0.0f, 0.0f, -1.0f);
+
+	// Arbitrary perpendicular basis around axis
+	const glm::vec3 up = std::abs(axis.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+	const glm::vec3 u = glm::normalize(glm::cross(up, axis));
+	const glm::vec3 w = glm::cross(axis, u);
+
+	const float radius = length * std::tan(glm::radians(half_angle_degrees));
+	const glm::vec3 base_center = apex + axis * length;
+
+	std::vector<glm::vec3> ring(static_cast<size_t>(segments));
+	for (int i = 0; i < segments; ++i) {
+		const float t = (static_cast<float>(i) / static_cast<float>(segments)) * glm::two_pi<float>();
+		ring[static_cast<size_t>(i)] = base_center + (u * std::cos(t) + w * std::sin(t)) * radius;
+	}
+
+	for (int i = 0; i < segments; ++i) {
+		const int next = (i + 1) % segments;
+		debugDrawLine(ring[static_cast<size_t>(i)], ring[static_cast<size_t>(next)], color);
+	}
+
+	constexpr int k_spokes = 4;
+	for (int i = 0; i < k_spokes; ++i) {
+		const int idx = (i * segments) / k_spokes;
+		debugDrawLine(apex, ring[static_cast<size_t>(idx)], color);
 	}
 }
 

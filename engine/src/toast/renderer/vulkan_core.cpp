@@ -13,9 +13,17 @@
 #if defined(__linux__)
 #include <dlfcn.h>
 #endif
+#include <array>
+#include <cctype>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <external/inc/nsight/NGFX_GPUTrace_Vulkan.h>
+#include <external/inc/nsight/NGFX_GraphicsCapture_Vulkan.h>
+#endif
 
 namespace renderer {
 
@@ -236,6 +244,14 @@ VulkanCore::VulkanCore(
 	TOAST_TRACE("VulkanCore", "Required instance extensions: {}", joinRequiredExtensions(required_instance_extensions));
 	TOAST_TRACE("VulkanCore", "Required device extensions: {}", joinRequiredExtensions(required_device_extensions));
 
+	// Nsight Graphics SDK - must run before the VkInstance is created; its injection/interception libraries
+	// hook the Vulkan loader and won't see anything that happened before they're loaded. Only one activity
+	// (Graphics Capture or GPU Trace) can be active per process, so which one is chosen once here via an env
+	// var rather than being a runtime toggle - see NsightMode's doc comment
+#if defined(_WIN32)
+	initializeNsightActivity();
+#endif
+
 	vk::ApplicationInfo app_info("SUPER DUPER TOASTY GAME", 1, "TOAST ENGINE", 1, VK_API_VERSION_1_4);
 
 	std::vector<const char*> layers;
@@ -283,7 +299,149 @@ VulkanCore::VulkanCore(
 		dlclose(mod);
 	}
 #endif
+
+	// Deliberately NOT calling activateNsightGpuTrace() here: NGFX_GPUTrace_ActivateTrace_Vulkan blocks
+	// waiting to talk to the Nsight Graphics host application, and hangs forever if nothing ever attaches -
+	// calling it unconditionally at startup would hang every editor launch in GPU Trace mode until Nsight
+	// Graphics connects. Activation is deferred to the first F12 press instead (see VulkanRenderer),
+	// by which point the user has presumably already opened Nsight Graphics and attached
 }
+
+#if defined(_WIN32)
+void VulkanCore::initializeNsightActivity() {
+	// Injection/interception libraries are loaded directly off disk from the detected installation path, no
+	// signature verification - matches this codebase's general trust posture for local dev tooling (same as
+	// RenderDoc above, which is trusted purely by virtue of already being loaded into the process)
+	NGFX_SetLibraryLoadFn(NGFX_LoadLib_NoVerification);
+
+	std::string mode_env;
+	if (const char* env = std::getenv("TOAST_NSIGHT_MODE")) {
+		mode_env = env;
+	}
+	std::ranges::transform(mode_env, mode_env.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	// Defaults to Graphics Capture, NOT GPU Trace: once GPU Trace is injected+initialized, its interception
+	// layer gates ALL subsequent Vulkan queue submissions on the Nsight Graphics host being attached - not
+	// just the ActivateTrace call, but ordinary one-shot uploads too (e.g. MeshPass's default-texture upload
+	// blocks forever on vkWaitForFences because the fence never signals without a host). Confirmed by testing
+	// both modes directly: "capture" completes startup cleanly, "trace" hangs/crashes every time Nsight
+	// Graphics isn't already running. GPU Trace is still available via TOAST_NSIGHT_MODE=trace for sessions
+	// that genuinely launch through/attach via Nsight Graphics from the start
+	const bool want_graphics_capture = mode_env != "trace";
+
+	std::array<NGFX_InstallationInfo, 8> installations {};
+	uint32_t num_installations = 0;
+	const NGFX_Result enumerate_result =
+	    NGFX_EnumerateInstallations(installations.data(), static_cast<uint32_t>(installations.size()), &num_installations);
+
+	if (enumerate_result != NGFX_Result_Success || num_installations == 0) {
+		TOAST_INFO("VulkanCore", "No Nsight Graphics installation found; Nsight capture/trace disabled");
+		NGFX_FreeInstallations(installations.data(), num_installations);
+		return;
+	}
+
+	// NGFX_EnumerateInstallations sorts by version descending, so [0] is the newest installation found
+	const NGFX_PathChar* install_path = installations[0].installationPath;
+
+	if (want_graphics_capture) {
+		NGFX_GraphicsCapture_InjectionSettings settings {};
+		settings.version = NGFX_GraphicsCapture_InjectionSettings_VER;
+		// The SDK's injection-settings validator rejects several of these at their C++ default despite the
+		// header docs implying 0/false are safe "unset" values - confirmed empirically against the real SDK
+		// (verbose logging: "Invalid frame count: 0, must be between 1 and 600", then separately "Multiple
+		// capture methods specified, only one allowed" until captureFrame/captureCountdownTimer were also
+		// sentineled off). frameCount must sit in [1,600] regardless of how captures are triggered;
+		// captureFrame/captureCountdownTimer of 0 are apparently read as "trigger armed at time zero" rather
+		// than "unused" - sentinel them to their max value to mark them genuinely unused instead.
+		// captureDefaultHotkey stays OFF: per the SDK user guide, StartCapture/StopCapture ("frameless
+		// one-shot" captures, what F12 below actually calls) require the trigger condition to resolve to
+		// "NGFX SDK Start/Stop", which is the implicit state when no other trigger (hotkey/frame/countdown)
+		// is configured - turning the hotkey on switches the trigger condition away from SDK-driven and
+		// silently no-ops this engine's own Start/StopCapture calls, which is why F12 did nothing even
+		// after injection itself started succeeding
+		settings.frameCount = 1;
+		settings.captureDefaultHotkey = false;
+		settings.captureFrame = 0xFFFFFFFFu;
+		settings.captureCountdownTimer = 0xFFFFFFFFu;
+
+		NGFX_GraphicsCapture_Inject_Vulkan_Params inject_params {NGFX_GraphicsCapture_Inject_Vulkan_Params_VER};
+		inject_params.installationPath = install_path;
+		inject_params.settings = &settings;
+
+		if (NGFX_GraphicsCapture_Inject_Vulkan(&inject_params) != NGFX_Result_Success) {
+			TOAST_WARN("VulkanCore", "Failed to inject Nsight Graphics Capture activity");
+		} else {
+			NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params init_params {
+			  NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER
+			};
+			if (NGFX_GraphicsCapture_InitializeActivity_Vulkan(&init_params) == NGFX_Result_Success) {
+				m_nsight_mode = NsightMode::graphics_capture;
+				TOAST_INFO("VulkanCore", "Nsight Graphics Capture activity initialized (F12 to capture a frame)");
+			} else {
+				TOAST_WARN("VulkanCore", "Failed to initialize Nsight Graphics Capture activity");
+			}
+		}
+	} else {
+		NGFX_GPUTrace_InjectionSettings settings {};
+		settings.version = NGFX_GPUTrace_InjectionSettings_VER;
+		// Triggered by our own F12 handler calling StartTrace/StopTrace directly, not Nsight's built-in
+		// hotkey or a frame/submit/duration counter
+		settings.startEvent = NGFX_GPUTrace_StartEvent_NGFXSDK;
+		settings.stopEvent = NGFX_GPUTrace_StopEvent_NGFXSDK;
+		// maxDurationMs is a hard safety cap enforced regardless of stopEvent (the SDK rejects 0 as invalid
+		// outright) - one minute is far longer than a single F12-bracketed frame ever takes, it's just a
+		// backstop against a trace that never gets stopped
+		settings.maxDurationMs = 60'000;
+		// Per-device GPU event tracking buffers - the SDK rejects 0 here too, these are its own sizing
+		// knobs rather than something this engine has an opinion on, so just pick generous values
+		settings.eventBufferSizeKB = 65536;
+		settings.timestampCount = 65536;
+		// VulkanSC-specific limits, unused by this engine's plain Vulkan renderer, but still rejected as
+		// invalid at 0 - same treatment as the buffer sizes above
+		settings.maxInternalVKSCCommandBuffersPerQueue = 16;
+		settings.maxInternalVKSCCommandBuffersMemoryKB = 1024;
+
+		NGFX_GPUTrace_Inject_Vulkan_Params inject_params {NGFX_GPUTrace_Inject_Vulkan_Params_VER};
+		inject_params.installationPath = install_path;
+		inject_params.settings = &settings;
+
+		const NGFX_Result inject_result = NGFX_GPUTrace_Inject_Vulkan(&inject_params);
+
+		if (inject_result != NGFX_Result_Success) {
+			TOAST_WARN("VulkanCore", "Failed to inject Nsight GPU Trace activity");
+		} else {
+			NGFX_GPUTrace_InitializeActivity_Vulkan_Params init_params {NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER};
+			const NGFX_Result init_result = NGFX_GPUTrace_InitializeActivity_Vulkan(&init_params);
+			if (init_result == NGFX_Result_Success) {
+				m_nsight_mode = NsightMode::gpu_trace;
+				TOAST_INFO("VulkanCore", "Nsight GPU Trace activity initialized (F12 to capture a trace)");
+			} else {
+				TOAST_WARN("VulkanCore", "Failed to initialize Nsight GPU Trace activity");
+			}
+		}
+	}
+
+	NGFX_FreeInstallations(installations.data(), num_installations);
+}
+
+void VulkanCore::activateNsightGpuTraceIfNeeded() const {
+	if (m_nsight_mode != NsightMode::gpu_trace || m_nsight_gputrace_activated) {
+		return;
+	}
+	// Only reached from the render thread's F12 handler, on the first capture request - see the comment at
+	// the end of the constructor for why this can't happen eagerly at startup. Blocks until the Nsight
+	// Graphics host application (the tool the user opens on their desktop) attaches and builds trace
+	// resources on the given queue; only needs to happen once, subsequent StartTrace/StopTrace calls reuse it
+	NGFX_GPUTrace_ActivateTrace_Vulkan_Params params {NGFX_GPUTrace_ActivateTrace_Vulkan_Params_VER};
+	params.queue = m_graphics_queue;
+
+	if (NGFX_GPUTrace_ActivateTrace_Vulkan(&params) == NGFX_Result_Success) {
+		m_nsight_gputrace_activated = true;
+	} else {
+		TOAST_WARN("VulkanCore", "Failed to activate Nsight GPU Trace; F12 capture will not work this session");
+		m_nsight_mode = NsightMode::none;
+	}
+}
+#endif
 
 void VulkanCore::pickPhysicalDevice(std::span<const char* const> required_device_extensions) {
 	vk::raii::PhysicalDevices devices(m_instance);

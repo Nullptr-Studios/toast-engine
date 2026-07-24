@@ -8,13 +8,18 @@
 #include "mesh.hpp"
 #include "prefab.hpp"
 
+#include <algorithm>
+#include <array>
+#include <fstream>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <nlohmann/json.hpp>
+#include <span>
 #include <toast/uid.hpp>
+#include <unordered_map>
 #define TINYGLTF3_IMPLEMENTATION
 #define TINYGLTF3_ENABLE_FS
 #include <tiny_gltf_v3.h>
@@ -23,6 +28,131 @@
 using namespace tinygltf3;
 
 namespace assets {
+
+namespace {
+
+/// @brief Decodes a standard (RFC 4648) base64 payload, e.g. the part of a data: URI after the comma
+auto decodeBase64(std::string_view input) -> std::vector<uint8_t> {
+	static constexpr std::string_view k_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+	std::array<int8_t, 256> lookup {};
+	lookup.fill(-1);
+	for (size_t i = 0; i < k_alphabet.size(); ++i) {
+		lookup[static_cast<uint8_t>(k_alphabet[i])] = static_cast<int8_t>(i);
+	}
+
+	std::vector<uint8_t> out;
+	out.reserve(input.size() / 4 * 3);
+
+	int32_t val = 0;
+	int32_t bits = -8;
+	for (const char c : input) {
+		const int8_t digit = lookup[static_cast<uint8_t>(c)];
+		if (digit == -1) {
+			continue;    // padding ('='), whitespace, or line breaks - just skip
+		}
+		val = (val << 6) + digit;
+		bits += 6;
+		if (bits >= 0) {
+			out.push_back(static_cast<uint8_t>((val >> bits) & 0xFF));
+			bits -= 8;
+		}
+	}
+	return out;
+}
+
+/// @brief Percent-decodes a glTF URI (e.g. "%20" -> ' '), per the glTF spec's URI encoding requirement
+auto percentDecode(std::string_view uri) -> std::string {
+	std::string out;
+	out.reserve(uri.size());
+	for (size_t i = 0; i < uri.size(); ++i) {
+		if (uri[i] == '%' && i + 2 < uri.size()) {
+			out.push_back(static_cast<char>(std::stoi(std::string(uri.substr(i + 1, 2)), nullptr, 16)));
+			i += 2;
+		} else {
+			out.push_back(uri[i]);
+		}
+	}
+	return out;
+}
+
+/// @brief Sniffs the KTX2 file signature (the fixed 12-byte magic every .ktx2 file starts with, per the
+/// KTX 2.0 spec) directly off the bytes, rather than trusting mimeType/extension - some pipelines already
+/// pack textures as KTX2 inside the glTF (via KHR_texture_basisu or just a raw .ktx2 uri/bufferView with no
+/// declared mimeType), and re-running them through toktx is both wasteful and pointless
+auto isKtx2(std::span<const uint8_t> data) -> bool {
+	static constexpr std::array<uint8_t, 12> k_ktx2_magic {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+	return data.size() >= k_ktx2_magic.size() && std::equal(k_ktx2_magic.begin(), k_ktx2_magic.end(), data.begin());
+}
+
+/// @brief Resolves an image's raw file bytes (this importer always parses with images_as_is, so these are
+/// undecoded PNG/JPEG bytes, not pixels) from whichever of the three ways glTF can store image data is
+/// actually present: an embedded GLB bufferView, a base64 data: URI, or a URI pointing at an external file
+/// relative to the source .gltf/.glb. Returns an empty vector (and logs) if none of these produced data -
+/// callers must not assume a non-empty result
+auto loadImageBytes(const tg3_model& model, const tg3_image& img, const std::filesystem::path& base_dir, size_t index)
+    -> std::vector<uint8_t> {
+	if (img.buffer_view != -1) {
+		const auto& bv = model.buffer_views[img.buffer_view];
+		const auto& buf = model.buffers[bv.buffer];
+		const uint8_t* raw = buf.data.data + bv.byte_offset;
+		return {raw, raw + bv.byte_length};
+	}
+
+	const std::string uri(img.uri.data, img.uri.len);
+	if (uri.empty()) {
+		TOAST_ERROR("AssetManager", "Image {} has neither a bufferView nor a uri; skipping", index);
+		return {};
+	}
+
+	if (uri.starts_with("data:")) {
+		const auto comma = uri.find(',');
+		if (comma == std::string::npos) {
+			TOAST_ERROR("AssetManager", "Image {} has a malformed data URI; skipping", index);
+			return {};
+		}
+		return decodeBase64(std::string_view(uri).substr(comma + 1));
+	}
+
+	const std::filesystem::path file_path = base_dir / percentDecode(uri);
+	std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+	if (!file) {
+		TOAST_ERROR("AssetManager", "Image {} references '{}', which could not be opened", index, file_path.string());
+		return {};
+	}
+
+	const auto size = file.tellg();
+	file.seekg(0, std::ios::beg);
+	std::vector<uint8_t> data(static_cast<size_t>(size));
+	file.read(reinterpret_cast<char*>(data.data()), size);
+	return data;
+}
+
+/// @brief Looks up an integer field nested inside a named glTF extension object (e.g. KHR_texture_basisu's
+/// "source"). tinygltf3 has no first-class struct field for this - extensions it doesn't specifically model
+/// are only exposed as generic tg3_value trees off tg3_extras_ext::extensions
+auto findExtensionInt(const tg3_extras_ext& ext, std::string_view ext_name, std::string_view key) -> int32_t {
+	for (uint32_t i = 0; i < ext.extensions_count; ++i) {
+		const auto& e = ext.extensions[i];
+		if (std::string_view(e.name.data, e.name.len) != ext_name) {
+			continue;
+		}
+		if (e.value.type != TG3_VALUE_OBJECT) {
+			return -1;
+		}
+		for (uint32_t j = 0; j < e.value.object_count; ++j) {
+			const auto& kv = e.value.object_data[j];
+			if (kv.value.type == TG3_VALUE_INT && std::string_view(kv.key.data, kv.key.len) == key) {
+				return static_cast<int32_t>(kv.value.int_val);
+			}
+		}
+		return -1;
+	}
+	return -1;
+}
+
+}    // namespace
+
 auto generateIntermediates(const std::filesystem::path& path) {
 	const glm::mat4 gltf_y_up_to_engine_z_up = glm::rotate(glm::mat4(1.0F), glm::radians(90.0F), glm::vec3(1.0F, 0.0F, 0.0F));
 	const glm::mat4 engine_z_up_to_gltf_y_up = glm::transpose(gltf_y_up_to_engine_z_up);
@@ -78,9 +208,21 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	std::vector<std::vector<int>> mesh_prim_to_file(model.meshes_count);
 	int prim_counter = 0;
 
+	// Disambiguates mesh base names so two distinct meshes can never collide on the same .tmesh filename
+	std::unordered_map<std::string, int> mesh_name_counts;
+
 	for (size_t i = 0; i < model.meshes_count; ++i) {
 		const auto& m = model.meshes[i];
-		const std::string base_name = !mesh_node_name[i].empty() ? mesh_node_name[i] : std::string(m.name.data, m.name.len);
+		std::string base_name = !mesh_node_name[i].empty() ? mesh_node_name[i] : std::string(m.name.data, m.name.len);
+		if (base_name.empty()) {
+			base_name = "mesh_" + std::to_string(i);
+		}
+		if (auto it = mesh_name_counts.find(base_name); it != mesh_name_counts.end()) {
+			base_name = base_name + "_" + std::to_string(it->second);
+			++it->second;
+		} else {
+			mesh_name_counts[base_name] = 1;
+		}
 
 		auto accessor_bytes = [&](int acc_idx) -> const uint8_t* {
 			const auto& acc = model.accessors[acc_idx];
@@ -111,7 +253,12 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			};
 
 			int pos_idx = find_attr("POSITION");
-			TOAST_ASSERT(pos_idx != -1, "AssetManager", "Mesh has no POSITION attribute");
+			if (pos_idx == -1) {
+				// TOAST_ASSERT is compiled out in Release and isn't guaranteed to halt in Debug either -
+				// falling through would index model.accessors[-1] next, straight out-of-bounds
+				TOAST_ERROR("AssetManager", "Mesh primitive {} of mesh {} has no POSITION attribute; aborting import", pi, i);
+				return;
+			}
 			int norm_idx = find_attr("NORMAL");
 			int uv_idx = find_attr("TEXCOORD_0");
 			int tan_idx = find_attr("TANGENT");
@@ -148,7 +295,12 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				}
 			}
 
-			TOAST_ASSERT(prim.indices != -1, "AssetManager", "Mesh has no indices");
+			if (prim.indices == -1) {
+				// Non-indexed primitives are technically valid glTF, but this importer doesn't support them
+				// (no triangulation-on-the-fly path) - fail cleanly instead of indexing model.accessors[-1]
+				TOAST_ERROR("AssetManager", "Mesh primitive {} of mesh {} has no indices; aborting import", pi, i);
+				return;
+			}
 			const auto& idx_acc = model.accessors[prim.indices];
 			const uint8_t* idx_data = accessor_bytes(prim.indices);
 			std::vector<assets::Mesh::Index> indices(idx_acc.count);
@@ -181,13 +333,31 @@ auto generateIntermediates(const std::filesystem::path& path) {
 		std::string format;
 	};
 
-	std::vector<TextureData> textures;
-	textures.reserve(model.textures_count);
+	// Index-aligned with model.textures (resized, not reserved+push_back'd) - tex_uid() below indexes this
+	// by the raw glTF texture index, so a failed/skipped image must still leave a (empty) slot behind
+	// rather than shifting every later texture's index down by one
+	std::vector<TextureData> textures(model.textures_count);
+
+	// Disambiguates texture names so two distinct images never collide on disk - a silent overwrite would
+	// leave whichever material referenced the earlier one pointing at the wrong image
+	std::unordered_map<std::string, int> texture_name_counts;
 
 	for (size_t i = 0; i < model.textures_count; i++) {
 		const auto& texture = model.textures[i];
-		TOAST_ASSERT(texture.source != -1, "AssetManager", "Texture has no image source");
-		const auto& img = model.images[texture.source];
+
+		// KHR_texture_basisu (used by exporters that ship pre-compressed KTX2 textures, sometimes marked
+		// extensionsRequired) points at its image through a nested extension object instead of the plain
+		// "source" property - tinygltf3 doesn't parse that extension into a dedicated field, so every such
+		// texture would otherwise read source == -1 and get skipped even though the image is right there
+		const int32_t source = texture.source != -1 ? texture.source : findExtensionInt(texture.ext, "KHR_texture_basisu", "source");
+		if (source == -1) {
+			// TOAST_ASSERT is compiled out in Release and isn't guaranteed to halt in Debug either - this
+			// must be a real early-out, not just a diagnostic, since indexing model.images[-1] next would be
+			// straight out-of-bounds
+			TOAST_ERROR("AssetManager", "Texture {} has no image source; skipping", i);
+			continue;
+		}
+		const auto& img = model.images[source];
 
 		std::string name(img.name.data, img.name.len);
 		if (name.empty()) {
@@ -198,23 +368,63 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				name = "texture_" + std::to_string(i);
 			}
 		}
+		if (auto it = texture_name_counts.find(name); it != texture_name_counts.end()) {
+			name = name + "_" + std::to_string(it->second);
+			++it->second;
+		} else {
+			texture_name_counts[name] = 1;
+		}
 
-		TOAST_ASSERT(img.buffer_view != -1, "AssetManager", "Embedded image has no buffer view");
-		const auto& img_bv = model.buffer_views[img.buffer_view];
-		const auto& img_buf = model.buffers[img_bv.buffer];
-		const uint8_t* img_raw = img_buf.data.data + img_bv.byte_offset;
+		auto data = loadImageBytes(model, img, path.parent_path(), i);
 
-		textures.push_back({
-		  .data = std::vector<uint8_t>(img_raw, img_raw + img_bv.byte_length),
+		std::string format;
+		if (isKtx2(data)) {
+			// Already compressed - skip straight past mimeType/extension guessing entirely so this never
+			// gets routed through a PNG/JPEG path (and, downstream, a wasted re-run through toktx)
+			format = "image/ktx2";
+		} else {
+			format = std::string(img.mime_type.data, img.mime_type.len);
+			if (format.empty()) {
+				// External file references commonly omit mimeType - the extension is the only signal left
+				const std::string uri(img.uri.data, img.uri.len);
+				const std::string ext = std::filesystem::path(uri).extension().string();
+				format = (ext == ".jpg" || ext == ".jpeg") ? "image/jpeg" : "image/png";
+			}
+		}
+
+		textures[i] = {
+		  .data = std::move(data),
 		  .name = std::move(name),
-		  .format = std::string(img.mime_type.data, img.mime_type.len),
-		});
+		  .format = std::move(format),
+		};
 	}
 	TOAST_TRACE("AssetManager", "Imported {} textures", textures.size());
 
 	// Materials
 	std::vector<toml::table> materials;
 	materials.reserve(model.materials_count);
+
+	// Resolved upfront - this is the single source of truth for a material's on-disk/reference identity,
+	// used both for the .tmat filename below and every MeshNode's "material" reference in walk_node().
+	// Previously walk_node() referenced the raw glTF material name directly, which silently diverged from
+	// the name actually used to save the .tmat file whenever a material had no name (very common from
+	// non-Blender exporters) or two materials shared a name - the scene node's material reference would
+	// then never match any UID during the C# import patch step and end up unset
+	std::unordered_map<std::string, int> material_name_counts;
+	std::vector<std::string> material_file_names(model.materials_count);
+	for (size_t i = 0; i < model.materials_count; i++) {
+		std::string name(model.materials[i].name.data, model.materials[i].name.len);
+		if (name.empty()) {
+			name = "material_" + std::to_string(i);
+		}
+		if (auto it = material_name_counts.find(name); it != material_name_counts.end()) {
+			name = name + "_" + std::to_string(it->second);
+			++it->second;
+		} else {
+			material_name_counts[name] = 1;
+		}
+		material_file_names[i] = name;
+	}
 
 	for (size_t i = 0; i < model.materials_count; i++) {
 		const auto& mat = model.materials[i];
@@ -227,10 +437,9 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			return textures[tex_idx].name;
 		};
 
-		std::string mat_name(mat.name.data, mat.name.len);
 		toml::table material_table;
 		material_table.insert("uid", "");
-		material_table.insert("name", mat_name);
+		material_table.insert("name", material_file_names[i]);
 		material_table.insert("vertex", "NOT IMPLEMENTED");      // TODO: Replace with UID of default vertex shader
 		material_table.insert("fragment", "NOT IMPLEMENTED");    // TODO: Replace with UID of default fragment shader
 
@@ -382,8 +591,7 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				n["params"]["mesh"] = mesh_files[prim_files[0]].file_name;
 				const auto& prim = gltf_mesh.primitives[0];
 				if (prim.material != -1) {    // TODO: Update field names when MeshNode fields are created
-					n["params"]["material"] =
-					    std::string(model.materials[prim.material].name.data, model.materials[prim.material].name.len);
+					n["params"]["material"] = material_file_names[prim.material];
 				}
 			} else {
 				n["type"] = "toast::Node3D";
@@ -399,8 +607,7 @@ auto generateIntermediates(const std::filesystem::path& path) {
 					child["transform"]["scl"] = {1.0f, 1.0f, 1.0f};
 					child["params"]["mesh"] = fname;
 					if (prim.material != -1) {    // TODO: Update field names when MeshNode fields are created
-						child["params"]["material"] =
-						    std::string(model.materials[prim.material].name.data, model.materials[prim.material].name.len);
+						child["params"]["material"] = material_file_names[prim.material];
 					}
 					n["children"].push_back(std::move(child));
 				}
@@ -425,12 +632,11 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			if (light.type == "directional") {
 				n["type"] = "toast::DirectionalLight";
 			} else if (light.type == "point") {
-				n["type"] = "toast::PointLightNode";
+				n["type"] = "toast::PointLight";
 			} else if (light.type == "spot") {
-				n["type"] = "toast::SpotLightNode";
+				n["type"] = "toast::Spotlight";
 			}
 
-			// TODO: Change this once the lights have been made
 			n["params"]["color"] = {light.color[0], light.color[1], light.color[2]};
 			n["params"]["intensity"] = light.intensity;
 			if (light.range > 0.0) {
@@ -490,7 +696,10 @@ auto generateIntermediates(const std::filesystem::path& path) {
 
 	// Save textures
 	for (const auto& tex : textures) {
-		std::string_view ext = (tex.format == "image/jpeg") ? ".jpg" : ".png";
+		if (tex.data.empty()) {
+			continue;    // failed to load (already logged) - don't write a bogus empty file
+		}
+		std::string_view ext = tex.format == "image/jpeg" ? ".jpg" : tex.format == "image/ktx2" ? ".ktx2" : ".png";
 		std::filesystem::path out = cache_dir / (tex.name + std::string(ext));
 		std::ofstream f(out, std::ios::binary);
 		f.write(reinterpret_cast<const char*>(tex.data.data()), tex.data.size());
@@ -499,12 +708,9 @@ auto generateIntermediates(const std::filesystem::path& path) {
 
 	// Save materials
 	for (size_t i = 0; i < materials.size(); ++i) {
-		const auto& mat = materials[i];
-		const auto* name_node = mat.get_as<std::string>("name");
-		std::string name = (name_node && !name_node->get().empty()) ? name_node->get() : "material_" + std::to_string(i);
-		std::filesystem::path out = cache_dir / (name + ".tmat");
+		const std::filesystem::path out = cache_dir / (material_file_names[i] + ".tmat");
 		std::ofstream f(out);
-		f << mat;
+		f << materials[i];
 	}
 	TOAST_TRACE("AssetManager", "Saved {} materials", materials.size());
 
@@ -538,7 +744,7 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 
 		basic.fields.push_back({"m_uid", toast::FieldType::uid_t, false, uid});
 		basic.fields.push_back({"m_name", toast::FieldType::string_t, false, basic.name});
-		basic.fields.push_back({"m_enabled", toast::FieldType::bool_t, false, true});
+		basic.fields.push_back({"m_local_enabled", toast::FieldType::bool_t, false, true});
 		if (!parent_uid_str.empty()) {
 			basic.fields.push_back({"m_parent", toast::FieldType::uid_t, false, toast::UID(toast::UID::fromString(parent_uid_str))});
 		}
@@ -589,7 +795,47 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 				}
 			}
 		}
-		// TODO: Update field names when Camera/Light classes are created
+
+		// toast::AmbientLight has no glTF equivalent (KHR_lights_punctual only covers
+		// directional/point/spot), so it never appears here - nothing to map for it
+		const bool is_light =
+		    basic.type == "toast::DirectionalLight" || basic.type == "toast::PointLight" || basic.type == "toast::Spotlight";
+		if (is_light && n.contains("params")) {
+			const auto& params = n["params"];
+
+			if (params.contains("color")) {
+				const auto& c = params["color"];
+				basic.fields.push_back({
+				  "m_light_color", toast::FieldType::vec3_t, false, glm::vec3 {c[0].get<float>(), c[1].get<float>(), c[2].get<float>()}
+				});
+			}
+			if (params.contains("intensity")) {
+				// glTF intensity is physical (candela for point/spot, lux for directional); this engine's
+				// m_intensity is a plain unitless shading multiplier with no such conversion - passed through
+				// as-is since there's no established target scale to convert to yet
+				basic.fields.push_back({"m_intensity", toast::FieldType::float_t, false, params["intensity"].get<float>()});
+			}
+
+			// PointLight/Spotlight only: glTF's range (0/absent = infinite) has no equivalent in this
+			// engine's clustered-lighting model, which requires a finite culling radius - when range is
+			// absent, leave m_attenuation at its class default rather than writing a bogus 0
+			if ((basic.type == "toast::PointLight" || basic.type == "toast::Spotlight") && params.contains("range")) {
+				basic.fields.push_back({"m_attenuation", toast::FieldType::float_t, false, params["range"].get<float>()});
+			}
+
+			if (basic.type == "toast::Spotlight") {
+				if (params.contains("inner_cone_angle")) {
+					basic.fields.push_back(
+					    {"m_inner_radius", toast::FieldType::float_t, false, glm::degrees(params["inner_cone_angle"].get<float>())}
+					);
+				}
+				if (params.contains("outer_cone_angle")) {
+					basic.fields.push_back(
+					    {"m_outer_radius", toast::FieldType::float_t, false, glm::degrees(params["outer_cone_angle"].get<float>())}
+					);
+				}
+			}
+		}
 
 		prefab.nodes.push_back(std::move(basic));
 
@@ -610,12 +856,24 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 extern "C" {
 
 void gltf_generate_intermediates(const char* path) noexcept {
-	std::filesystem::path dir {path};
-	assets::generateIntermediates(dir);
+	// Both FFI entry points are noexcept, so an uncaught exception anywhere below (json parsing, std::stoi
+	// on a malformed percent-escape, std::any_cast, std::filesystem errors, ...) would otherwise call
+	// std::terminate() - converting it to a logged error instead means a bad/unusual input file fails
+	// loudly and diagnosably rather than crashing the whole editor or silently producing zero output
+	try {
+		std::filesystem::path dir {path};
+		assets::generateIntermediates(dir);
+	} catch (const std::exception& e) { TOAST_ERROR("AssetManager", "GLTF import failed: {}", e.what()); } catch (...) {
+		TOAST_ERROR("AssetManager", "GLTF import failed with an unrecognized exception");
+	}
 }
 
 void gltf_create_tnode(const char* json_path, const char* output_path) noexcept {
-	std::ifstream f(json_path);
-	assets::jsonToTnode(nlohmann::json::parse(f), std::filesystem::path(output_path));
+	try {
+		std::ifstream f(json_path);
+		assets::jsonToTnode(nlohmann::json::parse(f), std::filesystem::path(output_path));
+	} catch (const std::exception& e) {
+		TOAST_ERROR("AssetManager", "GLTF scene-to-tnode conversion failed: {}", e.what());
+	} catch (...) { TOAST_ERROR("AssetManager", "GLTF scene-to-tnode conversion failed with an unrecognized exception"); }
 }
 }

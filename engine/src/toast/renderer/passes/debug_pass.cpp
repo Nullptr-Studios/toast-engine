@@ -4,11 +4,14 @@
 
 #include "debug_pass.hpp"
 
+#include "../clustered_lighting_constants.hpp"
 #include "../shader_compiler.hpp"
 #include "../vulkan_core.hpp"
 #include "../vulkan_debug.hpp"
 #include "../vulkan_renderer.hpp"
+#include "cluster_lighting_pass.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +19,9 @@
 #include <format>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
+#include <imgui_impl_vulkan.h>
+#include <string>
 #include <toast/log.hpp>
 
 namespace renderer {
@@ -159,7 +165,11 @@ void appendRing(std::vector<DebugVertex>& out, int axis, float radius, float thi
 
 }    // namespace
 
-DebugPass::DebugPass(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent) {
+DebugPass::DebugPass(
+    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent,
+    const ClusterLightingPass& cluster_lighting_pass
+)
+    : m_cluster_lighting_pass(&cluster_lighting_pass) {
 	m_shader_layout.rebuild(core, "debug");
 
 	const vk::VertexInputBindingDescription position_only_binding(0, sizeof(glm::vec3), vk::VertexInputRate::eVertex);
@@ -240,14 +250,187 @@ DebugPass::DebugPass(const renderer::VulkanCore& core, vk::Format color_format, 
 	}
 
 	createResources(core);
+	initImGui(core, color_format, depth_format);
 }
 
-void DebugPass::update(uint32_t frame_index, float dt) {
-	(void)dt;
+DebugPass::~DebugPass() {
+	if (m_imgui_ready) {
+		ImGui_ImplVulkan_Shutdown();
+		ImGui::DestroyContext();
+	}
+}
 
+namespace {
+
+/// @brief Maps the SDL-keycode encoding used by event::WindowKey (a printable codepoint, or
+/// (1<<30)|scancode for non-printable keys) to the small subset of ImGuiKey this engine's C# side actually
+/// forwards (see ViewportControl.axaml.cs's MapKey())
+auto sdlKeyToImGuiKey(int32_t key) -> ImGuiKey {
+	constexpr int32_t k_scancode_mask = 1 << 30;
+
+	if (key >= 'a' && key <= 'z') {
+		return static_cast<ImGuiKey>(ImGuiKey_A + (key - 'a'));
+	}
+	if (key >= '0' && key <= '9') {
+		return static_cast<ImGuiKey>(ImGuiKey_0 + (key - '0'));
+	}
+
+	switch (key) {
+		case 32: return ImGuiKey_Space;
+		case 13: return ImGuiKey_Enter;
+		case 27: return ImGuiKey_Escape;
+		case 8: return ImGuiKey_Backspace;
+		case 9: return ImGuiKey_Tab;
+		case 127: return ImGuiKey_Delete;
+		default: break;
+	}
+
+	if ((key & k_scancode_mask) != 0) {
+		switch (key & ~k_scancode_mask) {
+			case 79: return ImGuiKey_RightArrow;
+			case 80: return ImGuiKey_LeftArrow;
+			case 81: return ImGuiKey_DownArrow;
+			case 82: return ImGuiKey_UpArrow;
+			case 225: return ImGuiKey_LeftShift;
+			case 229: return ImGuiKey_RightShift;
+			case 224: return ImGuiKey_LeftCtrl;
+			case 228: return ImGuiKey_RightCtrl;
+			case 226: return ImGuiKey_LeftAlt;
+			case 230: return ImGuiKey_RightAlt;
+			case 58: return ImGuiKey_F1;
+			case 59: return ImGuiKey_F2;
+			case 60: return ImGuiKey_F3;
+			case 61: return ImGuiKey_F4;
+			case 62: return ImGuiKey_F5;
+			case 63: return ImGuiKey_F6;
+			case 64: return ImGuiKey_F7;
+			case 65: return ImGuiKey_F8;
+			case 66: return ImGuiKey_F9;
+			case 67: return ImGuiKey_F10;
+			case 68: return ImGuiKey_F11;
+			case 69: return ImGuiKey_F12;
+			default: break;
+		}
+	}
+
+	return ImGuiKey_None;
+}
+
+/// @brief Cluster light-count -> color ramp for the ImGui cluster-grid overlay - mirrors
+/// clusterHeatmapColor() in mesh.slang exactly, so the overlay and the per-pixel shader heatmap agree
+auto clusterHeatmapColorImGui(uint32_t light_count) -> ImVec4 {
+	constexpr float k_heatmap_max_lights = 8.0f;
+	const float t = std::clamp(static_cast<float>(light_count) / k_heatmap_max_lights, 0.0f, 1.0f);
+
+	const ImVec4 c0(0.0f, 0.0f, 1.0f, 1.0f);
+	const ImVec4 c1(0.0f, 1.0f, 0.0f, 1.0f);
+	const ImVec4 c2(1.0f, 1.0f, 0.0f, 1.0f);
+	const ImVec4 c3(1.0f, 0.0f, 0.0f, 1.0f);
+
+	auto lerp = [](const ImVec4& a, const ImVec4& b, float u) {
+		return ImVec4(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u, 1.0f);
+	};
+
+	if (t < 0.333f) {
+		return lerp(c0, c1, t / 0.333f);
+	}
+	if (t < 0.667f) {
+		return lerp(c1, c2, (t - 0.333f) / 0.334f);
+	}
+	return lerp(c2, c3, (t - 0.667f) / 0.333f);
+}
+
+}    // namespace
+
+void DebugPass::update(uint32_t frame_index, float dt) {
 	const auto* frame = VulkanRenderer::instance->renderingFrame();
 	if (frame == nullptr || frame_index >= m_line_vertex_buffers.size()) {
 		return;
+	}
+
+	if (m_imgui_ready) {
+		ImGuiIO& io = ImGui::GetIO();
+		const auto& input = frame->imgui_input;
+
+		io.DisplaySize = ImVec2(frame->viewport_extent.x, frame->viewport_extent.y);
+		io.DeltaTime = std::max(dt, 0.0001f);
+
+		if (input.mouse_pos.x >= 0.0f && input.mouse_pos.y >= 0.0f) {
+			io.AddMousePosEvent(input.mouse_pos.x, input.mouse_pos.y);
+		}
+		for (size_t i = 0; i < input.mouse_down.size(); ++i) {
+			io.AddMouseButtonEvent(static_cast<int>(i), input.mouse_down[i]);
+		}
+		if (input.mouse_wheel_x != 0.0f || input.mouse_wheel_y != 0.0f) {
+			io.AddMouseWheelEvent(input.mouse_wheel_x, input.mouse_wheel_y);
+		}
+		for (const auto& key_event : input.key_events) {
+			const ImGuiKey imgui_key = sdlKeyToImGuiKey(key_event.key);
+			if (imgui_key != ImGuiKey_None) {
+				io.AddKeyEvent(imgui_key, key_event.down);
+			}
+		}
+		for (const uint32_t codepoint : input.char_events) {
+			io.AddInputCharacter(codepoint);
+		}
+
+		ImGui_ImplVulkan_NewFrame();
+		ImGui::NewFrame();
+
+		if (ImGui::Begin("Toast Debug")) {
+			ImGui::Text("Frame time: %.3f ms (%.1f FPS)", dt * 1000.0f, dt > 0.0f ? 1.0f / dt : 0.0f);
+			ImGui::Text("Mesh instances: %zu", frame->mesh_instances.size());
+			ImGui::Text("Lights: %zu", frame->lights.size());
+			ImGui::Separator();
+			ImGui::Text("Render mode: %s", frame->render_mode == 1 ? "Cluster Heatmap (toolbar Mode button)" : "Lit");
+			if (frame->render_mode == 1) {
+				ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "Blue = 0 lights/cluster");
+				ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "Red = 8+ lights/cluster");
+			}
+		}
+		ImGui::End();
+
+		// Cluster-heatmap overlay: divides the viewport into the 16x9 XY tile grid (matching
+		// clustered_lighting_constants.hpp), fills each cell by its worst-case light count across all Z
+		// slices, and labels it with the exact number - the shader heatmap already color-codes per-pixel
+		// using the correct depth-derived Z slice, this adds the screen-space grid + exact counts on top
+		if (frame->render_mode == 1 && m_cluster_lighting_pass != nullptr) {
+			const auto counts = m_cluster_lighting_pass->getClusterLightGridCounts(frame_index);
+			if (!counts.empty()) {
+				using namespace clustered_lighting;
+
+				ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+				const float cell_w = frame->viewport_extent.x / static_cast<float>(k_cluster_dim_x);
+				const float cell_h = frame->viewport_extent.y / static_cast<float>(k_cluster_dim_y);
+
+				for (uint32_t ty = 0; ty < k_cluster_dim_y; ++ty) {
+					for (uint32_t tx = 0; tx < k_cluster_dim_x; ++tx) {
+						uint32_t max_count = 0;
+						for (uint32_t tz = 0; tz < k_cluster_dim_z; ++tz) {
+							const uint32_t idx = tx + ty * k_cluster_dim_x + tz * k_cluster_dim_x * k_cluster_dim_y;
+							if (counts[idx] > max_count) {
+								max_count = counts[idx];
+							}
+						}
+
+						const ImVec2 cell_min(static_cast<float>(tx) * cell_w, static_cast<float>(ty) * cell_h);
+						const ImVec2 cell_max(cell_min.x + cell_w, cell_min.y + cell_h);
+
+						const ImVec4 heat = clusterHeatmapColorImGui(max_count);
+						draw_list->AddRectFilled(cell_min, cell_max, ImGui::ColorConvertFloat4ToU32(ImVec4(heat.x, heat.y, heat.z, 0.30f)));
+						draw_list->AddRect(cell_min, cell_max, IM_COL32(255, 255, 255, 50));
+
+						const std::string label = std::format("{}", max_count);
+						const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
+						const ImVec2 text_pos(cell_min.x + (cell_w - text_size.x) * 0.5f, cell_min.y + (cell_h - text_size.y) * 0.5f);
+						draw_list->AddText(ImVec2(text_pos.x + 1, text_pos.y + 1), IM_COL32(0, 0, 0, 200), label.c_str());
+						draw_list->AddText(text_pos, IM_COL32(255, 255, 255, 255), label.c_str());
+					}
+				}
+			}
+		}
+
+		ImGui::Render();
 	}
 
 	const auto& core = VulkanRenderer::instance->getCore();
@@ -306,7 +489,11 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 	if (line_vertex_count > 0 && m_line_pipeline.isReady()) {
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_line_pipeline.getPipeline());
 
-		const DrawPushConstants pc {};    // identity - line vertices are already in world space
+		// glm::mat4 has no default member initializer and GLM_FORCE_CTOR_INIT isn't defined anywhere in this
+		// project, so a default-constructed DrawPushConstants{} leaves model uninitialized, not identity -
+		// must set it explicitly. Line vertices are already in world space, so identity is what we want
+		DrawPushConstants pc {};
+		pc.model = glm::mat4(1.0f);
 		cmd.pushConstants(*m_shader_layout.getPipelineLayout(), vk::ShaderStageFlagBits::eVertex, 0, sizeof(DrawPushConstants), &pc);
 
 		cmd.bindVertexBuffers(
@@ -389,6 +576,15 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 			}
 		}
 	}
+
+	// ImGui draws last, always on top - shares this pass's already-open dynamic rendering scope, no
+	// separate begin/end needed
+	if (m_imgui_ready) {
+		ImDrawData* draw_data = ImGui::GetDrawData();
+		if (draw_data != nullptr) {
+			ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);
+		}
+	}
 }
 
 void DebugPass::createResources(const renderer::VulkanCore& core) {
@@ -434,6 +630,49 @@ void DebugPass::createResources(const renderer::VulkanCore& core) {
 	createTranslateGizmoGeometry(core);
 	createRotateGizmoGeometry(core);
 	createScaleGizmoGeometry(core);
+}
+
+void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format) {
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO();
+	io.BackendPlatformName = "toast_engine (manual input feed)";
+	io.BackendRendererName = "imgui_impl_vulkan";
+
+	// No OS cursor/clipboard integration yet (input comes from Avalonia via events, not a platform backend) -
+	// keep ImGui from trying to touch either
+	io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+	io.SetClipboardTextFn = nullptr;
+	io.GetClipboardTextFn = nullptr;
+
+	static const vk::Format color_formats[1] {color_format};
+	vk::PipelineRenderingCreateInfo rendering_ci {};
+	rendering_ci.colorAttachmentCount = 1;
+	rendering_ci.pColorAttachmentFormats = color_formats;
+	// Must match the actual depth attachment bound when this pass's dynamic-rendering scope is begun (this
+	// pass shares that scope with MeshPass's draws), even though ImGui itself never reads/writes depth -
+	// vkCmdBeginRendering with a depth attachment present requires every pipeline drawn within it to declare
+	// a matching depthAttachmentFormat, or validation flags every single draw call
+	rendering_ci.depthAttachmentFormat = depth_format;
+
+	ImGui_ImplVulkan_InitInfo init_info {};
+	init_info.ApiVersion = VK_API_VERSION_1_4;
+	init_info.Instance = *core.getInstance();
+	init_info.PhysicalDevice = *core.getPhysicalDevice();
+	init_info.Device = *core.getDevice();
+	init_info.QueueFamily = core.getGraphicsQueueFamilyIndex();
+	init_info.Queue = core.getGraphicsQueue();
+	init_info.DescriptorPoolSize = 8;    // backend creates and owns its own pool at this size
+	init_info.MinImageCount = 2;
+	init_info.ImageCount = VulkanRenderer::k_frames_in_flight;
+	init_info.UseDynamicRendering = true;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo = static_cast<VkPipelineRenderingCreateInfo>(rendering_ci);
+
+	m_imgui_ready = ImGui_ImplVulkan_Init(&init_info);
+	if (!m_imgui_ready) {
+		TOAST_ERROR("DebugPass", "Failed to initialize ImGui Vulkan backend");
+		ImGui::DestroyContext();
+	}
 }
 
 void DebugPass::createGridGeometry(const renderer::VulkanCore& core) {

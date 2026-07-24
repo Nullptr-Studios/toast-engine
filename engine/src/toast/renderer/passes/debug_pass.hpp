@@ -15,6 +15,7 @@
 
 namespace renderer {
 class VulkanCore;
+class ClusterLightingPass;
 
 /**
  * @brief Editor/debug visualization pass: ground grid, immediate-mode debug lines, and axis gizmos
@@ -26,7 +27,12 @@ class VulkanCore;
  */
 class DebugPass : public IRenderPass {
 public:
-	DebugPass(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent);
+	DebugPass(
+	    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent,
+	    const ClusterLightingPass& cluster_lighting_pass
+	);
+
+	~DebugPass() override;
 
 	void record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) override;
 
@@ -61,6 +67,10 @@ private:
 	};
 
 	void createResources(const renderer::VulkanCore& core);
+	/// @brief Sets up a Dear ImGui context + the Vulkan backend, sharing this pass's dynamic-rendering scope.
+	/// Input is fed from RenderFrame::imgui_input (resolved main-thread-side, same pattern as the gizmo state)
+	/// since ImGui itself isn't thread-safe and NewFrame()/Render() below both run on the render thread
+	void initImGui(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format);
 	void createGridGeometry(const renderer::VulkanCore& core);
 	void createGizmoGeometry(const renderer::VulkanCore& core);
 	void createTranslateGizmoGeometry(const renderer::VulkanCore& core);
@@ -100,6 +110,15 @@ private:
 	// Scale gizmo, 3 cube-tipped axis handles
 	vma::raii::Buffer m_scale_gizmo_vertex_buffer = nullptr;
 	std::array<GizmoHandleRange, 7> m_scale_gizmo_handles;
+
+	// Dear ImGui, for ad-hoc debug UI. Editor-viewport-only (this pass isn't constructed for the SDL/player
+	// window), so it doesn't need a platform backend - input is fed manually from RenderFrame::imgui_input
+	bool m_imgui_ready = false;
+
+	// Non-owning; used to read back cluster light counts for the cluster-heatmap overlay's text labels.
+	// Always valid - engine.cpp constructs ClusterLightingPass before this pass and keeps it alive for the
+	// renderer's lifetime
+	const ClusterLightingPass* m_cluster_lighting_pass = nullptr;
 };
 
 }

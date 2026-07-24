@@ -82,8 +82,15 @@ public partial class GltfImporter : IAssetImporter {
 		gltf_generate_intermediates(realSourcePath);
 
 		var tempDir = new DirectoryInfo(Path.Combine(Path.GetFullPath(ProjectContext.CachePath), name));
-		var files = tempDir.GetFiles();
-		if (files is null) throw new Exception($"Directory {tempDir.FullName} was empty");
+		// DirectoryInfo.GetFiles() never returns null (a missing/inaccessible dir throws instead), so this
+		// checked for the wrong failure mode - a native-side parse error that produced zero intermediates
+		// sailed straight through as an empty (not null) array and the import silently "succeeded" with
+		// nothing imported. gltf_generate_intermediates() logs the actual reason via TOAST_ERROR either way
+		var files = tempDir.Exists ? tempDir.GetFiles() : [];
+		if (files.Length == 0) {
+			throw new Exception(
+				$"GLTF import produced no intermediate files in {tempDir.FullName} - check the editor log for the underlying error");
+		}
 
 		var byExtension = files.GroupBy(f => f.Extension).ToDictionary(g => g.Key, g => g.ToList());
 
@@ -92,7 +99,13 @@ public partial class GltfImporter : IAssetImporter {
 		// Count total items for fractional progress
 		var meshes = byExtension.GetValueOrDefault(".tmesh") ?? [];
 		var textures = m_settings.ImportTextures
-			? (byExtension.GetValueOrDefault(".png") ?? []).Concat(byExtension.GetValueOrDefault(".jpg") ?? []).ToList()
+			? (byExtension.GetValueOrDefault(".png") ?? [])
+				.Concat(byExtension.GetValueOrDefault(".jpg") ?? [])
+				// The gltf importer already sniffs the KTX2 file signature and saves pre-compressed
+				// textures with a .ktx2 extension instead of guessing them into a .png/.jpg - picking
+				// those up here is what lets the loop below skip a redundant toktx re-encode
+				.Concat(byExtension.GetValueOrDefault(".ktx2") ?? [])
+				.ToList()
 			: [];
 		var materials = m_settings.ImportMaterials ? byExtension.GetValueOrDefault(".tmat") ?? [] : [];
 		var scenes = m_settings.GeneratePrefab ? byExtension.GetValueOrDefault(".json") ?? [] : [];
@@ -136,11 +149,27 @@ public partial class GltfImporter : IAssetImporter {
 				textureUids[texName] = uid;
 
 				log($"Texture {texName}");
-				log("Converting to KTX2...");
-				await KtxWriter.ConvertTexture(t.FullName, destPath, m_textureSettings, log);
+				if (t.Extension.Equals(".ktx2", StringComparison.OrdinalIgnoreCase)) {
+					log("Already KTX2 - copying directly...");
+					File.Copy(t.FullName, destPath, true);
+				} else {
+					log("Converting to KTX2...");
+					await KtxWriter.ConvertTexture(t.FullName, destPath, m_textureSettings, log);
+				}
 
 				log("Generating thumbnail...");
-				await Task.Run(() => ThumbnailService.Generate(t.FullName, uid));
+				try {
+					// ImageMagick can't decode a .ktx2 (a compressed GPU texture container, not a raster
+					// format) - decode it natively instead of reading the pre-conversion raster source
+					if (t.Extension.Equals(".ktx2", StringComparison.OrdinalIgnoreCase)) {
+						await Task.Run(() => ThumbnailService.GenerateFromKtx2(t.FullName, uid));
+					} else {
+						await Task.Run(() => ThumbnailService.Generate(t.FullName, uid));
+					}
+				} catch (Exception ex) {
+					// A missing thumbnail is cosmetic; losing the whole import over it is not
+					log($"Thumbnail generation failed, continuing without one: {ex.Message}");
+				}
 
 				log("Writing .meta sidecar...");
 				var header = new MetaHeader
@@ -165,7 +194,13 @@ public partial class GltfImporter : IAssetImporter {
 				log($"Material {matName}");
 				log("Creating .tmat file...");
 				var toml = await File.ReadAllTextAsync(m.FullName);
-				foreach (var (texName, texUid) in textureUids) toml = toml.Replace($"\"{texName}\"", $"\"{texUid}\"");
+				// toml++ serializes plain identifier-safe strings as single-quoted TOML literal strings
+				// (e.g. 'Antenna_Metal_BaseColor'), not double-quoted basic strings - matching only the
+				// double-quoted form here meant this replace silently never matched, so every material kept
+				// referencing the raw glTF texture name instead of its UID
+				foreach (var (texName, texUid) in textureUids) {
+					toml = toml.Replace($"'{texName}'", $"'{texUid}'").Replace($"\"{texName}\"", $"\"{texUid}\"");
+				}
 				await File.WriteAllTextAsync(destPath, toml);
 
 				log("Writing .meta sidecar...");

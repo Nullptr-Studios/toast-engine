@@ -21,7 +21,7 @@ auto getLayoutDesc(std::string_view key) -> PipelineLayoutDesc {
 		set0.bindings.push_back(b0);
 		desc.sets.push_back(std::move(set0));
 
-		// Set 1: per-material data, one descriptor set per Material - binding 0 = albedo combined image sampler
+		// Set 1: per-material data, one descriptor set per Material - binding 0 = albedo, binding 1 = normal map
 		SetLayoutDesc set1;
 		DescriptorBindingDesc b1;
 		b1.binding = 0;
@@ -29,13 +29,43 @@ auto getLayoutDesc(std::string_view key) -> PipelineLayoutDesc {
 		b1.descriptor_count = 1;
 		b1.stage_flags = vk::ShaderStageFlagBits::eFragment;
 		set1.bindings.push_back(b1);
+
+		DescriptorBindingDesc b1_normal;
+		b1_normal.binding = 1;
+		b1_normal.descriptor_type = vk::DescriptorType::eCombinedImageSampler;
+		b1_normal.descriptor_count = 1;
+		b1_normal.stage_flags = vk::ShaderStageFlagBits::eFragment;
+		set1.bindings.push_back(b1_normal);
+
 		desc.sets.push_back(std::move(set1));
 
-		// Push constants: model matrix (64 bytes, vertex) + material color (16 bytes, fragment)
+		// Set 2: clustered lighting data from ClusterLightingPass, one descriptor set per frame-in-flight -
+		// binding 0 = ClusterParams UBO, binding 1 = Lights SSBO, binding 2 = ClusterLightGrid SSBO,
+		// binding 3 = LightIndexList SSBO
+		SetLayoutDesc set2;
+
+		DescriptorBindingDesc b2_params;
+		b2_params.binding = 0;
+		b2_params.descriptor_type = vk::DescriptorType::eUniformBuffer;
+		b2_params.descriptor_count = 1;
+		b2_params.stage_flags = vk::ShaderStageFlagBits::eFragment;
+		set2.bindings.push_back(b2_params);
+
+		for (uint32_t binding = 1; binding <= 3; ++binding) {
+			DescriptorBindingDesc b;
+			b.binding = binding;
+			b.descriptor_type = vk::DescriptorType::eStorageBuffer;
+			b.descriptor_count = 1;
+			b.stage_flags = vk::ShaderStageFlagBits::eFragment;
+			set2.bindings.push_back(b);
+		}
+		desc.sets.push_back(std::move(set2));
+
+		// Push constants: model matrix (64 bytes) + material color (16 bytes) + pbr params (16 bytes: x=metallic, y=roughness)
 		vk::PushConstantRange pc {};
 		pc.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
 		pc.offset = 0;
-		pc.size = 80;    // sizeof(glm::mat4) + sizeof(glm::vec4)
+		pc.size = 96;    // sizeof(glm::mat4) + sizeof(glm::vec4) + sizeof(glm::vec4)
 		desc.push_constants.push_back(pc);
 		return desc;
 	}
@@ -57,6 +87,30 @@ auto getLayoutDesc(std::string_view key) -> PipelineLayoutDesc {
 		pc.offset = 0;
 		pc.size = 80;    // sizeof(glm::mat4) + sizeof(glm::vec4)
 		desc.push_constants.push_back(pc);
+		return desc;
+	}
+
+	if (key == "cluster_lighting_compute") {
+		// Used by ClusterLightingPass - set 0, binding 0 = ClusterParams UBO, bindings 1-4 = SSBOs
+		// (Lights, ClusterAABB, ClusterLightGrid, LightIndexList)
+		SetLayoutDesc set0;
+
+		DescriptorBindingDesc b0;
+		b0.binding = 0;
+		b0.descriptor_type = vk::DescriptorType::eUniformBuffer;
+		b0.descriptor_count = 1;
+		b0.stage_flags = vk::ShaderStageFlagBits::eCompute;
+		set0.bindings.push_back(b0);
+
+		for (uint32_t binding = 1; binding <= 4; ++binding) {
+			DescriptorBindingDesc b;
+			b.binding = binding;
+			b.descriptor_type = vk::DescriptorType::eStorageBuffer;
+			b.descriptor_count = 1;
+			b.stage_flags = vk::ShaderStageFlagBits::eCompute;
+			set0.bindings.push_back(b);
+		}
+		desc.sets.push_back(std::move(set0));
 		return desc;
 	}
 

@@ -10,6 +10,8 @@
     "name":       { "type": "string", "x-toast-type": "string", "default": "Unnamed Material", "description": "Display name" },
     "albedo_map": { "type": "string", "x-toast-type": "asset",  "x-toast-asset-type": "texture", "description": "Albedo texture UID" },
     "normal_map": { "type": "string", "x-toast-type": "asset",  "x-toast-asset-type": "texture", "description": "Normal map texture UID" },
-    "color":      { "type": "array",  "x-toast-type": "color4", "default": [1.0, 1.0, 1.0, 1.0], "description": "Base color (RGBA)" }
+    "color":      { "type": "array",  "x-toast-type": "color4", "default": [1.0, 1.0, 1.0, 1.0], "description": "Base color (RGBA)" },
+    "metallic":   { "type": "number", "x-toast-type": "float",  "minimum": 0.0, "maximum": 1.0, "default": 0.0, "description": "Metallic (0=dielectric, 1=metal)" },
+    "roughness":  { "type": "number", "x-toast-type": "float",  "minimum": 0.0, "maximum": 1.0, "default": 0.5, "description": "Surface roughness (0=mirror, 1=fully rough)" }
   }
 }

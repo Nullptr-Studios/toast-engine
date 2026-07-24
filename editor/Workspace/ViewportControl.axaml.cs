@@ -403,6 +403,16 @@ public partial class ViewportControl : UserControl {
 	protected override void OnKeyDown(KeyEventArgs e) {
 		base.OnKeyDown(e);
 
+		// GPU capture (RenderDoc or Nsight Graphics); always intercepted locally, never forwarded to the
+		// game. Not gated on RenderDocDetector.IsAttached - the native side already no-ops if neither
+		// RenderDoc nor an injected Nsight Graphics Capture activity is present, and gating here on a
+		// RenderDoc-only check meant F12 silently did nothing for a Nsight-only session
+		if (e.Key == Key.F12) {
+			if (m_engine is not null) Events.Send(new CaptureFrame());
+			e.Handled = true;
+			return;
+		}
+
 		// backtick frees the mouse during play; never forwarded to the game
 		if (PlayMode && e.Key == Key.OemTilde) {
 			ReleaseCapture();
@@ -430,6 +440,12 @@ public partial class ViewportControl : UserControl {
 
 	protected override void OnKeyUp(KeyEventArgs e) {
 		base.OnKeyUp(e);
+
+		// matches the OnKeyDown intercept - F12 down is never forwarded, so its key-up shouldn't be either
+		if (e.Key == Key.F12) {
+			e.Handled = true;
+			return;
+		}
 
 		if (m_editorFlyActive && HandleFlyKey(e.Key, false)) {
 			e.Handled = true;
