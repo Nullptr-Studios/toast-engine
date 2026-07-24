@@ -22,17 +22,24 @@ struct Ray {
 };
 
 class [[ToastNode, Icon("Camera")]] TOAST_API Camera : public Node3D {
+	friend class CameraController;
+
 public:
 	Camera() = default;
 
 	~Camera() override = default;
 
 public:
+	[[Reflect, Unit("°")]]
 	float fov = 75.f;
+
+	[[Reflect, Unit("m")]]
 	float near_plane = 0.01f;
+
+	[[Reflect, Unit("m")]]
 	float far_plane = 5000.f;
 
-	void setActiveCamera(bool force = true);
+	void setActiveCamera();
 
 	[[nodiscard]]
 	auto getView() const -> glm::mat4;
@@ -48,5 +55,14 @@ public:
 	auto screenPointToRay(glm::vec2 screen_px, glm::vec2 viewport_size) const noexcept -> Ray;
 
 private:
+	void begin();
+	void end();
+	void onEnable();
+	void onDisable();
+
+	[[Reflect, ReadOnly]]
+	bool m_is_active = false;
+
+	friend class INodeOwner;
 };
 }

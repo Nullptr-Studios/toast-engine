@@ -38,6 +38,7 @@
     "version>=" : "3.3.0"
   }, {
     "name" : "tracy",
+    "features" : [ "on-demand" ],
     "version>=" : "0.13.1"
   }, {
     "name" : "shader-slang",
@@ -82,6 +83,9 @@
       "name" : "vulkan-binding"
     } ],
     "version>=" : "1.92.7"
+  }, {
+    "name" : "rmlui",
+    "version>=" : "6.2"
   } ],
   "overrides" : [ {
     "name" : "tracy",

@@ -4,7 +4,7 @@
 
 #include "cluster_lighting_pass.hpp"
 
-#include "../shader_compiler.hpp"
+#include "../shader_cache.hpp"
 #include "../vulkan_core.hpp"
 #include "../vulkan_debug.hpp"
 #include "../vulkan_renderer.hpp"
@@ -13,6 +13,7 @@
 #include <array>
 #include <cstring>
 #include <format>
+#include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
 
 namespace renderer {
@@ -49,14 +50,19 @@ auto ClusterLightingPass::createBuffer(
 }
 
 ClusterLightingPass::ClusterLightingPass(const renderer::VulkanCore& core) {
-	m_shader_layout.rebuild(core, "cluster_lighting_compute");
+	const auto uid = assets::resolveURI("core://shaders/cluster_lighting.slang");
+	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
+	if (!shader) {
+		TOAST_ERROR("Render", "ClusterLightingPass shader core://shaders/cluster_lighting.slang unavailable, lighting will not run");
+		return;
+	}
 
-	auto shader = renderer::ShaderCompiler::compileShaderModuleFromSource("./cluster_lighting.slang");
+	m_shader_layout.rebuild(core, shader->reflection, "ClusterLightingPass");
 
 	VulkanPipeline::Config build_config;
 	build_config.pipeline_type = VulkanPipeline::PipelineType::compute;
 	build_config.debug_name = "ClusterLightingPass BuildClusters";
-	build_config.shader_spirv = shader.spirv;
+	build_config.shader_spirv = shader->spirv;
 	build_config.pipeline_layout = *m_shader_layout.getPipelineLayout();
 	build_config.compute_entry = "clusterBuildMain";
 	m_build_clusters_pipeline.rebuild(core, build_config);

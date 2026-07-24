@@ -4,15 +4,36 @@
 
 #include "camera.hpp"
 
-#include <toast/renderer/vulkan_renderer.hpp>
-
 namespace toast {
-void Camera::setActiveCamera(bool force) {
-	renderer::VulkanRenderer::instance->setActiveCamera(this);
+void Camera::setActiveCamera() {
+	if (m_owner) {
+		m_owner->activateCamera(*this);
+	}
+}
+
+void Camera::begin() {
+	setActiveCamera();
+}
+
+void Camera::end() {
+	if (m_owner) {
+		m_owner->deactivateCamera(*this);
+	}
+}
+
+void Camera::onEnable() {
+	setActiveCamera();
+}
+
+void Camera::onDisable() {
+	if (m_owner) {
+		m_owner->deactivateCamera(*this);
+	}
 }
 
 auto Camera::getView() const -> glm::mat4 {
-	return glm::lookAt(worldPos(), worldPos() + forward(), up());
+	syncTransform();
+	return glm::lookAt(world_position, world_position + forward(), up());
 }
 
 auto Camera::getProjection(float aspect) const -> glm::mat4 {
@@ -24,8 +45,10 @@ auto Camera::getProjection(float aspect) const -> glm::mat4 {
 }
 
 auto Camera::screenPointToRay(glm::vec2 screen_px, glm::vec2 viewport_size) const noexcept -> Ray {
+	syncTransform();
+
 	if (viewport_size.x <= 0.0f || viewport_size.y <= 0.0f) {
-		return {worldPos(), forward()};
+		return {world_position, forward()};
 	}
 
 	const float aspect = viewport_size.x / viewport_size.y;
@@ -43,6 +66,6 @@ auto Camera::screenPointToRay(glm::vec2 screen_px, glm::vec2 viewport_size) cons
 	near_point /= near_point.w;
 	far_point /= far_point.w;
 
-	return {worldPos(), glm::normalize(glm::vec3(far_point) - glm::vec3(near_point))};
+	return {world_position, glm::normalize(glm::vec3(far_point) - glm::vec3(near_point))};
 }
 }

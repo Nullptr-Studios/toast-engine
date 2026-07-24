@@ -79,8 +79,9 @@ void EditorCameraController::tick(float dt, Camera* target) {
 		}
 	}
 
-	target->worldPos(m_position);
-	target->worldRotQuat(rot);
+	target->world_position = m_position;
+	target->world_rotation = rot;
+	target->syncTransform();
 }
 
 }

@@ -265,11 +265,15 @@ using scripting::stringifyLuaValue;
 static std::unique_ptr<assets::Prefab> s_clipboard;
 
 Workspace::Workspace(UID handle, EmptyTag) : m_handle(handle) {
+	m_editor_camera = std::make_unique<Camera>();
+	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
 }
 
 Workspace::Workspace(std::string_view type, UID handle) : m_handle(handle) {
 	ZoneScoped;
+	m_editor_camera = std::make_unique<Camera>();
+	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
 
 	// Allocation
@@ -280,7 +284,7 @@ Workspace::Workspace(std::string_view type, UID handle) : m_handle(handle) {
 	// Data structure generation
 	generateUid(node);
 	node->m_parent = {};
-	node->m_state = NodeState::root;
+	node->changeNodeState(NodeState::root);
 	node->m_type = NodeType::world_root;
 	node->m_inherited_enabled = true;
 	node->m_name = stripNamespace(node->info()->type);
@@ -296,6 +300,8 @@ Workspace::Workspace(std::string_view type, UID handle) : m_handle(handle) {
 }
 
 Workspace::Workspace(UID uid) : m_handle(uid) {
+	m_editor_camera = std::make_unique<Camera>();
+	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
 
 	// open file
@@ -312,6 +318,7 @@ Workspace::Workspace(UID uid) : m_handle(uid) {
 }
 
 Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
+	m_editor_camera = std::make_unique<Camera>();
 	eventSubscriptions();
 
 	auto bytes = assets::AssetManager::get().loadBytes(source_uri);
@@ -346,7 +353,7 @@ void Workspace::initFromPrefab(const assets::Handle<assets::Prefab>& file) {
 	// Data structure generation
 	generateUid(node);
 	node->m_parent = {};
-	node->m_state = NodeState::root;
+	node->changeNodeState(NodeState::root);
 	node->m_type = NodeType::world_root;
 	node->m_inherited_enabled = true;
 
@@ -359,11 +366,23 @@ void Workspace::initFromPrefab(const assets::Handle<assets::Prefab>& file) {
 	m_root_node = node;
 }
 
+void Workspace::applyActiveCamera() {
+	if (!isActiveWorkspace()) {
+		return;
+	}
+	if (m_game_camera) {
+		renderer::setActiveCamera(activeRenderCamera());
+	} else {
+		renderer::setActiveCamera(m_editor_camera.get());
+	}
+}
+
 Workspace::~Workspace() {
 	if (!m_root_node.exists()) {
 		return;
 	}
 
+	beginCameraShutdown();
 	m_root_node->propagateCallTick(m_root_node->info(), TickFunctionList::on_disable);
 	m_root_node->propagateCallTick(m_root_node->info(), TickFunctionList::end);
 	m_root_node->propagateCallTick(m_root_node->info(), TickFunctionList::destroy);
@@ -409,9 +428,20 @@ void Workspace::registerDependency(Node& from, Node& to) {
 
 void Workspace::unregisterDependency(Node& from, Node& to) { }
 
+auto Workspace::isActiveWorkspace() const noexcept -> bool {
+	Engine* engine = Engine::get();
+	return engine != nullptr && m_handle.data() == engine->activeWorkspace().data();
+}
+
+auto Workspace::participatesIn(NodeOwnerParticipation use) const noexcept -> bool {
+	return use == NodeOwnerParticipation::render && isActiveWorkspace();
+}
+
 auto Workspace::findFrom(const Node& origin, std::string_view query) -> Box<Node> {
-	auto search = [query](this auto&& self, const Node& node) -> Box<Node> {
-		if (node.name() == query) {
+	const bool search_workspace_root = query.starts_with("root/");
+	const std::string_view target = search_workspace_root ? query.substr(5) : query;
+	auto search = [target](this auto&& self, const Node& node) -> Box<Node> {
+		if (node.name() == target) {
 			return node.box();
 		}
 		for (const auto& c : node.m_children) {
@@ -422,7 +452,7 @@ auto Workspace::findFrom(const Node& origin, std::string_view query) -> Box<Node
 		return {};
 	};
 
-	return search(origin);
+	return search(search_workspace_root ? *m_root_node : origin);
 }
 
 auto Workspace::findFrom(const Node& origin, const UID& uid) -> Box<Node> {
@@ -449,7 +479,11 @@ auto Workspace::searchFrom(const Node& origin, std::string_view query) -> std::v
 
 auto Workspace::gizmoOrigin() const -> glm::vec3 {
 	auto node3d = m_focused_node.as<Node3D>();
-	return node3d.exists() ? node3d->worldPos() : glm::vec3(0.0f);
+	if (!node3d.exists()) {
+		return glm::vec3(0.0f);
+	}
+	node3d->syncTransform();
+	return node3d->world_position;
 }
 
 auto Workspace::gizmoOrientation() const -> glm::quat {
@@ -457,7 +491,11 @@ auto Workspace::gizmoOrientation() const -> glm::quat {
 		return {1.0f, 0.0f, 0.0f, 0.0f};
 	}
 	auto node3d = m_focused_node.as<Node3D>();
-	return node3d.exists() ? node3d->worldRotQuat() : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	if (!node3d.exists()) {
+		return {1.0f, 0.0f, 0.0f, 0.0f};
+	}
+	node3d->syncTransform();
+	return node3d->world_rotation;
 }
 
 auto Workspace::gizmoScale() const -> float {
@@ -465,7 +503,8 @@ auto Workspace::gizmoScale() const -> float {
 	if (camera == nullptr) {
 		return 1.0f;
 	}
-	return gizmo_layout::k_screen_size * glm::distance(camera->worldPos(), gizmoOrigin());
+	camera->syncTransform();
+	return gizmo_layout::k_screen_size * glm::distance(camera->world_position, gizmoOrigin());
 }
 
 void Workspace::gizmoUpdateHover() {
@@ -502,9 +541,10 @@ void Workspace::gizmoBeginDrag(GizmoHandle handle) {
 	}
 
 	m_gizmo_drag = handle;
-	m_gizmo_drag_start_world_pos = node3d->worldPos();
-	m_gizmo_drag_start_rotation = node3d->worldRotQuat();
-	m_gizmo_drag_start_scale = node3d->worldScale();
+	node3d->syncTransform();
+	m_gizmo_drag_start_world_pos = node3d->world_position;
+	m_gizmo_drag_start_rotation = node3d->world_rotation;
+	m_gizmo_drag_start_scale = node3d->world_scale;
 	m_gizmo_drag_current_factor = 1.0f;
 
 	const glm::vec3 origin = m_gizmo_drag_start_world_pos;
@@ -528,7 +568,8 @@ void Workspace::gizmoBeginDrag(GizmoHandle handle) {
 	}
 
 	if (handle == GizmoHandle::center) {
-		m_gizmo_drag_plane_normal = glm::normalize(camera->worldPos() - origin);
+		camera->syncTransform();
+		m_gizmo_drag_plane_normal = glm::normalize(camera->world_position - origin);
 	} else if (is_axis) {
 		m_gizmo_drag_axis = axisDirectionFor(handle, orientation);
 	} else {
@@ -583,7 +624,8 @@ void Workspace::gizmoUpdateDrag() {
 			delta_angle = std::round(delta_angle / step) * step;
 		}
 
-		node3d->worldRotQuat(glm::normalize(glm::angleAxis(delta_angle, m_gizmo_drag_axis) * m_gizmo_drag_start_rotation));
+		node3d->world_rotation = glm::normalize(glm::angleAxis(delta_angle, m_gizmo_drag_axis) * m_gizmo_drag_start_rotation);
+		node3d->syncTransform();
 		return;
 	}
 
@@ -623,7 +665,8 @@ void Workspace::gizmoUpdateDrag() {
 			new_scale[axis_index] = m_gizmo_drag_start_scale[axis_index] * factor;
 		}
 
-		node3d->worldScale(new_scale);
+		node3d->world_scale = new_scale;
+		node3d->syncTransform();
 		return;
 	}
 
@@ -646,7 +689,8 @@ void Workspace::gizmoUpdateDrag() {
 		delta = glm::round(delta / s) * s;
 	}
 
-	node3d->worldPos(m_gizmo_drag_start_world_pos + delta);
+	node3d->world_position = m_gizmo_drag_start_world_pos + delta;
+	node3d->syncTransform();
 }
 
 void Workspace::gizmoEndDrag() {
@@ -841,7 +885,9 @@ void Workspace::eventSubscriptions() {
 	});
 
 	m_listener.subscribe<event::NodeChangeParam>([this](const auto& e) {
-		// Only the workspace that actually owns the focused node applies the change
+		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
 		if (not m_focused_node.exists()) {
 			return false;
 		}
@@ -859,6 +905,13 @@ void Workspace::eventSubscriptions() {
 			std::istringstream ss(e.value);
 			ss >> deg.x >> deg.y >> deg.z;
 			value = std::any {glm::quat(glm::radians(deg))};
+		} else if (field->value_type == FieldType::uid_t && not field->is_array && field->type.starts_with("Box<")) {
+			auto parsed = assets::Prefab::valueFromString(field->value_type, false, e.value);
+			if (not parsed.has_value()) {
+				TOAST_WARN("World", "NodeChangeParam: couldn't parse '{}' for parameter '{}'", e.value, e.parameter);
+				return true;
+			}
+			value = std::any {findFrom(*m_root_node, std::any_cast<UID>(*parsed))};
 		} else {
 			auto parsed = assets::Prefab::valueFromString(field->value_type, field->is_array, e.value);
 			if (not parsed.has_value()) {
@@ -869,6 +922,7 @@ void Workspace::eventSubscriptions() {
 		}
 
 		field->set(&*m_focused_node, value);
+		m_focused_node->onReflectedFieldChanged(field->name);
 
 		if (field->name == "m_scripts") {
 			m_focused_node->reloadScripts();
@@ -879,6 +933,9 @@ void Workspace::eventSubscriptions() {
 
 	// Lua variable edits address "<instance>:group/subgroup/name" through the script schema
 	m_listener.subscribe<event::NodeChangeLuaParam>([this](const auto& e) {
+		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
 		if (not m_focused_node.exists()) {
 			return false;
 		}
@@ -937,12 +994,26 @@ void Workspace::eventSubscriptions() {
 		return true;
 	});
 
-	// TODO: needs function reflection for this
-	// m_listener.subscribe<event::NodeCallFunction>([this](const auto& e) {
-	// 	m_focused_node->info()->call(e.function);
-	// });
+	m_listener.subscribe<event::NodeCallFunction>([this](const auto& e) {
+		if (m_handle.data() != Engine::get()->activeWorkspace().data() || not m_focused_node.exists()) {
+			return false;
+		}
+
+		const FunctionInfo* method = m_focused_node->info()->getMethod(e.function);
+		if (method == nullptr || not method->hasAttribute("Button") || method->return_type != "void" ||
+		    not method->parameters.empty()) {
+			TOAST_WARN("World", "NodeCallFunction: '{}' is not an inspector button", e.function);
+			return true;
+		}
+
+		m_focused_node->info()->call(&*m_focused_node, e.function);
+		return true;
+	});
 
 	m_listener.subscribe<event::NodeEnabled>([this](const auto& e) {
+		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
 		if (not m_root_node.exists()) {
 			return false;
 		}
@@ -1204,6 +1275,7 @@ void Workspace::eventSubscriptions() {
 			m_gizmo_hover = GizmoHandle::none;
 			m_gizmo_drag = GizmoHandle::none;
 		}
+		applyActiveCamera();
 		return true;
 	});
 
@@ -1232,6 +1304,13 @@ void Workspace::eventSubscriptions() {
 			gizmoBeginDrag(m_gizmo_hover);
 		} else if (e.action == event::window_input_released) {
 			gizmoEndDrag();
+		}
+		return false;
+	});
+
+	m_listener.subscribe<event::SetActiveWorkspace>([this](const auto& e) {
+		if (e.handle == m_handle.data()) {
+			applyActiveCamera();
 		}
 		return false;
 	});
@@ -1297,6 +1376,14 @@ void Workspace::eventSubscriptions() {
 }
 
 void Workspace::tick() {
+	if (!participatesIn(NodeOwnerParticipation::gameplay_tick)) {
+		tickActiveCameraController();
+	}
+
+	if (m_root_node.exists()) {
+		INodeOwner::updateTransforms(*m_root_node);
+	}
+
 	// Only the active workspace streams inspector data, and only while a node is focused
 	if (m_handle.data() != Engine::get()->activeWorkspace().data() || not m_focused_node.exists()) {
 		m_inspector_accum = 0.0;

@@ -10,11 +10,13 @@
 #include "vulkan_core.hpp"
 #include "vulkan_mesh.hpp"
 #include "vulkan_pipeline.hpp"
+#include "vulkan_texture.hpp"
 
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <functional>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
@@ -22,11 +24,16 @@
 #include <optional>
 #include <queue>
 #include <semaphore>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <toast/assets/core_types.hpp>
 #include <toast/events/event.inl>
 #include <toast/events/listener.hpp>
 #include <toast/world/gizmo_layout.hpp>
+#include <tracy/TracyVulkan.hpp>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -41,6 +48,9 @@ class Light;
 }
 
 namespace renderer {
+
+class MaterialPass;
+class ClusterLightingPass;
 
 /**
  * @brief Coordinates rendering by managing frame submissions, render passes, and GPU synchronization
@@ -80,17 +90,17 @@ public:
 	};
 
 	struct FrameUBO {
-		glm::mat4 view;
-		glm::mat4 projection;
-		glm::mat4 view_projection;
+		glm::mat4 view {1.0f};
+		glm::mat4 projection {1.0f};
+		glm::mat4 view_projection {1.0f};
 
-		glm::vec3 camera_position;
+		glm::vec3 camera_position {};
 
-		float time;
+		float time = 0.0f;
 
 		// Global (unclustered) lighting - AmbientLight pre-summed on the CPU into one value (no position/
 		// direction to cull by), DirectionalLight as a small fixed array. PointLight/Spotlight instead go
-		// through RenderFrame::lights + the clustered system (inert until Stage 3b)
+		// through RenderFrame::lights + the clustered system
 		glm::vec4 ambient_color_intensity {0.0f};    // rgb color, a intensity; zero if there's no AmbientLight
 
 		// x = directional_light_count, yzw unused padding. A scalar directly followed by a vec3 packs
@@ -100,10 +110,14 @@ public:
 		glm::uvec4 directional_light_count_pad {0};
 
 		std::array<DirectionalLightData, k_max_directional_lights> directional_lights {};
+
+		// Viewport shading mode from the toolbar's "Mode" dropdown - 0 Lit, 1 ClusterHeatmap. Lives in the
+		// frame UBO (rather than a per-draw push constant) since MaterialPass's push-constant blob is now
+		// baked entirely from reflected per-material values - there's no room left for engine-injected state
+		glm::uvec4 render_mode_pad {0};
 	};
 
-	/// @brief One PointLight/Spotlight, resolved to POD on the main thread same as MeshInstanceProxy;
-	/// inert until Stage 3b's clustered light culling reads RenderFrame::lights
+	/// @brief One PointLight/Spotlight, resolved to POD on the main thread same as MeshInstanceProxy
 	struct GpuLight {
 		glm::vec4 world_pos_range;    // xyz world-space position, w = attenuation range (sphere radius, falloff distance)
 		glm::vec4 view_pos_type;      // xyz view-space position (culling only), w = type (0=point,1=spot)
@@ -115,7 +129,14 @@ public:
 	struct MeshInstanceProxy {
 		VulkanMesh* mesh = nullptr;
 		assets::Material* material = nullptr;
+		assets::Material* root_material = nullptr;
 		glm::mat4 model = glm::mat4(1.0f);
+	};
+
+	/// @brief One world-space UI panel drawn as a texture quad by ui::WorldUIPass
+	struct UIWorldPanelProxy {
+		vk::ImageView view = nullptr;         ///< panel output image, transitioned for sampling
+		glm::mat4 model = glm::mat4(1.0f);    ///< node world transform; scale gives the metric size
 	};
 
 	/// @brief One vertex of an immediate-mode debug line; two consecutive vertices make one line segment
@@ -183,8 +204,8 @@ public:
 
 		ImGuiInputSnapshot imgui_input;
 
-		// Viewport shading mode from the toolbar's "Mode" dropdown - 0 Lit, 1 ClusterHeatmap. Threaded
-		// through MeshPass's push constants rather than a UBO field, so no cross-language packing to worry about
+		// Viewport shading mode from the toolbar's "Mode" dropdown - 0 Lit, 1 ClusterHeatmap. Copied into
+		// FrameUBO::render_mode_pad each tick() so material shaders can read it directly
 		uint32_t render_mode = 0;
 
 		// Immediate-mode debug draw data queued via debugDrawLine()/debugDrawBox()/debugDrawSphere()/
@@ -193,7 +214,18 @@ public:
 		std::vector<glm::mat4> debug_gizmo_instances;    // one axis-triad gizmo draw per entry
 
 		TransformGizmoDraw transform_gizmo;
+
+		// Secondary command buffers recorded by ui::UISystem on the main thread
+		std::vector<vk::CommandBuffer> ui_command_buffers;
+		std::vector<vk::ImageView> ui_output_views;
+		std::vector<UIWorldPanelProxy> ui_world_panels;    // drawn by ui::WorldUIPass
+		std::shared_ptr<const void> ui_slot_guard;
 	};
+
+	/// @brief Callback that fills UI data into the frame being built
+	using UIFrameBuilder = std::function<void(RenderFrame&)>;
+
+	void setUIFrameBuilder(UIFrameBuilder builder) { m_ui_frame_builder = std::move(builder); }
 
 	VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTarget> output_target) noexcept;
 
@@ -260,6 +292,28 @@ public:
 
 	void addComputePass(std::unique_ptr<IComputePass> pass);
 
+	struct PassInfo {
+		std::string name;
+		bool enabled = true;
+	};
+
+	[[nodiscard]]
+	auto listPasses() -> std::vector<PassInfo>;
+
+	/// Enables/disables every pass matching @p name
+	void setPassEnabled(std::string_view name, bool enabled);
+
+	/// 1x1 white fallback for material texture slots without a ready texture
+	[[nodiscard]]
+	auto getDefaultTextureView() const noexcept -> vk::ImageView {
+		return m_default_texture.getView();
+	}
+
+	[[nodiscard]]
+	auto getDefaultSampler() const noexcept -> vk::Sampler {
+		return *m_default_sampler;
+	}
+
 	void applyResize(vk::Extent2D extent);
 
 	void queueResourceUpload(std::unique_ptr<PendingResourceUpload> upload);
@@ -273,6 +327,16 @@ public:
 	[[nodiscard]]
 	auto getDescriptorPoolHandle() const noexcept -> vk::DescriptorPool {
 		return *m_descriptor_pool;
+	}
+
+	/// Main-thread-only, set once at startup right after the compute pass is constructed (see engine.cpp) so
+	/// MaterialPass's frame-set binding can wire the culled light buffers into any material shader that
+	/// declares them
+	void setClusterLightingPass(const ClusterLightingPass* pass) noexcept { m_cluster_lighting_pass = pass; }
+
+	[[nodiscard]]
+	auto getClusterLightingPass() const noexcept -> const ClusterLightingPass* {
+		return m_cluster_lighting_pass;
 	}
 
 	[[nodiscard]]
@@ -344,6 +408,10 @@ private:
 	void createPerImageSync();
 	void createDepthResources();
 	void createDescriptorPool();
+	void createDefaultTexture();
+
+	/// Creates a MaterialPass for every root material present in the frame
+	void ensureMaterialPasses(RenderFrame& frame_data);
 
 	void recordFrame(FrameContext& frame, uint32_t image_index) noexcept;
 
@@ -369,6 +437,25 @@ private:
 	std::unique_ptr<IOutputTarget> m_output_target;
 	std::vector<std::unique_ptr<IRenderPass>> m_render_passes;
 	std::vector<std::unique_ptr<IComputePass>> m_compute_passes;
+
+	/// One pass per root material
+	std::unordered_map<assets::Material*, std::unique_ptr<MaterialPass>> m_material_passes;
+	/// Guards m_material_passes + m_render_passes against listPasses()/setPassEnabled() from other threads
+	std::mutex m_pass_mutex;
+	/// Set by ClearUnusedAssets
+	std::atomic_bool m_pending_material_pass_clear {false};
+	event::Listener m_asset_listener;
+
+	/// Fallback material for meshes without one
+	assets::Handle<assets::Material> m_default_material;
+	bool m_default_material_warned = false;
+
+	/// 1x1 white texture + sampler shared by every material pass as texture fallback
+	VulkanTexture m_default_texture;
+	vk::raii::Sampler m_default_sampler = nullptr;
+
+	/// Set once via setClusterLightingPass(); not owned here
+	const ClusterLightingPass* m_cluster_lighting_pass = nullptr;
 	vk::Format m_depth_format = vk::Format::eUndefined;
 	DepthResources m_depth_resources;
 	vk::ImageLayout m_depth_layout = vk::ImageLayout::eUndefined;
@@ -378,6 +465,8 @@ private:
 	vk::raii::CommandPool m_transfer_command_pool = nullptr;
 
 	vk::raii::CommandPool m_compute_command_pool = nullptr;
+
+	TracyVkCtx m_tracy_vk_ctx = nullptr;    ///< Tracy GPU profiling context
 
 	vk::raii::DescriptorPool m_descriptor_pool = nullptr;
 
@@ -414,6 +503,8 @@ private:
 	/// inside tick() on the same thread
 	event::Listener m_render_mode_listener;
 	uint32_t m_render_mode = 0;
+
+	UIFrameBuilder m_ui_frame_builder;
 
 	std::mutex m_mesh_proxy_mutex;
 	std::vector<toast::MeshNode*> m_mesh_proxy_nodes;
@@ -454,6 +545,10 @@ inline void submitFrame() {
 
 inline auto getActiveCamera() -> toast::Camera* {
 	return VulkanRenderer::instance->getActiveCamera();
+}
+
+inline void setActiveCamera(toast::Camera& camera) {
+	VulkanRenderer::instance->setActiveCamera(&camera);
 }
 
 inline void setActiveCamera(toast::Camera* camera) {

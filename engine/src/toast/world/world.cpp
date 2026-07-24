@@ -1,6 +1,6 @@
 #include "world.hpp"
 
-#include "node_3d.hpp"
+#include "camera.hpp"
 #include "workspace_events.hpp"
 #include "world_test_access.hpp"
 
@@ -9,6 +9,7 @@
 #include <toast/assets/asset_manager.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/assets/types.hpp>
+#include <toast/renderer/vulkan_renderer.hpp>
 #include <toast/thread_pool.hpp>
 #include <toast/uri_handler.hpp>
 #include <utility>
@@ -76,7 +77,17 @@ void World::tick() {
 	drainLoadQueue();
 	drainSpawnQueue();
 
-	m_scheduler.run();
+	m_scheduler.runPhase(m_scheduler.schedule.early_tick, TickFunctionList::early_tick, "early_tick");
+	if (trees.root.exists()) {
+		INodeOwner::updateTransforms(*trees.root);
+	}
+	for (auto& g : trees.global) {
+		INodeOwner::updateTransforms(*g);
+	}
+	m_scheduler.runPhase(m_scheduler.schedule.tick, TickFunctionList::tick, "tick");
+	// TODO: physics step goes between tick and post_physics
+	m_scheduler.runPhase(m_scheduler.schedule.post_physics, TickFunctionList::post_physics, "post_physics");
+	m_scheduler.runPhase(m_scheduler.schedule.late_tick, TickFunctionList::late_tick, "late_tick");
 }
 
 void World::registerDependency(Node& from, Node& to) {
@@ -706,21 +717,6 @@ void World::drainDestroyQueue() {
 	reapTombstones();
 }
 
-void World::markNode3DDependantsDirty(const Box<Node>& node) noexcept {
-	if (!instance) {
-		return;
-	}
-
-	auto it = instance->m_scheduler.graph.inverse_connections.find(node);
-	if (it != instance->m_scheduler.graph.inverse_connections.end()) {
-		for (auto& dependent : it->second) {
-			if (auto node3d = dependent.as<Node3D>()) {
-				node3d->m_dirty_world = true;
-			}
-		}
-	}
-}
-
 void World::computeDependencyGraph() {
 	ZoneScoped;
 
@@ -737,6 +733,10 @@ void World::computeDependencyGraph() {
 	}
 
 	m_scheduler.compute(all_nodes);
+}
+
+void World::applyActiveCamera() {
+	renderer::setActiveCamera(activeRenderCamera());
 }
 
 auto World::swapRoot(Node& node) -> Box<Node> {
