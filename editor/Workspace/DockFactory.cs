@@ -50,7 +50,7 @@ public class DockFactory : Factory {
 			AllowedDropOperations = DockOperationMask.Fill | DockOperationMask.Top | DockOperationMask.Bottom,
 			VisibleDockables = CreateList<IDockable>(hierarchy),
 			Alignment = Alignment.Left,
-			GripMode = GripMode.Visible
+			GripMode = GripMode.Hidden
 		};
 		m_leftToolDock = leftToolDock;
 
@@ -66,7 +66,7 @@ public class DockFactory : Factory {
 			ActiveDockable = inspector,
 			VisibleDockables = CreateList<IDockable>(inspector),
 			Alignment = Alignment.Right,
-			GripMode = GripMode.Visible
+			GripMode = GripMode.Hidden
 		};
 		m_rightToolDock = rightToolDock;
 

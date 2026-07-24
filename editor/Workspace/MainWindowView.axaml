@@ -13,7 +13,8 @@
         ExtendClientAreaToDecorationsHint="True"
         ExtendClientAreaTitleBarHeightHint="-1"
         WindowDecorations="BorderOnly"
-        WindowState="Maximized">
+        WindowState="Maximized"
+        Background="{StaticResource Bg1}">
 
 	<!-- menu InputGestures are display-only, these make the shortcuts actually fire window-wide -->
 	<Window.KeyBindings>

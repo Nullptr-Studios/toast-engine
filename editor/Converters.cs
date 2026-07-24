@@ -4,6 +4,8 @@
 //
 
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Globalization;
 using Avalonia;
 using Avalonia.Data.Converters;
@@ -87,6 +89,32 @@ public class SnapValueConverter : IValueConverter {
 			return ((int)Math.Round(d)).ToString(CultureInfo.InvariantCulture);
 		var text = d.ToString(d < 1 ? "0.00" : "0.0", CultureInfo.InvariantCulture);
 		return d < 1 ? text[1..] : text;
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class DockContentCornerRadiusConverter : IMultiValueConverter {
+	public object Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) {
+		if (values.Count >= 2 && values[0] is { } active && values[1] is IEnumerable visible) {
+			var items = visible.GetEnumerator();
+			try {
+				if (items.MoveNext() && ReferenceEquals(active, items.Current))
+					return new CornerRadius(0, 8, 8, 8);
+			} finally {
+				(items as IDisposable)?.Dispose();
+			}
+		}
+
+		return new CornerRadius(8);
+	}
+}
+
+public class DockFocusBrushConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		return ConverterHelpers.GetBrush(value is true ? "Red" : "Bg5") ?? Brushes.Transparent;
 	}
 
 	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {

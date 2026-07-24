@@ -47,7 +47,7 @@ public class ToastZoneFactory : Factory {
 				curveEditor
 			),
 			Alignment = Alignment.Bottom,
-			GripMode = GripMode.Visible
+			GripMode = GripMode.Hidden
 		};
 
 		var mainLayout = new ProportionalDock {
