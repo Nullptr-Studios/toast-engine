@@ -87,8 +87,9 @@ public class SnapValueConverter : IValueConverter {
 		if (value is not double d) return value ?? AvaloniaProperty.UnsetValue;
 		if (parameter is string s && s == "int")
 			return ((int)Math.Round(d)).ToString(CultureInfo.InvariantCulture);
-		var text = d.ToString(d < 1 ? "0.00" : "0.0", CultureInfo.InvariantCulture);
-		return d < 1 ? text[1..] : text;
+		if (d < 1) return d.ToString("0.00", CultureInfo.InvariantCulture)[1..];
+		var text = d.ToString("0.#", CultureInfo.InvariantCulture);
+		return text.Contains('.') ? text : text + ".";
 	}
 
 	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {

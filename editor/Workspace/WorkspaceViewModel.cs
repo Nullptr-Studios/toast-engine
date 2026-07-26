@@ -134,19 +134,29 @@ public partial class WorkspaceViewModel : Document, IAutosavable {
 		Events.Send(new SetCoordinateSpace { World = WorldSpace });
 	}
 
+	private static readonly double[] s_linearSnapSteps = [0.01, 0.05, 0.10, 0.25, 0.50, 1.0, 2.0, 5.0, 10.0];
+	private static readonly double[] s_rotateSnapSteps = [1, 2, 5, 15, 30, 45, 90];
+
 	[RelayCommand]
-	private void SetTranslateSnap(string value) {
-		TranslateSnap = double.Parse(value, CultureInfo.InvariantCulture);
+	private void StepTranslateSnap(string direction) {
+		TranslateSnap = Step(s_linearSnapSteps, TranslateSnap, int.Parse(direction, CultureInfo.InvariantCulture));
 	}
 
 	[RelayCommand]
-	private void SetRotateSnap(string value) {
-		RotateSnap = double.Parse(value, CultureInfo.InvariantCulture);
+	private void StepRotateSnap(string direction) {
+		RotateSnap = Step(s_rotateSnapSteps, RotateSnap, int.Parse(direction, CultureInfo.InvariantCulture));
 	}
 
 	[RelayCommand]
-	private void SetScaleSnap(string value) {
-		ScaleSnap = double.Parse(value, CultureInfo.InvariantCulture);
+	private void StepScaleSnap(string direction) {
+		ScaleSnap = Step(s_linearSnapSteps, ScaleSnap, int.Parse(direction, CultureInfo.InvariantCulture));
+	}
+
+	private static double Step(double[] steps, double current, int direction) {
+		var index = Array.FindIndex(steps, v => Math.Abs(v - current) < 0.0001);
+		if (index < 0) index = 0;
+		index = Math.Clamp(index + direction, 0, steps.Length - 1);
+		return steps[index];
 	}
 
 	partial void OnTranslateSnapEnabledChanged(bool value) {

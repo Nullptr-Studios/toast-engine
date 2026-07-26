@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Windows.Input;
 using Avalonia;
@@ -58,8 +59,10 @@ public sealed class ArrayBox : TemplatedControl {
 	// Insertion indicator currently shown during a drag
 	private Border? m_activeLine;
 	private Button? m_add;
+	private TextBlock? m_empty;
 
 	private ItemsControl? m_items;
+	private IList? m_hookedItems;
 	private PointerPressedEventArgs? m_pressArgs;
 
 	// Active reorder drag
@@ -126,12 +129,16 @@ public sealed class ArrayBox : TemplatedControl {
 
 		m_items = e.NameScope.Find<ItemsControl>("PART_Items");
 		m_add = e.NameScope.Find<Button>("PART_Add");
+		m_empty = e.NameScope.Find<TextBlock>("PART_Empty");
 
 		if (m_items != null) {
 			m_items.ItemsPanel = new FuncTemplate<Panel?>(() => new StackPanel { Spacing = ItemSpacing });
 			m_items.ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildRow(item));
 			m_items.ItemsSource = Items;
 		}
+
+		RehookItems();
+		UpdateEmptyVisibility();
 
 		if (m_add != null) {
 			m_add.Click += OnAddClick;
@@ -143,8 +150,11 @@ public sealed class ArrayBox : TemplatedControl {
 		base.OnPropertyChanged(change);
 		if (m_items is null) return;
 
-		if (change.Property == ItemsProperty)
+		if (change.Property == ItemsProperty) {
 			m_items.ItemsSource = Items;
+			RehookItems();
+			UpdateEmptyVisibility();
+		}
 		else if (change.Property == ItemTemplateProperty)
 			m_items.ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildRow(item));
 		else if (change.Property == ItemSpacingProperty && m_items != null)
@@ -161,6 +171,20 @@ public sealed class ArrayBox : TemplatedControl {
 		}
 
 		if (ItemFactory is { } factory && Items is { } list && factory() is { } item) list.Add(item);
+	}
+
+	private void RehookItems() {
+		if (m_hookedItems is INotifyCollectionChanged oldIncc) oldIncc.CollectionChanged -= OnItemsCollectionChanged;
+		m_hookedItems = Items;
+		if (m_hookedItems is INotifyCollectionChanged newIncc) newIncc.CollectionChanged += OnItemsCollectionChanged;
+	}
+
+	private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) {
+		UpdateEmptyVisibility();
+	}
+
+	private void UpdateEmptyVisibility() {
+		if (m_empty != null) m_empty.IsVisible = Items is not { Count: > 0 };
 	}
 
 	// Walk the logical tree to find a DataTemplate that matches item
