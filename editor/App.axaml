@@ -9,6 +9,7 @@
 
 	<Application.Resources>
 		<ResourceDictionary>
+			<Color x:Key="SystemAccentColor">#ff1659</Color>
 			<ResourceDictionary.MergedDictionaries>
 				<ResourceInclude Source="avares://editor/Resources/EditorColors.axaml" />
 				<ResourceInclude Source="avares://editor/Resources/DragNumberBox.axaml" />
@@ -168,7 +169,8 @@
 			<Setter Property="Height"
 			        Value="0" />
 		</Style>
-		<Style Selector="ToolTabStrip /template/ Border#PART_BorderLeftFill, ToolTabStrip /template/ Border#PART_BorderRightFill">
+		<Style
+			Selector="ToolTabStrip /template/ Border#PART_BorderLeftFill, ToolTabStrip /template/ Border#PART_BorderRightFill">
 			<Setter Property="BorderThickness"
 			        Value="0" />
 		</Style>
@@ -297,27 +299,33 @@
 				</ControlTemplate>
 			</Setter>
 		</Style>
-		<Style Selector="ToolTabStripItem /template/ Border#PART_TabBody, DocumentTabStripItem /template/ Border#PART_TabBody">
+		<Style
+			Selector="ToolTabStripItem /template/ Border#PART_TabBody, DocumentTabStripItem /template/ Border#PART_TabBody">
 			<Setter Property="Background"
 			        Value="Transparent" />
 		</Style>
-		<Style Selector="ToolTabStripItem /template/ Border#PART_SelectedBackground, DocumentTabStripItem /template/ Border#PART_SelectedBackground">
+		<Style
+			Selector="ToolTabStripItem /template/ Border#PART_SelectedBackground, DocumentTabStripItem /template/ Border#PART_SelectedBackground">
 			<Setter Property="IsVisible"
 			        Value="False" />
 		</Style>
-		<Style Selector="ToolTabStripItem:selected /template/ Border#PART_SelectedBackground, DocumentTabStripItem:selected /template/ Border#PART_SelectedBackground">
+		<Style
+			Selector="ToolTabStripItem:selected /template/ Border#PART_SelectedBackground, DocumentTabStripItem:selected /template/ Border#PART_SelectedBackground">
 			<Setter Property="IsVisible"
 			        Value="True" />
 		</Style>
-		<Style Selector="ToolTabStripItem /template/ Border#PART_SelectedIndicator, DocumentTabStripItem /template/ Border#PART_SelectedIndicator">
+		<Style
+			Selector="ToolTabStripItem /template/ Border#PART_SelectedIndicator, DocumentTabStripItem /template/ Border#PART_SelectedIndicator">
 			<Setter Property="IsVisible"
 			        Value="False" />
 		</Style>
-		<Style Selector="ToolTabStripItem:selected /template/ Border#PART_SelectedIndicator, DocumentTabStripItem:selected /template/ Border#PART_SelectedIndicator">
+		<Style
+			Selector="ToolTabStripItem:selected /template/ Border#PART_SelectedIndicator, DocumentTabStripItem:selected /template/ Border#PART_SelectedIndicator">
 			<Setter Property="IsVisible"
 			        Value="True" />
 		</Style>
-		<Style Selector="ToolTabStripItem:selected, ToolTabStripItem:selected:pointerover, DocumentTabStripItem:selected, DocumentTabStripItem:active:selected, DocumentTabStripItem:not(:active):selected, DocumentTabStripItem:selected:pointerover">
+		<Style
+			Selector="ToolTabStripItem:selected, ToolTabStripItem:selected:pointerover, DocumentTabStripItem:selected, DocumentTabStripItem:active:selected, DocumentTabStripItem:not(:active):selected, DocumentTabStripItem:selected:pointerover">
 			<Setter Property="Background"
 			        Value="{StaticResource Bg2}" />
 			<Setter Property="Foreground"
@@ -355,7 +363,8 @@
 					           DockProperties.IsDropArea="True"
 					           DockProperties.IsDockTarget="True">
 						<Grid DockPanel.Dock="Top"
-						      Background="{StaticResource Bg1}">
+						      Background="{StaticResource Bg1}"
+						      IsVisible="{Binding $parent[DocumentControl].HasVisibleDockables}">
 							<Border Height="2"
 							        VerticalAlignment="Bottom"
 							        Margin="4,0"
@@ -411,11 +420,6 @@
 										</DeferredContentControl.ContentTemplate>
 									</DeferredContentControl>
 								</DockableControl>
-								<ContentControl Content="{Binding EmptyContent}"
-								                ContentTemplate="{Binding $parent[DocumentControl].EmptyContentTemplate}"
-								                HorizontalContentAlignment="Center"
-								                VerticalContentAlignment="Center"
-								                IsVisible="{Binding !$parent[DocumentControl].HasVisibleDockables}" />
 							</Grid>
 						</Border>
 					</DockPanel>

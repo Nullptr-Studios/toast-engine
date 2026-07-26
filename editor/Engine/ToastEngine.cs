@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using editor.Assets;
+using editor.StartWindow;
 using editor.Workspace;
 using Proto.Events;
 
@@ -120,6 +121,17 @@ public partial class ToastEngine : IDisposable {
 		m_gameDestroy?.Invoke(m_currentGameInstance);
 		toast_destroy(m_engineInstance);
 		m_cancellationSource.Dispose();
+
+		UpdateProjectListOnClose();
+	}
+
+	private void UpdateProjectListOnClose() {
+		var toastFile = Directory.EnumerateFiles(ProjectPath, "*.toast").FirstOrDefault();
+		if (toastFile is null) return;
+
+		var projectList = ProjectList.LoadList();
+		projectList.Upsert(toastFile);
+		projectList.SaveList();
 	}
 
 	public WorkspaceResult CreateWorkspace(string type) {
