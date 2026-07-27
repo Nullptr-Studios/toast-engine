@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <functional>
 #include <glm/gtc/constants.hpp>
 #include <memory>
 #include <mutex>
@@ -72,13 +73,13 @@ public:
 	};
 
 	struct FrameUBO {
-		glm::mat4 view;
-		glm::mat4 projection;
-		glm::mat4 view_projection;
+		glm::mat4 view {1.0f};
+		glm::mat4 projection {1.0f};
+		glm::mat4 view_projection {1.0f};
 
-		glm::vec3 camera_position;
+		glm::vec3 camera_position {};
 
-		float time;
+		float time = 0.0f;
 	};
 
 	struct MeshInstanceProxy {
@@ -86,6 +87,12 @@ public:
 		assets::Material* material = nullptr;
 		assets::Material* root_material = nullptr;
 		glm::mat4 model = glm::mat4(1.0f);
+	};
+
+	/// @brief One world-space UI panel drawn as a texture quad by ui::WorldUIPass
+	struct UIWorldPanelProxy {
+		vk::ImageView view = nullptr;         ///< panel output image, transitioned for sampling
+		glm::mat4 model = glm::mat4(1.0f);    ///< node world transform; scale gives the metric size
 	};
 
 	/// @brief One vertex of an immediate-mode debug line; two consecutive vertices make one line segment
@@ -105,7 +112,18 @@ public:
 		// debugDrawAxes() dnd consumed by DebugPass
 		std::vector<DebugVertex> debug_line_vertices;    // consecutive pairs; each pair is one line segment
 		std::vector<glm::mat4> debug_gizmo_instances;    // one axis-triad gizmo draw per entry
+
+		// Secondary command buffers recorded by ui::UISystem on the main thread
+		std::vector<vk::CommandBuffer> ui_command_buffers;
+		std::vector<vk::ImageView> ui_output_views;
+		std::vector<UIWorldPanelProxy> ui_world_panels;    // drawn by ui::WorldUIPass
+		std::shared_ptr<const void> ui_slot_guard;
 	};
+
+	/// @brief Callback that fills UI data into the frame being built
+	using UIFrameBuilder = std::function<void(RenderFrame&)>;
+
+	void setUIFrameBuilder(UIFrameBuilder builder) { m_ui_frame_builder = std::move(builder); }
 
 	VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTarget> output_target) noexcept;
 
@@ -331,6 +349,8 @@ private:
 	/// Active camera for the renderer, Can be nullptr if no camera is set
 	toast::Camera* m_camera = nullptr;
 
+	UIFrameBuilder m_ui_frame_builder;
+
 	std::mutex m_mesh_proxy_mutex;
 	std::vector<toast::MeshNode*> m_mesh_proxy_nodes;
 
@@ -367,6 +387,10 @@ inline void submitFrame() {
 
 inline auto getActiveCamera() -> toast::Camera* {
 	return VulkanRenderer::instance->getActiveCamera();
+}
+
+inline void setActiveCamera(toast::Camera& camera) {
+	VulkanRenderer::instance->setActiveCamera(&camera);
 }
 
 inline void setActiveCamera(toast::Camera* camera) {
