@@ -22,6 +22,12 @@
 				<ResourceInclude Source="avares://editor/Resources/EnumBox.axaml" />
 			</ResourceDictionary.MergedDictionaries>
 			<conv:SeverityToColorConverter x:Key="SeverityToColorConverter" />
+			<conv:SeverityBarColorConverter x:Key="SeverityBarColorConverter" />
+			<conv:SeverityRowGradientConverter x:Key="SeverityRowGradientConverter" />
+			<conv:SeverityFillConverter x:Key="SeverityFillConverter" />
+			<conv:ToggleForegroundConverter x:Key="ToggleForegroundConverter" />
+			<conv:TraceForegroundConverter x:Key="TraceForegroundConverter" />
+			<conv:BoolFillConverter x:Key="BoolFillConverter" />
 			<conv:BoolToOpacityConverter x:Key="BoolToOpacityConverter" />
 			<conv:EnabledToColorConverter x:Key="EnabledToColorConverter" />
 			<conv:ScaleConverter x:Key="ScaleConverter" />

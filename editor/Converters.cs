@@ -21,13 +21,112 @@ public class SeverityToColorConverter : IValueConverter {
 			var key = severity switch {
 				0 => "TextMuted", // Trace
 				1 => "Green",     // Info
-				2 => "Yellow",    // Warning
+				2 => "Orange",    // Warning
 				_ => "Red"        // Error / Critical
 			};
 			return ConverterHelpers.GetBrush(key) ?? Brushes.White;
 		}
 
 		return Brushes.White;
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class SeverityBarColorConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		if (value is uint severity) {
+			if (severity == 0) return Brushes.Transparent;
+			var key = severity switch {
+				1 => "Green",
+				2 => "Orange",
+				_ => "Red"
+			};
+			return ConverterHelpers.GetBrush(key) ?? Brushes.White;
+		}
+
+		return Brushes.White;
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class SeverityRowGradientConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		if (value is not uint severity) return Brushes.Transparent;
+
+		var colorKey = severity switch {
+			2 => "DarkOrange",
+			>= 3 => "DarkRed", // Error and Critical
+			_ => null
+		};
+
+		if (colorKey is null || ConverterHelpers.GetBrush(colorKey) is not ISolidColorBrush { Color: var color })
+			return Brushes.Transparent;
+
+		return new LinearGradientBrush {
+			StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+			EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
+			GradientStops = {
+				new GradientStop(color, 0.0),
+				new GradientStop(Color.FromArgb(0, color.R, color.G, color.B), 1.0)
+			}
+		};
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class SeverityFillConverter : IMultiValueConverter {
+	public object Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture) {
+		if (values.Count >= 2 && values[0] is bool enabled && values[1] is uint severity) {
+			if (!enabled) return ConverterHelpers.GetBrush("Bg4") ?? Brushes.Transparent;
+			var key = severity switch {
+				0 => "Blue",   // Trace
+				1 => "Green",  // Info
+				2 => "Orange", // Warning
+				_ => "Red"     // Error / Critical
+			};
+			return ConverterHelpers.GetBrush(key) ?? Brushes.White;
+		}
+
+		return Brushes.Transparent;
+	}
+}
+
+public class ToggleForegroundConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		if (value is bool b) return b ? Brushes.Black : ConverterHelpers.GetBrush("Text") ?? Brushes.White;
+		return Brushes.White;
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class BoolFillConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		if (value is bool b && b && parameter is string key)
+			return ConverterHelpers.GetBrush(key) ?? Brushes.White;
+		return ConverterHelpers.GetBrush("Bg4") ?? Brushes.Transparent;
+	}
+
+	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		throw new NotSupportedException();
+	}
+}
+
+public class TraceForegroundConverter : IValueConverter {
+	public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
+		var key = value is uint severity && severity == 0 ? "TextMuted" : "Text";
+		return ConverterHelpers.GetBrush(key) ?? Brushes.White;
 	}
 
 	public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
