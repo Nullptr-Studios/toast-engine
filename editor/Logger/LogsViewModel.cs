@@ -275,8 +275,8 @@ public partial class LogsViewModel : Tool {
 				changed = true;
 			}
 
-			if (e.FileLine.Length > m_maxFileLen) {
-				m_maxFileLen = e.FileLine.Length;
+			if (e.DisplayFileLine.Length > m_maxFileLen) {
+				m_maxFileLen = e.DisplayFileLine.Length;
 				changed = true;
 			}
 		}

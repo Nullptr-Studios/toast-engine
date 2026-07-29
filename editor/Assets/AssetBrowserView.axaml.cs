@@ -30,6 +30,7 @@ public partial class AssetBrowserView : UserControl {
 		AssetRepeater.AddHandler(PointerPressedEvent, OnCardPointerPressed, RoutingStrategies.Tunnel);
 		AssetRepeater.AddHandler(PointerMovedEvent, OnCardPointerMoved, RoutingStrategies.Tunnel);
 		AssetRepeater.AddHandler(PointerReleasedEvent, OnCardPointerReleased, RoutingStrategies.Tunnel);
+		AddHandler(KeyDownEvent, OnShortcut, RoutingStrategies.Tunnel);
 
 		var bg = this.FindControl<Border>("AssetViewBackground");
 		if (bg?.ContextMenu is { } menu) menu.Opening += (_, _) => RebuildContextMenu(menu);
@@ -46,6 +47,7 @@ public partial class AssetBrowserView : UserControl {
 		var item = GetCardItem(e.Source);
 		if (item is null) return;
 		Vm.SelectItem(item, e.KeyModifiers);
+		Focus();
 		if (item is AssetFile file) {
 			m_pressFile = file;
 			m_pressArgs = e;
@@ -98,7 +100,7 @@ public partial class AssetBrowserView : UserControl {
 				Vm.SelectedFolder = folder;
 				e.Handled = true;
 				break;
-			case AssetFile file when file.Definition?.CanBeEdited == true:
+			case AssetFile file when Vm.CanOpenForEditing(file):
 				EditorManager.RequestOpen(file);
 				e.Handled = true;
 				break;
@@ -106,15 +108,16 @@ public partial class AssetBrowserView : UserControl {
 	}
 
 	private void OnCardDragOver(object? sender, DragEventArgs e) {
-		if (GetCardItem(e.Source) is not AssetFolder) {
+		if (GetCardItem(e.Source) is not AssetFolder target) {
 			e.DragEffects = DragDropEffects.None;
 			e.Handled = true;
 			return;
 		}
 
-		var hasAsset = e.DataTransfer.TryGetValue(AssetDragData.MultiFormat) is not null
-			|| e.DataTransfer.TryGetValue(AssetDragData.Format) is not null;
-		e.DragEffects = hasAsset ? DragDropEffects.Move : DragDropEffects.None;
+		var canMove = e.DataTransfer.TryGetValue(AssetDragData.MultiFormat) is { } refs
+			? refs.Count > 0 && refs.All(r => Vm.CanMoveAsset(r.Uid, target))
+			: e.DataTransfer.TryGetValue(AssetDragData.Format) is { } dragRef && Vm.CanMoveAsset(dragRef.Uid, target);
+		e.DragEffects = canMove ? DragDropEffects.Move : DragDropEffects.None;
 		e.Handled = true;
 	}
 
@@ -122,6 +125,7 @@ public partial class AssetBrowserView : UserControl {
 		if (GetCardItem(e.Source) is not AssetFolder target) return;
 
 		if (e.DataTransfer.TryGetValue(AssetDragData.MultiFormat) is { } refs) {
+			if (refs.Count == 0 || refs.Any(r => !Vm.CanMoveAsset(r.Uid, target))) return;
 			foreach (var r in refs)
 				Vm.MoveAsset(r.Uid, target);
 			e.Handled = true;
@@ -129,6 +133,7 @@ public partial class AssetBrowserView : UserControl {
 		}
 
 		if (e.DataTransfer.TryGetValue(AssetDragData.Format) is not { } dragRef) return;
+		if (!Vm.CanMoveAsset(dragRef.Uid, target)) return;
 		Vm.MoveAsset(dragRef.Uid, target);
 		e.Handled = true;
 	}
@@ -145,8 +150,10 @@ public partial class AssetBrowserView : UserControl {
 	}
 
 	private void OnAssetAreaPointerPressed(object? sender, PointerPressedEventArgs e) {
-		if (!e.Handled)
+		if (!e.Handled) {
 			Vm.ClearSelection();
+			Focus();
+		}
 	}
 
 	private void OnNewButtonClick(object? sender, RoutedEventArgs e) {
@@ -154,10 +161,12 @@ public partial class AssetBrowserView : UserControl {
 		if (bg?.ContextMenu is not { } menu) return;
 		menu.DataContext = DataContext;
 		menu.PlacementTarget = sender as Control ?? bg;
+		RebuildContextMenu(menu);
 		menu.Open();
 	}
 
 	private async void Import_OnClick(object? sender, RoutedEventArgs e) {
+		if (!Vm.CanWriteToSelectedFolder) return;
 		var owner = TopLevel.GetTopLevel(this) as Window;
 		if (owner is null) return;
 		var importWindow = new ImportWindow();
@@ -171,14 +180,14 @@ public partial class AssetBrowserView : UserControl {
 			return;
 		}
 
-		e.DragEffects = e.DataTransfer.Contains(DataFormat.File)
+		e.DragEffects = Vm.CanWriteToSelectedFolder && e.DataTransfer.Contains(DataFormat.File)
 			? DragDropEffects.Copy
 			: DragDropEffects.None;
 		e.Handled = true;
 	}
 
 	private async void OnAssetAreaDrop(object? sender, DragEventArgs e) {
-		if (!e.DataTransfer.Contains(DataFormat.File)) return;
+		if (!Vm.CanWriteToSelectedFolder || !e.DataTransfer.Contains(DataFormat.File)) return;
 
 		var storageItems = e.DataTransfer.TryGetFiles()?.ToList();
 		if (storageItems is not { Count: > 0 }) return;
@@ -192,6 +201,24 @@ public partial class AssetBrowserView : UserControl {
 		if (paths.Count > 0)
 			await Vm.HandleDroppedFilesAsync(paths);
 
+		e.Handled = true;
+	}
+
+	private void OnShortcut(object? sender, KeyEventArgs e) {
+		if (e.Source is TextBox) return;
+
+		ICommand? command = (e.Key, e.KeyModifiers) switch {
+			(Key.F2, KeyModifiers.None) => Vm.RenameCommand,
+			(Key.Delete, KeyModifiers.None) => Vm.DeleteCommand,
+			(Key.C, KeyModifiers.Control) => Vm.CopyCommand,
+			(Key.X, KeyModifiers.Control) => Vm.CutCommand,
+			(Key.V, KeyModifiers.Control) => Vm.PasteCommand,
+			(Key.D, KeyModifiers.Control) => Vm.DuplicateCommand,
+			_ => null
+		};
+
+		if (command is null || !command.CanExecute(null)) return;
+		command.Execute(null);
 		e.Handled = true;
 	}
 
@@ -231,9 +258,10 @@ public partial class AssetBrowserView : UserControl {
 			tomlDefinition?.ChipColor ?? "Cyan",
 			tomlDefinition?.Icon ?? LucideIconKind.Database
 		));
-		foreach (var (category, types) in AssetTypeRegistry.CreatableByCategory) {
-			var sub = new MenuItem { Header = category };
-			foreach (var def in types)
+		foreach (var (category, types) in AssetTypeRegistry.CreatableByCategory
+			         .OrderBy(entry => entry.Category, System.StringComparer.OrdinalIgnoreCase)) {
+			var sub = new MenuItem { Header = category, IsEnabled = vm.CanWriteToSelectedFolder };
+			foreach (var def in types.OrderBy(def => def.DisplayName, System.StringComparer.OrdinalIgnoreCase))
 				sub.Items.Add(new MenuItem
 					{ Header = def.DisplayName, Command = vm.NewAssetCommand, CommandParameter = def });
 			menu.Items.Add(sub);

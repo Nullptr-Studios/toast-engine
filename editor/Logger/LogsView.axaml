@@ -360,7 +360,7 @@
 										   VerticalAlignment="Center" />
 								<!-- File and Line -->
 								<TextBlock Grid.Column="2"
-										   b:TextHighlight.Text="{Binding FileLine}"
+										   b:TextHighlight.Text="{Binding DisplayFileLine}"
 										   b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
 										   Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
 										   FontFamily="FiraCode Nerd Font,Consolas,monospace"

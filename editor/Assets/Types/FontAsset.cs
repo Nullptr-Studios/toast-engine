@@ -10,7 +10,7 @@ public sealed class FontAsset : BaseAsset {
 	public override string ChipColor => "Blue";
 	public override LucideIconKind Icon => LucideIconKind.Type;
 	public override bool CanBeCreated => false;
-	public override string Category => "";
+	public override string Category => "UI";
 	public override bool HasThumbnail => false;
 	public override bool CanBeEdited => false;
 	public override string EditorTool => "";

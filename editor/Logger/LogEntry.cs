@@ -5,6 +5,7 @@
 
 using System;
 using System.Globalization;
+using System.IO;
 
 namespace editor.Logger;
 
@@ -25,6 +26,7 @@ public sealed class LogEntry {
 	public string PreciseTime { get; }
 	public string AbsoluteTimestamp { get; }
 	public string FileLine { get; }
+	public string DisplayFileLine { get; }
 	public string DisplayMessage { get; }
 	public string SearchBlob { get; }
 
@@ -49,6 +51,8 @@ public sealed class LogEntry {
 		AbsoluteTimestamp = local.ToString("yyyy-MM-dd HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
 
 		FileLine = line > 0 ? $"{filepath}:{line}" : filepath;
+		var filename = Path.GetFileName(filepath.Replace('\\', '/'));
+		DisplayFileLine = line > 0 ? $"{filename}:{line}" : filename;
 
 		DisplayMessage = TrimForTable(message);
 		SearchBlob = string.Join(FieldSeparator, SeverityName, sink, FileLine, message);

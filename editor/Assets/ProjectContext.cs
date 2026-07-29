@@ -153,6 +153,14 @@ public static class ProjectContext {
 		return false;
 	}
 
+	public static bool IsUnderCore(string realPath) {
+		if (!IsInitialized) return false;
+		var canonical = Path.GetFullPath(realPath);
+		var root = Path.GetFullPath(CorePath);
+		return string.Equals(canonical, root, StringComparison.OrdinalIgnoreCase) ||
+		       canonical.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+	}
+
 	private static void RegisterSchemes() {
 		s_schemes.Clear();
 
