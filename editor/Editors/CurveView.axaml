@@ -235,7 +235,7 @@
 			<cc:CurveCanvas Grid.Column="2"
 			                Curves="{Binding CanvasItems}"
 			                SelectedPointIndex="{Binding SelectedPointIndex, Mode=TwoWay}"
-			                IsReadOnly="{Binding IsReadOnly}" />
+			                IsReadOnly="{Binding IsReadOnly}"/>
 		</Grid>
 
 		<!-- Empty state -->

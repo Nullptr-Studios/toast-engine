@@ -6,7 +6,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
-             d:DesignWidth="1000"
+             d:DesignWidth="1400"
              d:DesignHeight="400"
              x:Class="editor.Editors.TableView"
              x:DataType="vm:TableViewModel"
@@ -34,16 +34,37 @@
 			<Setter Property="CornerRadius" Value="6" />
 			<Setter Property="Cursor" Value="Hand" />
 		</Style>
+		<Style Selector="Button.add-btn /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{StaticResource Bg4}" />
+		</Style>
+		<Style Selector="Button.add-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+			<Setter Property="Background" Value="{StaticResource Bg5}" />
+		</Style>
+		<Style Selector="Border.gutter">
+			<Setter Property="Background" Value="{StaticResource Bg3}" />
+			<Setter Property="CornerRadius" Value="8" />
+		</Style>
+		<Style Selector="StackPanel.table-body">
+			<Setter Property="Spacing" Value="4" />
+			<Setter Property="Margin" Value="0,8" />
+		</Style>
+		<Style Selector="Grid.gutter-row">
+			<Setter Property="Height" Value="34" />
+			<Setter Property="ColumnSpacing" Value="4" />
+			<Setter Property="Margin" Value="8,0" />
+		</Style>
 		<Style Selector="Border.head-cell">
-			<Setter Property="Width" Value="180" />
+			<Setter Property="Height" Value="34" />
+			<Setter Property="MinWidth" Value="160" />
+			<Setter Property="Margin" Value="2,0" />
 			<Setter Property="Padding" Value="8,6" />
 			<Setter Property="Background" Value="{StaticResource Bg3}" />
-			<Setter Property="Margin" Value="0,0,2,0" />
-			<Setter Property="CornerRadius" Value="4" />
+			<Setter Property="CornerRadius" Value="6" />
 		</Style>
-		<Style Selector="TextBox.cell">
-			<Setter Property="Width" Value="180" />
-			<Setter Property="Margin" Value="0,0,2,2" />
+		<Style Selector="Panel.cell">
+			<Setter Property="Height" Value="34" />
+			<Setter Property="MinWidth" Value="160" />
+			<Setter Property="Margin" Value="2,0" />
 		</Style>
 	</UserControl.Styles>
 
@@ -78,9 +99,7 @@
 						</StackPanel>
 						
 						<Button Classes="add-btn"
-						        Command="{Binding AddRowCommand}"
-						        Background="{StaticResource Bg4}"
-						        ToolTip.Tip="Add row">
+						        Command="{Binding AddRowCommand}">
 							<StackPanel Orientation="Horizontal" Spacing="4">
 								<lucide:LucideIcon Kind="Plus" Size="16" StrokeWidth="3" />
 								<TextBlock Text="Add Row" FontWeight="Bold" />
@@ -92,78 +111,113 @@
 			
 
 			<!-- Table -->
-			<ScrollViewer HorizontalScrollBarVisibility="Auto"
+			<ScrollViewer HorizontalScrollBarVisibility="Disabled"
 			              VerticalScrollBarVisibility="Auto">
-				<StackPanel>
-					<!-- Header row) -->
-					<StackPanel Orientation="Horizontal">
-						<Border Width="30" />
-						<ItemsControl ItemsSource="{Binding Columns}">
-							<ItemsControl.ItemsPanel>
-								<ItemsPanelTemplate>
-									<StackPanel Orientation="Horizontal" Spacing="2"/>
-								</ItemsPanelTemplate>
-							</ItemsControl.ItemsPanel>
-							<ItemsControl.ItemTemplate>
-								<DataTemplate x:DataType="vm:TableColumnVM">
-									<Border Classes="head-cell" IsVisible="{Binding IsVisible}">
-										<TextBlock Text="{Binding Name}"
-										           FontWeight="Bold"
-										           TextTrimming="CharacterEllipsis"/>
-									</Border>
-								</DataTemplate>
-							</ItemsControl.ItemTemplate>
-						</ItemsControl>
-					</StackPanel>
+				<Grid>
+					<Grid.ColumnDefinitions>
+						<ColumnDefinition Width="260" MinWidth="140" />
+						<ColumnDefinition Width="8" />
+						<ColumnDefinition Width="*" MinWidth="160" />
+					</Grid.ColumnDefinitions>
 
-					<!-- Data rows -->
-					<ItemsControl ItemsSource="{Binding Rows}" Margin="0,4,0,0">
-						<ItemsControl.ItemsPanel>
-							<ItemsPanelTemplate>
-								<StackPanel />
-							</ItemsPanelTemplate>
-						</ItemsControl.ItemsPanel>
-						<ItemsControl.ItemTemplate>
-							<DataTemplate x:DataType="vm:TableRowVM">
-								<StackPanel Orientation="Horizontal">
-									<Button Width="30"
-									        Classes="icon-btn"
-									        Command="{Binding $parent[ItemsControl].((vm:TableViewModel)DataContext).DeleteRowCommand}"
-									        CommandParameter="{Binding}"
-									        ToolTip.Tip="Delete row">
-										<lucide:LucideIcon Kind="X" Size="14" StrokeWidth="3"
-										                   Foreground="{StaticResource TextMuted}" />
-									</Button>
-									<ItemsControl ItemsSource="{Binding Cells}">
-										<ItemsControl.ItemsPanel>
-											<ItemsPanelTemplate>
-												<StackPanel Orientation="Horizontal" Spacing="2"/>
-											</ItemsPanelTemplate>
-										</ItemsControl.ItemsPanel>
-										<ItemsControl.ItemTemplate>
-											<DataTemplate x:DataType="vm:TableCellVM">
-												<Panel Width="180" Margin="0,0,2,2" IsVisible="{Binding IsVisible}">
-													<TextBox Classes="cell"
-													         Width="180"
-													         Margin="0"
-													         IsVisible="{Binding !IsAssetReference}"
-													         Text="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-													         Background="{StaticResource Bg1}"
-													         BorderThickness="0"
-													         CornerRadius="6"/>
-													<elements:AssetBox Width="180"
-													                   IsVisible="{Binding IsAssetReference}"
-													                   AssetType="ui_image"
-													                   Value="{Binding Value, Mode=TwoWay}"/>
-												</Panel>
-											</DataTemplate>
-										</ItemsControl.ItemTemplate>
-									</ItemsControl>
-								</StackPanel>
-							</DataTemplate>
-						</ItemsControl.ItemTemplate>
-					</ItemsControl>
-				</StackPanel>
+					<Panel>
+						<Border Classes="gutter" />
+						<StackPanel Classes="table-body">
+							<Grid Classes="gutter-row" ColumnDefinitions="30,*">
+								<TextBlock Grid.Column="1"
+								           Text="Id"
+								           FontWeight="Bold"
+								           Margin="8,0,0,0"
+								           VerticalAlignment="Center" />
+							</Grid>
+							<ItemsControl ItemsSource="{Binding Rows}">
+								<ItemsControl.ItemsPanel>
+									<ItemsPanelTemplate>
+										<StackPanel Spacing="4" />
+									</ItemsPanelTemplate>
+								</ItemsControl.ItemsPanel>
+								<ItemsControl.ItemTemplate>
+									<DataTemplate x:DataType="vm:TableRowVM">
+										<Grid Classes="gutter-row" ColumnDefinitions="30,*">
+											<Button Classes="icon-btn"
+											        Command="{Binding $parent[ItemsControl].((vm:TableViewModel)DataContext).DeleteRowCommand}"
+											        CommandParameter="{Binding}"
+											        ToolTip.Tip="Delete row">
+												<lucide:LucideIcon Kind="X" Size="14" StrokeWidth="3"
+												                   Foreground="{StaticResource TextMuted}" />
+											</Button>
+											<elements:StringBox Grid.Column="1"
+											                    Wrap="False"
+											                    Value="{Binding IdCell.Value, Mode=TwoWay}" />
+										</Grid>
+									</DataTemplate>
+								</ItemsControl.ItemTemplate>
+							</ItemsControl>
+						</StackPanel>
+					</Panel>
+
+					<GridSplitter Grid.Column="1"
+					              ResizeDirection="Columns"
+					              Background="Transparent"
+					              Width="4" />
+
+					<!-- Scrollable language columns -->
+					<ScrollViewer Grid.Column="2"
+					              HorizontalScrollBarVisibility="Auto"
+					              VerticalScrollBarVisibility="Disabled">
+						<StackPanel Classes="table-body"
+						            MinWidth="{Binding $parent[ScrollViewer].Viewport.Width}">
+							<ItemsControl ItemsSource="{Binding ValueColumns}">
+								<ItemsControl.ItemsPanel>
+									<ItemsPanelTemplate>
+										<UniformGrid Rows="1" />
+									</ItemsPanelTemplate>
+								</ItemsControl.ItemsPanel>
+								<ItemsControl.ItemTemplate>
+									<DataTemplate x:DataType="vm:TableColumnVM">
+										<Border Classes="head-cell">
+											<TextBlock Text="{Binding Name}"
+											           FontWeight="Bold"
+											           VerticalAlignment="Center"
+											           TextTrimming="CharacterEllipsis"/>
+										</Border>
+									</DataTemplate>
+								</ItemsControl.ItemTemplate>
+							</ItemsControl>
+
+							<ItemsControl ItemsSource="{Binding Rows}">
+								<ItemsControl.ItemsPanel>
+									<ItemsPanelTemplate>
+										<StackPanel Spacing="4" />
+									</ItemsPanelTemplate>
+								</ItemsControl.ItemsPanel>
+								<ItemsControl.ItemTemplate>
+									<DataTemplate x:DataType="vm:TableRowVM">
+										<ItemsControl ItemsSource="{Binding ValueCells}">
+											<ItemsControl.ItemsPanel>
+												<ItemsPanelTemplate>
+													<UniformGrid Rows="1" />
+												</ItemsPanelTemplate>
+											</ItemsControl.ItemsPanel>
+											<ItemsControl.ItemTemplate>
+												<DataTemplate x:DataType="vm:TableCellVM">
+													<Panel Classes="cell">
+														<elements:StringBox IsVisible="{Binding !IsAssetReference}"
+														                    Wrap="False"
+														                    Value="{Binding Value, Mode=TwoWay}" />
+														<elements:AssetBox IsVisible="{Binding IsAssetReference}"
+														                   AssetType="ui_image"
+														                   Value="{Binding Value, Mode=TwoWay}"/>
+													</Panel>
+												</DataTemplate>
+											</ItemsControl.ItemTemplate>
+										</ItemsControl>
+									</DataTemplate>
+								</ItemsControl.ItemTemplate>
+							</ItemsControl>
+						</StackPanel>
+					</ScrollViewer>
+				</Grid>
 			</ScrollViewer>
 		</DockPanel>
 

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Dock.Avalonia.Controls;
 using Dock.Model.Controls;
@@ -17,7 +18,8 @@ public class ToastZoneFactory : Factory {
 	private bool m_hapticsClosePending;
 	private bool m_tableClosePending;
 	private IRootDock? m_rootDock;
-	private ToolDock? m_toolDock;
+	private IToolDock? m_toolDock;
+	private AssetBrowserViewModel? m_assetBrowser;
 
 	public LogsViewModel? LogsVm { get; private set; }
 	public CurveViewModel? CurveEditorVm { get; private set; }
@@ -37,6 +39,7 @@ public class ToastZoneFactory : Factory {
 		var tableEditor = new TableViewModel
 			{ Id = "Table", Title = "Table Editor", CanPin = false, CanFloat = false };
 
+		m_assetBrowser = assetBrowser;
 		LogsVm = logs;
 		HapticsEditorVm = hapticsEditor;
 		CurveEditorVm = curveEditor;
@@ -47,10 +50,7 @@ public class ToastZoneFactory : Factory {
 			ActiveDockable = assetBrowser,
 			VisibleDockables = CreateList<IDockable>(
 				assetBrowser,
-				logs,
-				hapticsEditor,
-				curveEditor,
-				tableEditor
+				logs
 			),
 			Alignment = Alignment.Bottom,
 			GripMode = GripMode.Hidden
@@ -72,18 +72,30 @@ public class ToastZoneFactory : Factory {
 
 	// Brings a toast-zone tab to the front, re-adding it if it was closed
 	public void ShowTool(Tool tool) {
-		if (m_toolDock is null) return;
-		if (m_toolDock.VisibleDockables?.Contains(tool) != true)
-			AddDockable(m_toolDock, tool);
+		if (m_rootDock is null) return;
+		if (LayoutSerializer.ContainsVisible(m_rootDock, tool)) {
+			SetActiveDockable(tool);
+			return;
+		}
+
+		var target = tool.OriginalOwner as IToolDock ?? m_toolDock;
+		if (target is null || !LayoutSerializer.ContainsVisible(m_rootDock, target)) target = FirstToolDock();
+		if (target is null) return;
+
+		m_rootDock.HiddenDockables?.Remove(tool);
+		AddDockable(target, tool);
 		SetActiveDockable(tool);
 	}
 
 	private void HideTool(Tool tool) {
-		if (m_toolDock?.VisibleDockables?.Contains(tool) == true)
-			CloseDockable(tool);
+		if (LayoutSerializer.ContainsVisible(m_rootDock, tool)) CloseDockable(tool);
 	}
 
-	private Tool? ToolById(string id) {
+	private IToolDock? FirstToolDock() {
+		return LayoutSerializer.EnumerateDocks(m_rootDock, false).OfType<IToolDock>().FirstOrDefault();
+	}
+
+	public Tool? ToolById(string id) {
 		return id switch {
 			"Logs" => LogsVm,
 			"Haptics" => HapticsEditorVm,
@@ -94,7 +106,61 @@ public class ToastZoneFactory : Factory {
 	}
 
 	public bool IsToolVisible(string id) {
-		return ToolById(id) is { } tool && m_toolDock?.VisibleDockables?.Contains(tool) == true;
+		return ToolById(id) is { } tool && LayoutSerializer.ContainsVisible(m_rootDock, tool);
+	}
+
+	public LayoutNode? CaptureLayout() {
+		return LayoutSerializer.Capture(m_rootDock, null);
+	}
+
+	public IRootDock? RebuildLayout(LayoutNode? node) {
+		if (node is null) return null;
+
+		var root = LayoutSerializer.BuildRoot(node, this, ResolveDockable);
+		if (root is null) return null;
+
+		foreach (var tool in AllTools())
+			if (tool is not null)
+				tool.Owner = null;
+
+		m_rootDock = root;
+		m_toolDock = FindBottomDock(root);
+		EnsureAssetBrowser(root);
+		return root;
+	}
+
+	private IDockable? ResolveDockable(string id) {
+		return id == "AssetBrowser" ? m_assetBrowser : ToolById(id);
+	}
+
+	private IEnumerable<Tool?> AllTools() {
+		yield return m_assetBrowser;
+		yield return LogsVm;
+		yield return HapticsEditorVm;
+		yield return CurveEditorVm;
+		yield return TableEditorVm;
+	}
+
+	private static IToolDock? FindBottomDock(IRootDock root) {
+		var docks = LayoutSerializer.EnumerateDocks(root, false).OfType<IToolDock>().ToList();
+		return docks.FirstOrDefault(d => d.Alignment == Alignment.Bottom) ?? docks.FirstOrDefault();
+	}
+
+	private void EnsureAssetBrowser(IRootDock root) {
+		if (m_assetBrowser is null || LayoutSerializer.ContainsVisible(root, m_assetBrowser)) return;
+
+		if (m_toolDock is null) {
+			m_toolDock = CreateToolDock();
+			m_toolDock.Alignment = Alignment.Bottom;
+			m_toolDock.GripMode = GripMode.Hidden;
+			m_toolDock.VisibleDockables = CreateList<IDockable>();
+			root.VisibleDockables ??= CreateList<IDockable>();
+			root.VisibleDockables.Add(m_toolDock);
+		}
+
+		m_toolDock.VisibleDockables ??= CreateList<IDockable>();
+		m_toolDock.VisibleDockables.Insert(0, m_assetBrowser);
+		m_toolDock.ActiveDockable ??= m_assetBrowser;
 	}
 
 	public bool ToggleTool(string id) {
@@ -123,7 +189,7 @@ public class ToastZoneFactory : Factory {
 			["Table"] = () => TableEditorVm
 		};
 		HostWindowLocator = new Dictionary<string, Func<IHostWindow?>> {
-			[nameof(IDockWindow)] = () => new HostWindow()
+			[nameof(IDockWindow)] = () => new EditorHostWindow()
 		};
 		HideToolsOnClose = true;
 		base.InitLayout(layout);

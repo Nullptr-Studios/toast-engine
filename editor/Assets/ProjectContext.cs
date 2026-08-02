@@ -216,6 +216,7 @@ public static class ProjectContext {
 		Directory.CreateDirectory(CachePath);
 		Directory.CreateDirectory(Path.Combine(CachePath, "thumbnails"));
 		Directory.CreateDirectory(Path.Combine(CachePath, "autosaves"));
+		Directory.CreateDirectory(Path.Combine(CachePath, "layouts"));
 
 		foreach (var root in DatabaseRoots)
 			Directory.CreateDirectory(root);

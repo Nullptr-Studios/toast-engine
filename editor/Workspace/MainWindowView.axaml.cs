@@ -30,6 +30,7 @@ public partial class MainWindowView : Window {
 		InitializeComponent();
 		m_toastBorder = this.FindControl<Border>("ToastZoneBorder");
 		WireResizeHandle();
+		WireWindowMenu();
 		DataContextChanged += OnDataContextChanged;
 	}
 
@@ -38,6 +39,7 @@ public partial class MainWindowView : Window {
 		m_toast = toast;
 		m_toastBorder = this.FindControl<Border>("ToastZoneBorder");
 		WireResizeHandle();
+		WireWindowMenu();
 		DataContextChanged += OnDataContextChanged;
 
 		AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
@@ -65,8 +67,9 @@ public partial class MainWindowView : Window {
 
 	private void OnResizePointerMoved(object? sender, PointerEventArgs e) {
 		if (!m_isResizing || m_toastBorder is null) return;
+		if (DataContext is not MainWindowViewModel vm) return;
 		var delta = e.GetPosition(this).Y - m_resizeStartY;
-		m_toastBorder.Height = Math.Clamp(m_resizeStartH - delta, 100, Bounds.Height - 100);
+		vm.ToastZoneHeight = Math.Clamp(m_resizeStartH - delta, 100, Bounds.Height - 100);
 	}
 
 	private void OnResizePointerReleased(object? sender, PointerReleasedEventArgs e) {
@@ -75,8 +78,11 @@ public partial class MainWindowView : Window {
 	}
 
 	private void OnDataContextChanged(object? sender, EventArgs e) {
-		if (DataContext is MainWindowViewModel vm)
-			vm.PropertyChanged += OnViewModelPropertyChanged;
+		if (DataContext is not MainWindowViewModel vm) return;
+		vm.PropertyChanged += OnViewModelPropertyChanged;
+
+		if (m_toastBorder is not null)
+			m_toastBorder.RenderTransform = TransformOperations.Parse($"translateY({vm.ToastZoneHeight}px)");
 	}
 
 	private async void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) {
@@ -109,6 +115,17 @@ public partial class MainWindowView : Window {
 		}
 	}
 
+	protected override void OnOpened(EventArgs e) {
+		base.OnOpened(e);
+		(DataContext as MainWindowViewModel)?.RestoreSession();
+	}
+
+	protected override void OnClosing(WindowClosingEventArgs e) {
+		base.OnClosing(e);
+		if (e.Cancel) return;
+		(DataContext as MainWindowViewModel)?.SaveSessionLayout();
+	}
+
 	protected override void OnClosed(EventArgs e) {
 		base.OnClosed(e);
 		m_toast?.Dispose();
@@ -139,6 +156,71 @@ public partial class MainWindowView : Window {
 
 	private void OnClose(object? sender, RoutedEventArgs e) {
 		Close();
+	}
+
+	private void OnMenuMaximize(object? sender, RoutedEventArgs e) {
+		WindowState = WindowState.Maximized;
+	}
+
+	private void OnMenuRestore(object? sender, RoutedEventArgs e) {
+		WindowState = WindowState.Normal;
+	}
+
+	private void WireWindowMenu() {
+		if (this.FindControl<MenuItem>("WindowMenu") is { } menu)
+			menu.SubmenuOpened += (_, _) => RebuildWindowMenu();
+	}
+
+	private const int StaticWindowMenuItems = 4;
+
+	private void RebuildWindowMenu() {
+		MaximizeItem.IsEnabled = WindowState != WindowState.Maximized;
+		RestoreItem.IsEnabled = WindowState != WindowState.Normal;
+
+		if (DataContext is not MainWindowViewModel vm) return;
+
+		var items = WindowMenu.Items;
+		while (items.Count > StaticWindowMenuItems)
+			items.RemoveAt(StaticWindowMenuItems);
+
+		var canSwitch = !WorkspaceViewModel.AnyPlayActive;
+
+		items.Add(MakeLayoutItem(vm, LayoutStore.DefaultName, canSwitch));
+		foreach (var name in vm.LayoutNames) items.Add(MakeLayoutItem(vm, name, canSwitch));
+
+		items.Add(new Separator());
+		items.Add(new MenuItem {
+			Header = "_Save Layout As...",
+			Command = vm.SaveLayoutAsCommand
+		});
+		items.Add(new MenuItem {
+			Header = "Save _Layout",
+			Command = vm.SaveLayoutCommand,
+			IsEnabled = vm.CanModifyActiveLayout
+		});
+		items.Add(new MenuItem {
+			Header = "_Delete Layout...",
+			Command = vm.DeleteLayoutCommand,
+			CommandParameter = vm.ActiveLayoutName,
+			IsEnabled = vm.CanModifyActiveLayout
+		});
+		items.Add(new Separator());
+		items.Add(new MenuItem {
+			Header = "_Reset to Default",
+			Command = vm.ResetLayoutCommand,
+			IsEnabled = canSwitch
+		});
+	}
+
+	private static MenuItem MakeLayoutItem(MainWindowViewModel vm, string name, bool enabled) {
+		return new MenuItem {
+			Header = name,
+			ToggleType = MenuItemToggleType.Radio,
+			IsChecked = string.Equals(name, vm.ActiveLayoutName, StringComparison.Ordinal),
+			IsEnabled = enabled,
+			Command = vm.ApplyNamedLayoutCommand,
+			CommandParameter = name
+		};
 	}
 
 	// Typing takes priority

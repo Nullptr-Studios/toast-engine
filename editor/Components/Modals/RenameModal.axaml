@@ -39,10 +39,12 @@
 			        FontWeight="Bold">
 				<StackPanel Orientation="Horizontal"
 				            Spacing="4">
-					<LucideIcon Kind="Pencil"
+					<LucideIcon x:Name="OkIcon"
+					            Kind="Pencil"
 					            Size="16"
 					            StrokeWidth="3.5" />
-					<TextBlock Text="Rename" />
+					<TextBlock x:Name="OkText"
+					           Text="Rename" />
 				</StackPanel>
 			</Button>
 		</StackPanel>

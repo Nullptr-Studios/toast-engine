@@ -42,7 +42,10 @@ public partial class WorkspaceViewModel : Document, IAutosavable {
 	private WorkspaceViewModel(ToastEngine? engine = null) {
 		Engine = engine;
 		Title = "Unnamed Node";
-		CanDrag = false;
+
+		CanDrag = true;
+		CanFloat = false;
+		CanPin = false;
 
 		m_renderListener.SubscribeOnUiThread<RenderPassList>(SyncRenderPasses);
 	}

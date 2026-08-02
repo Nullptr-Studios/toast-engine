@@ -155,6 +155,22 @@
 			<Setter Property="Background"
 			        Value="{StaticResource Bg2}" />
 		</Style>
+		<Style Selector="HostWindowTitleBar">
+			<Setter Property="IsVisible"
+			        Value="False" />
+			<Setter Property="Height"
+			        Value="0" />
+		</Style>
+		<Style Selector="HostWindow">
+			<Setter Property="Background"
+			        Value="{StaticResource Bg1}" />
+		</Style>
+		<Style Selector="ToolChromeControl /template/ Grid#PART_Grip">
+			<Setter Property="IsVisible"
+			        Value="False" />
+			<Setter Property="Height"
+			        Value="0" />
+		</Style>
 		<Style Selector="ToolChromeControl /template/ Border#PART_Border">
 			<Setter Property="BorderThickness"
 			        Value="0" />
@@ -246,6 +262,28 @@
 			</Setter>
 		</Style>
 		<Style Selector="DocumentTabStripItem">
+			<Setter Property="DocumentContextMenu">
+				<Template>
+					<ContextMenu x:CompileBindings="False">
+						<MenuItem Header="_Close"
+						          Command="{Binding Owner.Factory.CloseDockable}"
+						          CommandParameter="{Binding}" />
+						<MenuItem Header="Close _Other Tabs"
+						          Command="{Binding Owner.Factory.CloseOtherDockables}"
+						          CommandParameter="{Binding}" />
+						<MenuItem Header="Close _All Tabs"
+						          Command="{Binding Owner.Factory.CloseAllDockables}"
+						          CommandParameter="{Binding}" />
+						<Separator />
+						<MenuItem Header="Close Tabs to the _Left"
+						          Command="{Binding Owner.Factory.CloseLeftDockables}"
+						          CommandParameter="{Binding}" />
+						<MenuItem Header="Close Tabs to the _Right"
+						          Command="{Binding Owner.Factory.CloseRightDockables}"
+						          CommandParameter="{Binding}" />
+					</ContextMenu>
+				</Template>
+			</Setter>
 			<Setter Property="Template">
 				<ControlTemplate x:DataType="core:IDockable">
 					<Panel>

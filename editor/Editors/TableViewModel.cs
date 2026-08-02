@@ -42,6 +42,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 	}
 
 	public ObservableCollection<TableColumnVM> Columns { get; } = [];
+	public ObservableCollection<TableColumnVM> ValueColumns { get; } = [];
 	public ObservableCollection<TableRowVM> Rows { get; } = [];
 
 	public bool IsAutosaveDirty => IsDirty && HasContent;
@@ -103,6 +104,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 
 		var table = ParseCsv(csv);
 		Columns.Clear();
+		ValueColumns.Clear();
 		Rows.Clear();
 		m_storageHeaders.Clear();
 
@@ -128,19 +130,26 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 		var row = new TableRowVM(OnCellEdited);
 		foreach (var column in Columns) {
 			var value = column.StorageIndex < cells.Count ? cells[column.StorageIndex] : "";
-			row.Cells.Add(new TableCellVM(row, column.StorageIndex, value,
-				UsesAssetCells && column.StorageIndex > 0, column.IsVisible));
+			var cell = new TableCellVM(row, column.StorageIndex, value,
+				UsesAssetCells && column.StorageIndex > 0, column.IsVisible);
+			row.Cells.Add(cell);
+			if (column.StorageIndex == 0) row.IdCell = cell;
+			else if (column.IsVisible) row.ValueCells.Add(cell);
 		}
 		return row;
 	}
 
 	private void RebuildColumns() {
 		Columns.Clear();
+		ValueColumns.Clear();
 		var configured = new HashSet<string>(ProjectContext.Languages, StringComparer.Ordinal);
 
 		void AddColumn(string name, bool visible) {
 			var index = m_storageHeaders.IndexOf(name);
-			if (index >= 0) Columns.Add(new TableColumnVM(name, index, visible));
+			if (index < 0) return;
+			var column = new TableColumnVM(name, index, visible);
+			Columns.Add(column);
+			if (visible && index > 0) ValueColumns.Add(column);
 		}
 
 		AddColumn("id", true);
@@ -205,6 +214,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 		CurrentPath = "";
 		FileName = "";
 		Columns.Clear();
+		ValueColumns.Clear();
 		Rows.Clear();
 		m_storageHeaders.Clear();
 		HasContent = false;
@@ -403,6 +413,9 @@ public sealed partial class TableRowVM : ObservableObject {
 	}
 
 	public ObservableCollection<TableCellVM> Cells { get; } = [];
+	public ObservableCollection<TableCellVM> ValueCells { get; } = [];
+
+	public TableCellVM? IdCell { get; internal set; }
 
 	internal void NotifyEdited() {
 		m_onEdited();
