@@ -43,9 +43,9 @@ internal static class LogCsv {
 		}
 
 		sb.Append('"');
-		foreach (var c in field) {
-			if (c == '"') sb.Append('"');
-		}
+		foreach (var c in field)
+			if (c == '"')
+				sb.Append('"');
 
 		sb.Append('"');
 	}

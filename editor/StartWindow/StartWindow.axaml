@@ -45,7 +45,7 @@
 				         BorderThickness="0"
 				         Background="{StaticResource Bg1}"
 				         VerticalContentAlignment="Center"
-				         KeyDown="OnSearchKeyDown"/>
+				         KeyDown="OnSearchKeyDown" />
 				<Button Grid.Column="2"
 				        CornerRadius="6"
 				        Command="{Binding NewProject}"
@@ -142,13 +142,13 @@
 									<TextBlock Text="{Binding Version}"
 									           Opacity="0.40"
 									           VerticalAlignment="Center"
-									           HorizontalAlignment="Right"/>
+									           HorizontalAlignment="Right" />
 									<TextBlock Text="{Binding Date}"
 									           Opacity="0.40"
 									           VerticalAlignment="Center"
-									           HorizontalAlignment="Right"/>
+									           HorizontalAlignment="Right" />
 								</StackPanel>
-								
+
 								<Button CornerRadius="6"
 								        Background="{StaticResource Bg2}"
 								        Command="{Binding $parent[ListBox].((vm:StartWindowViewModel)DataContext).RemoveProjectCommand}"

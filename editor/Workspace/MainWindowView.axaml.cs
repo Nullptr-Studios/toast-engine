@@ -5,25 +5,33 @@
 
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Transformation;
 using Avalonia.Threading;
+using editor.Assets;
+using editor.Components.Modals;
 using editor.Engine;
+using StartWindowNS = editor.StartWindow;
 
 namespace editor.Workspace;
 
 public partial class MainWindowView : Window {
+	private const int StaticWindowMenuItems = 4;
 	private readonly ToastEngine? m_toast;
 	private readonly Border? m_toastBorder;
 
 	private bool m_isResizing;
 	private double m_resizeStartH;
 	private double m_resizeStartY;
+	private bool m_returningToStart;
 	private CancellationTokenSource? m_toastCts;
 
 	public MainWindowView() {
@@ -128,7 +136,9 @@ public partial class MainWindowView : Window {
 
 	protected override void OnClosed(EventArgs e) {
 		base.OnClosed(e);
+		(DataContext as MainWindowViewModel)?.Dispose();
 		m_toast?.Dispose();
+		if (m_returningToStart) ProjectContext.Reset();
 	}
 
 	protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -170,8 +180,6 @@ public partial class MainWindowView : Window {
 		if (this.FindControl<MenuItem>("WindowMenu") is { } menu)
 			menu.SubmenuOpened += (_, _) => RebuildWindowMenu();
 	}
-
-	private const int StaticWindowMenuItems = 4;
 
 	private void RebuildWindowMenu() {
 		MaximizeItem.IsEnabled = WindowState != WindowState.Maximized;
@@ -223,12 +231,65 @@ public partial class MainWindowView : Window {
 		};
 	}
 
+	private static void OpenUrl(string url) {
+		Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+	}
+
+	private void OnOpenDocumentation(object? sender, RoutedEventArgs e) {
+		OpenUrl("https://docs.nullptr.es");
+	}
+
+	private void OnOpenGithubRepository(object? sender, RoutedEventArgs e) {
+		OpenUrl("https://github.com/nullptr-studios/toast-engine");
+	}
+
+	private void OnOpenGithubProject(object? sender, RoutedEventArgs e) {
+		OpenUrl("https://github.com/orgs/nullptr-studios/projects/6");
+	}
+
+	private void OnOpenReportBug(object? sender, RoutedEventArgs e) {
+		OpenUrl("https://github.com/orgs/nullptr-studios/projects/7");
+	}
+
+	private void OnOpenAbout(object? sender, RoutedEventArgs e) {
+		new AboutWindow().ShowDialog(this);
+	}
+
+	private void OnCloseProject(object? sender, RoutedEventArgs e) {
+		if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop) return;
+		m_returningToStart = true;
+		var startWindow = new StartWindowNS.StartWindow { DataContext = new StartWindowNS.StartWindowViewModel() };
+		desktop.MainWindow = startWindow;
+		startWindow.Show();
+		Close();
+	}
+
+	private void OnQuitEditor(object? sender, RoutedEventArgs e) {
+		Close();
+	}
+
 	// Typing takes priority
 	private bool IsTextInputFocused() {
 		return FocusManager?.GetFocusedElement() is TextBox;
 	}
 
 	private void OnKeyDown(object? sender, KeyEventArgs e) {
+		if (!IsTextInputFocused()) {
+			if (e.Key == Key.Q && e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift)) {
+				e.Handled = true;
+				OnQuitEditor(null, e);
+				return;
+			}
+
+			if (e.Key == Key.Q && e.KeyModifiers == KeyModifiers.Control) {
+				e.Handled = true;
+				OnCloseProject(null, e);
+				return;
+			}
+
+			if (RunEditShortcut(e)) return;
+		}
+
 		// during play the game owns the keyboard
 		// Space must reach the viewport, not the toast zone
 		if (e.Key != Key.Space || IsTextInputFocused() || WorkspaceViewModel.AnyPlayActive) return;
@@ -238,6 +299,34 @@ public partial class MainWindowView : Window {
 			(DataContext as MainWindowViewModel)?.PinToastZone();
 		else
 			(DataContext as MainWindowViewModel)?.ShowToastZone(true);
+	}
+
+	private bool RunEditShortcut(KeyEventArgs e) {
+		if (DataContext is not MainWindowViewModel vm) return false;
+		var ctrl = e.KeyModifiers == KeyModifiers.Control;
+		var ctrlShift = e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift);
+		ICommand? command = null;
+		object? parameter = null;
+
+		if (ctrl && e.Key == Key.Z) command = vm.History?.UndoCommand;
+		else if ((ctrlShift && e.Key == Key.Z) || (ctrl && e.Key == Key.Y)) command = vm.History?.RedoCommand;
+		else if (ctrl && e.Key == Key.A) command = vm.Hierarchy?.AddNodeCommand;
+		else if (ctrlShift && e.Key == Key.A) command = vm.Hierarchy?.LoadNodeCommand;
+		else if (ctrl && e.Key == Key.X) command = vm.Hierarchy?.CutCommand;
+		else if (ctrl && e.Key == Key.C) command = vm.Hierarchy?.CopyCommand;
+		else if (ctrl && e.Key == Key.V) command = vm.Hierarchy?.PasteCommand;
+		else if (ctrl && e.Key == Key.D) command = vm.Hierarchy?.DuplicateCommand;
+		else if (ctrl && e.Key == Key.Up) command = vm.Hierarchy?.MoveUpCommand;
+		else if (ctrl && e.Key == Key.Down) command = vm.Hierarchy?.MoveDownCommand;
+		else if (e.KeyModifiers == KeyModifiers.None && e.Key == Key.F2) command = vm.Hierarchy?.RenameCommand;
+		else if (e.KeyModifiers == KeyModifiers.None && e.Key == Key.Delete) command = vm.Hierarchy?.DeleteCommand;
+
+		if (command is null) return false;
+		parameter = vm.Hierarchy?.SelectedNode;
+		if (!command.CanExecute(parameter)) return false;
+		command.Execute(parameter);
+		e.Handled = true;
+		return true;
 	}
 
 	private void OnKeyUp(object? sender, KeyEventArgs e) {

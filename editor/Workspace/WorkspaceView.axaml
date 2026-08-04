@@ -194,7 +194,7 @@
 						<TextBlock Classes="snapValue"
 						           Text="{Binding TranslateSnap, Converter={StaticResource SnapValueConverter}}"
 						           IsVisible="{Binding TranslateSnapEnabled}"
-						           HorizontalAlignment="Right"/>
+						           HorizontalAlignment="Right" />
 					</StackPanel>
 				</ToggleButton>
 				<ToggleButton Classes="snapTool green"
@@ -212,7 +212,7 @@
 						<TextBlock Classes="snapValue"
 						           Text="{Binding RotateSnap, Converter={StaticResource SnapValueConverter}, ConverterParameter=int}"
 						           IsVisible="{Binding RotateSnapEnabled}"
-						           HorizontalAlignment="Right"/>
+						           HorizontalAlignment="Right" />
 					</StackPanel>
 				</ToggleButton>
 				<ToggleButton Classes="snapTool blue"
@@ -230,7 +230,7 @@
 						<TextBlock Classes="snapValue"
 						           Text="{Binding ScaleSnap, Converter={StaticResource SnapValueConverter}}"
 						           IsVisible="{Binding ScaleSnapEnabled}"
-						           HorizontalAlignment="Right"/>
+						           HorizontalAlignment="Right" />
 					</StackPanel>
 				</ToggleButton>
 				<Button Classes="chev"
@@ -424,7 +424,7 @@
 					            StrokeWidth="2.5" />
 				</Button>
 			</StackPanel>
-			
+
 			<StackPanel Grid.Column="7"
 			            Orientation="Horizontal">
 				<ToggleButton Classes="tool red"

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Input;
@@ -207,7 +208,7 @@ public partial class AssetBrowserView : UserControl {
 	private void OnShortcut(object? sender, KeyEventArgs e) {
 		if (e.Source is TextBox) return;
 
-		ICommand? command = (e.Key, e.KeyModifiers) switch {
+		var command = (e.Key, e.KeyModifiers) switch {
 			(Key.F2, KeyModifiers.None) => Vm.RenameCommand,
 			(Key.Delete, KeyModifiers.None) => Vm.DeleteCommand,
 			(Key.C, KeyModifiers.Control) => Vm.CopyCommand,
@@ -259,9 +260,9 @@ public partial class AssetBrowserView : UserControl {
 			tomlDefinition?.Icon ?? LucideIconKind.Database
 		));
 		foreach (var (category, types) in AssetTypeRegistry.CreatableByCategory
-			         .OrderBy(entry => entry.Category, System.StringComparer.OrdinalIgnoreCase)) {
+			         .OrderBy(entry => entry.Category, StringComparer.OrdinalIgnoreCase)) {
 			var sub = new MenuItem { Header = category, IsEnabled = vm.CanWriteToSelectedFolder };
-			foreach (var def in types.OrderBy(def => def.DisplayName, System.StringComparer.OrdinalIgnoreCase))
+			foreach (var def in types.OrderBy(def => def.DisplayName, StringComparer.OrdinalIgnoreCase))
 				sub.Items.Add(new MenuItem
 					{ Header = def.DisplayName, Command = vm.NewAssetCommand, CommandParameter = def });
 			menu.Items.Add(sub);

@@ -12,6 +12,9 @@ using Lucide.Avalonia;
 namespace editor.Logger;
 
 public partial class SeverityFilterViewModel : ObservableObject {
+	[ObservableProperty] private string m_badge = "0";
+
+	[ObservableProperty] private bool m_isEnabled = true;
 	public required string Label { get; init; }
 	public required uint Severity { get; init; }
 	public required LucideIconKind Icon { get; init; }
@@ -19,9 +22,6 @@ public partial class SeverityFilterViewModel : ObservableObject {
 	public bool IsLocked { get; init; }
 	public int MaxDisplayCount { get; init; } = 999;
 	public bool PadBadge { get; init; }
-
-	[ObservableProperty] private bool m_isEnabled = true;
-	[ObservableProperty] private string m_badge = "0";
 
 	public Action<SeverityFilterViewModel>? OnToggled { get; set; }
 
@@ -52,11 +52,11 @@ public partial class SeverityFilterViewModel : ObservableObject {
 public partial class SinkFilterViewModel : ObservableObject {
 	private readonly long[] m_counts = new long[4];
 
+	[ObservableProperty] private bool? m_quickToggleState = true;
+
 	public required string Name { get; init; }
 	public required SeverityFilterViewModel[] SeverityByBucket { get; init; }
 	public required ObservableCollection<SeverityFilterViewModel> Severities { get; init; }
-
-	[ObservableProperty] private bool? m_quickToggleState = true;
 
 	public bool IsSeverityEnabled(int bucket) {
 		return SeverityByBucket[bucket].IsEnabled;

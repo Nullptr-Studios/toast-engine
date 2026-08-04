@@ -160,8 +160,8 @@
 							            Spacing="2">
 								<LucideIcon Kind="Plus"
 								            Size="18"
-								            StrokeWidth="3"/>
-								<TextBlock Text="Add"/>
+								            StrokeWidth="3" />
+								<TextBlock Text="Add" />
 							</StackPanel>
 							<ToolTip.Tip>
 								Add a new Node as child

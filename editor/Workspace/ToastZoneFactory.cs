@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Dock.Avalonia.Controls;
 using Dock.Model.Controls;
 using Dock.Model.Core;
 using Dock.Model.Mvvm;
@@ -16,15 +15,15 @@ namespace editor.Workspace;
 public class ToastZoneFactory : Factory {
 	private bool m_curveClosePending;
 	private bool m_hapticsClosePending;
-	private bool m_tableClosePending;
 	private IRootDock? m_rootDock;
+	private bool m_tableClosePending;
 	private IToolDock? m_toolDock;
-	private AssetBrowserViewModel? m_assetBrowser;
 
 	public LogsViewModel? LogsVm { get; private set; }
 	public CurveViewModel? CurveEditorVm { get; private set; }
 	public HapticsViewModel? HapticsEditorVm { get; private set; }
 	public TableViewModel? TableEditorVm { get; private set; }
+	public AssetBrowserViewModel? AssetBrowserVm { get; private set; }
 
 	public override IRootDock CreateLayout() {
 		var assetBrowser = new AssetBrowserViewModel {
@@ -39,7 +38,7 @@ public class ToastZoneFactory : Factory {
 		var tableEditor = new TableViewModel
 			{ Id = "Table", Title = "Table Editor", CanPin = false, CanFloat = false };
 
-		m_assetBrowser = assetBrowser;
+		AssetBrowserVm = assetBrowser;
 		LogsVm = logs;
 		HapticsEditorVm = hapticsEditor;
 		CurveEditorVm = curveEditor;
@@ -130,11 +129,11 @@ public class ToastZoneFactory : Factory {
 	}
 
 	private IDockable? ResolveDockable(string id) {
-		return id == "AssetBrowser" ? m_assetBrowser : ToolById(id);
+		return id == "AssetBrowser" ? AssetBrowserVm : ToolById(id);
 	}
 
 	private IEnumerable<Tool?> AllTools() {
-		yield return m_assetBrowser;
+		yield return AssetBrowserVm;
 		yield return LogsVm;
 		yield return HapticsEditorVm;
 		yield return CurveEditorVm;
@@ -147,7 +146,7 @@ public class ToastZoneFactory : Factory {
 	}
 
 	private void EnsureAssetBrowser(IRootDock root) {
-		if (m_assetBrowser is null || LayoutSerializer.ContainsVisible(root, m_assetBrowser)) return;
+		if (AssetBrowserVm is null || LayoutSerializer.ContainsVisible(root, AssetBrowserVm)) return;
 
 		if (m_toolDock is null) {
 			m_toolDock = CreateToolDock();
@@ -159,8 +158,8 @@ public class ToastZoneFactory : Factory {
 		}
 
 		m_toolDock.VisibleDockables ??= CreateList<IDockable>();
-		m_toolDock.VisibleDockables.Insert(0, m_assetBrowser);
-		m_toolDock.ActiveDockable ??= m_assetBrowser;
+		m_toolDock.VisibleDockables.Insert(0, AssetBrowserVm);
+		m_toolDock.ActiveDockable ??= AssetBrowserVm;
 	}
 
 	public bool ToggleTool(string id) {

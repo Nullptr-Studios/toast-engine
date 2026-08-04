@@ -13,20 +13,7 @@ namespace editor.Logger;
 public sealed class ReverseLogList : IList, IReadOnlyList<LogEntry>, INotifyCollectionChanged {
 	private List<LogEntry> m_items = []; // oldest to newest
 
-	public event NotifyCollectionChangedEventHandler? CollectionChanged;
-
 	public int Count => m_items.Count;
-
-	public LogEntry this[int index] => m_items[m_items.Count - 1 - index];
-
-	public void ResetTo(List<LogEntry> oldestFirst) {
-		m_items = oldestFirst;
-		CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
-	}
-
-	public IEnumerator<LogEntry> GetEnumerator() {
-		for (var i = m_items.Count - 1; i >= 0; i--) yield return m_items[i];
-	}
 
 	IEnumerator IEnumerable.GetEnumerator() {
 		return GetEnumerator();
@@ -74,5 +61,18 @@ public sealed class ReverseLogList : IList, IReadOnlyList<LogEntry>, INotifyColl
 
 	void ICollection.CopyTo(Array array, int index) {
 		for (var i = 0; i < Count; i++) array.SetValue(this[i], index + i);
+	}
+
+	public event NotifyCollectionChangedEventHandler? CollectionChanged;
+
+	public LogEntry this[int index] => m_items[m_items.Count - 1 - index];
+
+	public IEnumerator<LogEntry> GetEnumerator() {
+		for (var i = m_items.Count - 1; i >= 0; i--) yield return m_items[i];
+	}
+
+	public void ResetTo(List<LogEntry> oldestFirst) {
+		m_items = oldestFirst;
+		CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
 	}
 }

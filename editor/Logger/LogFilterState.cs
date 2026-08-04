@@ -11,16 +11,10 @@ using editor.Assets;
 namespace editor.Logger;
 
 public sealed class LogFilterState {
-	private sealed class Model {
-		public int Version { get; set; } = 2;
-		public Dictionary<string, bool> Severities { get; set; } = new();
-		public Dictionary<string, List<string>> SinkSeverityOverrides { get; set; } = new();
-	}
-
 	private static readonly JsonSerializerOptions s_options = new() { PropertyNameCaseInsensitive = true };
+	private readonly Model m_model;
 
 	private readonly string m_path;
-	private readonly Model m_model;
 
 	private LogFilterState(string path, Model model) {
 		m_path = path;
@@ -91,5 +85,11 @@ public sealed class LogFilterState {
 		} catch {
 			// best-effort
 		}
+	}
+
+	private sealed class Model {
+		public int Version { get; set; } = 2;
+		public Dictionary<string, bool> Severities { get; set; } = new();
+		public Dictionary<string, List<string>> SinkSeverityOverrides { get; set; } = new();
 	}
 }

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Avalonia;
@@ -21,6 +21,7 @@ public class AssetTypeFilter : INotifyPropertyChanged {
 	public BaseAsset? Definition { get; }
 	public string Label => Definition?.DisplayName ?? "Unknown";
 	public string ChipText => Definition?.ChipText ?? "?";
+
 	public IBrush ChipColor {
 		get {
 			var key = Definition?.ChipColor;

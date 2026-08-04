@@ -97,6 +97,7 @@ public partial class MessageModal : Window {
 			e.Handled = true;
 			return;
 		}
+
 		base.OnKeyDown(e);
 	}
 

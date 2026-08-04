@@ -15,18 +15,24 @@ using Proto.Events;
 
 namespace editor.Workspace;
 
-public partial class InspectorViewModel : Tool {
+public partial class InspectorViewModel : Tool, IDisposable {
 	private static readonly string[] Palette =
 		["Red", "Green", "Blue", "Magenta", "Orange", "Yellow", "Cyan", "Beige"];
+
+	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
+	private readonly DispatcherTimer m_editCommitTimer = new() { Interval = TimeSpan.FromMilliseconds(450) };
 
 	private readonly Dictionary<string, FieldVM> m_fieldByParam = new();
 
 	// ReSharper disable once PrivateFieldCanBeConvertedToLocalVariable
 	private readonly Listener m_listener;
 	private readonly List<ClassCardVM> m_luaCards = [];
+	private uint m_builtLuaVersion;
 	private string? m_builtType;
 	private string? m_builtUid;
-	private uint m_builtLuaVersion;
+	private string? m_editField;
+	private ulong m_editTransaction;
+	private ulong m_editWorkspaceHandle;
 	[ObservableProperty] private bool m_enabled = true;
 
 	[ObservableProperty] private string m_filterText = "";
@@ -38,6 +44,7 @@ public partial class InspectorViewModel : Tool {
 
 	[ObservableProperty] private string m_name = "";
 	[ObservableProperty] private string m_nameDraft = "";
+	private ulong m_nextEditTransaction = 1;
 	private InspectorState? m_state;
 	private bool m_suppressEnabled;
 	[ObservableProperty] private string m_typeDisplay = "";
@@ -249,6 +256,7 @@ public partial class InspectorViewModel : Tool {
 		}
 
 		m_listener = new Listener();
+		m_editCommitTimer.Tick += (_, _) => CommitFieldEdit();
 
 		// engine streams the focused node's values at ~12fps; ignore frames for a different node
 		m_listener.Subscribe<InspectorContent>(e => Dispatcher.UIThread.Post(() => {
@@ -287,6 +295,13 @@ public partial class InspectorViewModel : Tool {
 
 	public ObservableCollection<ClassCardVM> Cards { get; } = [];
 
+	public void Dispose() {
+		CommitFieldEdit();
+		HierarchyViewModel.SelectionChanged -= OnSelectionChanged;
+		if (!Design.IsDesignMode) m_listener.Dispose();
+		GC.SuppressFinalize(this);
+	}
+
 	partial void OnFilterTextChanged(string value) {
 		ApplyFilter();
 	}
@@ -294,7 +309,6 @@ public partial class InspectorViewModel : Tool {
 	partial void OnEnabledChanged(bool value) {
 		if (m_suppressEnabled || m_uid is null) return;
 		Events.Send(new NodeEnabled { Node = m_uid, Enabled = value });
-		WorkspaceState.MarkModified();
 	}
 
 	private void SetEnabledSuppressed(bool value) {
@@ -304,6 +318,7 @@ public partial class InspectorViewModel : Tool {
 	}
 
 	private void OnSelectionChanged(HierarchyElement? node) {
+		CommitFieldEdit();
 		Dispatcher.UIThread.Post(() => {
 			if (node is null) {
 				HasSelection = false;
@@ -394,6 +409,7 @@ public partial class InspectorViewModel : Tool {
 				: customLabel;
 			card.Buttons.Add(new ButtonVM(label, method.Name, OnButtonInvoked));
 		}
+
 		return card;
 	}
 
@@ -406,14 +422,54 @@ public partial class InspectorViewModel : Tool {
 	}
 
 	private void OnFieldEdited(FieldVM field, string value) {
-		if (field.IsLua) Events.Send(new NodeChangeLuaParam { Path = field.ParameterName, Value = value });
-		else Events.Send(new NodeChangeParam { Parameter = field.ParameterName, Value = value });
-		WorkspaceState.MarkModified();
+		if (m_uid is null) return;
+		BeginFieldEdit(field);
+		if (field.IsLua)
+			Events.Send(new NodeChangeLuaParam { Node = m_uid, Path = field.ParameterName, Value = value });
+		else
+			Events.Send(new NodeChangeParam { Node = m_uid, Parameter = field.ParameterName, Value = value });
 	}
 
-	private static void OnButtonInvoked(string function) {
-		Events.Send(new NodeCallFunction { Function = function });
-		WorkspaceState.MarkModified();
+	private void BeginFieldEdit(FieldVM field) {
+		var handle = HierarchyViewModel.Current?.ActiveWorkspaceHandle ?? 0;
+		if (handle == 0 || m_uid is null) return;
+		if (m_editTransaction != 0 &&
+		    (m_editWorkspaceHandle != handle || m_editField != field.ParameterName)) CommitFieldEdit();
+		if (m_editTransaction == 0) {
+			m_editTransaction = m_nextEditTransaction++;
+			m_editWorkspaceHandle = handle;
+			m_editField = field.ParameterName;
+			HierarchyViewModel.Current?.ActiveWorkspace?.History.SetTransactionOpen(true);
+		}
+
+		Events.Send(new WorkspaceHistoryTransaction {
+			WorkspaceHandle = handle,
+			Transaction = m_editTransaction,
+			Phase = WorkspaceHistoryTransaction.Types.Phase.Begin,
+			Operation = HistoryOperation.HistoryChangeValue,
+			Node = m_uid,
+			Subject = $"{field.ParameterName} changed"
+		});
+		m_editCommitTimer.Stop();
+		m_editCommitTimer.Start();
+	}
+
+	private void CommitFieldEdit() {
+		m_editCommitTimer.Stop();
+		if (m_editTransaction == 0) return;
+		Events.Send(new WorkspaceHistoryTransaction {
+			WorkspaceHandle = m_editWorkspaceHandle,
+			Transaction = m_editTransaction,
+			Phase = WorkspaceHistoryTransaction.Types.Phase.Commit
+		});
+		HierarchyViewModel.Current?.ActiveWorkspace?.History.SetTransactionOpen(false);
+		m_editTransaction = 0;
+		m_editWorkspaceHandle = 0;
+		m_editField = null;
+	}
+
+	private void OnButtonInvoked(string function) {
+		if (m_uid is not null) Events.Send(new NodeCallFunction { Node = m_uid, Function = function });
 	}
 
 	// script cards sit above the class cards
@@ -486,20 +542,18 @@ public partial class InspectorViewModel : Tool {
 		IsEditingName = true;
 	}
 
-	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
-
 	public async void CommitRename() {
 		if (!IsEditingName) return;
 		IsEditingName = false;
 		var n = NameDraft.Trim();
 		if (n.Length == 0 || n == Name || m_uid is null) return;
 		if (s_reservedNames.Contains(n)) {
-			await App.Modals.ShowWarning("Reserved Name", $"'{n}' is a reserved keyword and cannot be used as a node name.");
+			await App.Modals.ShowWarning("Reserved Name",
+				$"'{n}' is a reserved keyword and cannot be used as a node name.");
 			return;
 		}
 
 		Events.Send(new NodeChangeName { Node = m_uid, Name = n });
-		WorkspaceState.MarkModified();
 	}
 
 	public void CancelRename() {

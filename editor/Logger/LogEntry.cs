@@ -13,23 +13,6 @@ public sealed class LogEntry {
 	private const char FieldSeparator = '';
 	private const int MaxDisplayMessageLength = 500;
 
-	public ulong TimestampNanos { get; }
-	public uint Severity { get; }
-	public string Filepath { get; }
-	public uint Line { get; }
-	public string Sink { get; }
-	public string Message { get; }
-
-	public string SeverityName { get; }
-	public string SeverityShortName { get; }
-	public string Time { get; }
-	public string PreciseTime { get; }
-	public string AbsoluteTimestamp { get; }
-	public string FileLine { get; }
-	public string DisplayFileLine { get; }
-	public string DisplayMessage { get; }
-	public string SearchBlob { get; }
-
 	public LogEntry(ulong timestampNanos, uint severity, string filepath, uint line, string sink, string message) {
 		TimestampNanos = timestampNanos;
 		Severity = severity;
@@ -57,6 +40,23 @@ public sealed class LogEntry {
 		DisplayMessage = TrimForTable(message);
 		SearchBlob = string.Join(FieldSeparator, SeverityName, sink, FileLine, message);
 	}
+
+	public ulong TimestampNanos { get; }
+	public uint Severity { get; }
+	public string Filepath { get; }
+	public uint Line { get; }
+	public string Sink { get; }
+	public string Message { get; }
+
+	public string SeverityName { get; }
+	public string SeverityShortName { get; }
+	public string Time { get; }
+	public string PreciseTime { get; }
+	public string AbsoluteTimestamp { get; }
+	public string FileLine { get; }
+	public string DisplayFileLine { get; }
+	public string DisplayMessage { get; }
+	public string SearchBlob { get; }
 
 	private static string TrimForTable(string message) {
 		var flattened = message.IndexOfAny(['\r', '\n']) < 0

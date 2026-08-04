@@ -37,6 +37,8 @@
 		            Command="{Binding ReloadGameCommand}" />
 		<KeyBinding Gesture="F8"
 		            Command="{Binding CompileGameReleaseCommand}" />
+		<KeyBinding Gesture="F1"
+		            Command="{Binding OpenDocumentationCommand}" />
 	</Window.KeyBindings>
 
 	<Grid RowDefinitions="Auto,*">
@@ -86,19 +88,25 @@
 					<MenuItem Header="_Project settings"
 					          FontWeight="Normal"
 					          Command="{Binding OpenProjectSettingsCommand}"
-					          InputGesture="Ctrl+,"/>
+					          InputGesture="Ctrl+," />
+					<MenuItem Header="_Plugins"
+					          FontWeight="Normal"
+					          IsEnabled="False" />
 					<MenuItem Header="_Toast settings"
 					          FontWeight="Normal"
-					          IsEnabled="False"/>
+					          IsEnabled="False" />
+					<MenuItem Header="Search for _updates..."
+					          FontWeight="Normal"
+					          IsEnabled="False" />
 					<Separator />
 					<MenuItem Header="_Close project"
 					          FontWeight="Normal"
-					          IsEnabled="False"
-					          InputGesture="Ctrl+Q"/>
+					          InputGesture="Ctrl+Q"
+					          Click="OnCloseProject" />
 					<MenuItem Header="_Quit Toast"
 					          FontWeight="Normal"
-					          IsEnabled="False"
-					          InputGesture="Ctrl+Shift+Q" />
+					          InputGesture="Ctrl+Shift+Q"
+					          Click="OnQuitEditor" />
 				</MenuItem>
 				<MenuItem Header="_File">
 					<MenuItem Header="_New Node file"
@@ -121,7 +129,95 @@
 					          InputGesture="Ctrl+Alt+S"
 					          Command="{Binding SaveAllNodesCommand}" />
 				</MenuItem>
-				<MenuItem Header="_Run">
+				<MenuItem Header="_Edit">
+					<MenuItem Header="_Undo"
+					          InputGesture="Ctrl+Z"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding History.UndoCommand}" />
+					<MenuItem Header="_Redo"
+					          InputGesture="Ctrl+Shift+Z"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding History.RedoCommand}" />
+					<Separator />
+					<MenuItem Header="Cu_t"
+					          InputGesture="Ctrl+X"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.CutCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Copy"
+					          InputGesture="Ctrl+C"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.CopyCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Paste"
+					          InputGesture="Ctrl+V"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.PasteCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Duplicate"
+					          InputGesture="Ctrl+D"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.DuplicateCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Delete"
+					          InputGesture="Delete"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.DeleteCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<Separator />
+					<MenuItem Header="_New child node..."
+					          InputGesture="Ctrl+A"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.AddNodeCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Spawn prefab..."
+					          InputGesture="Ctrl+Shift+A"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.LoadNodeCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="_Rename"
+					          InputGesture="F2"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.RenameCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Toggle _enabled"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.ToggleEnabledCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Change _type..."
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.ChangeTypeCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Change _parent..."
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.ChangeParentCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Move _up"
+					          InputGesture="Ctrl+Up"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.MoveUpCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Move _down"
+					          InputGesture="Ctrl+Down"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.MoveDownCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<MenuItem Header="Promote to pre_fab..."
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding Hierarchy.PromoteCommand}"
+					          CommandParameter="{Binding Hierarchy.SelectedNode}" />
+					<Separator />
+					<MenuItem Header="_Checkout revision"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding History.CheckoutCommand}" />
+					<MenuItem Header="C_herry-pick revision"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding History.CherryPickCommand}" />
+					<MenuItem Header="_Merge revision"
+					          IsEnabled="{Binding History.HasWorkspace}"
+					          Command="{Binding History.MergeCommand}" />
+				</MenuItem>
+				<MenuItem Header="_Build">
 					<MenuItem Header="_Play"
 					          InputGesture="F5"
 					          Command="{Binding PlayCommand}" />
@@ -139,28 +235,32 @@
 					<MenuItem Header="_Hierarchy"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding HierarchyVisible, Mode=TwoWay}"
-					          InputGesture="Alt+D1"/>
+					          InputGesture="Alt+D1" />
 					<MenuItem Header="_Inspector"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding InspectorVisible, Mode=TwoWay}"
-					          InputGesture="Alt+D2"/>
+					          InputGesture="Alt+D2" />
+					<MenuItem Header="_History"
+					          ToggleType="CheckBox"
+					          IsChecked="{Binding HistoryVisible, Mode=TwoWay}"
+					          InputGesture="Alt+D7" />
 					<MenuItem Header="_Data Editor"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding GenericEditorVisible, Mode=TwoWay}"
-					          InputGesture="Alt+D3"/>
+					          InputGesture="Alt+D3" />
 					<MenuItem Header="_Schema Editor"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding SchemaEditorVisible, Mode=TwoWay}"
-					          InputGesture="Alt+Shift+D3"/>
+					          InputGesture="Alt+Shift+D3" />
 					<Separator />
 					<MenuItem Header="_Logs"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding LogsVisible, Mode=TwoWay}"
-					          InputGesture="Alt+D0"/>
+					          InputGesture="Alt+D0" />
 					<MenuItem Header="_Curve Editor"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding CurveEditorVisible, Mode=TwoWay}"
-					          InputGesture="Alt+D4"/>
+					          InputGesture="Alt+D4" />
 					<MenuItem Header="Ha_ptics Editor"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding HapticsEditorVisible, Mode=TwoWay}"
@@ -185,10 +285,17 @@
 				</MenuItem>
 				<MenuItem Header="_Help">
 					<MenuItem Header="_Documentation"
-					          InputGesture="F1"/>
-					<MenuItem Header="Github _repository" />
-					<MenuItem Header="Github _project" />
-					<MenuItem Header="_About" />
+					          InputGesture="F1"
+					          Command="{Binding OpenDocumentationCommand}" />
+					<MenuItem Header="Github _repository"
+					          Click="OnOpenGithubRepository" />
+					<MenuItem Header="Github _project"
+					          Click="OnOpenGithubProject" />
+					<MenuItem Header="_Report Bug"
+					          Click="OnOpenReportBug" />
+					<Separator />
+					<MenuItem Header="_About"
+					          Click="OnOpenAbout" />
 				</MenuItem>
 			</Menu>
 

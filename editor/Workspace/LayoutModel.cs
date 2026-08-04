@@ -29,9 +29,9 @@ public sealed class LayoutNode {
 	public double? Proportion { get; set; }
 
 	public string? Orientation { get; set; } // Proportional
-	public string? Alignment { get; set; } // Tool
-	public string? GripMode { get; set; } // Tool
-	public bool IsPrimary { get; set; } // Document
+	public string? Alignment { get; set; }   // Tool
+	public string? GripMode { get; set; }    // Tool
+	public bool IsPrimary { get; set; }      // Document
 
 	public List<string>? Dockables { get; set; } // Tool, in tab order
 	public string? ActiveDockable { get; set; }

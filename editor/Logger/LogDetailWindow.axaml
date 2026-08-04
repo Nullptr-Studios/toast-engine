@@ -21,10 +21,14 @@
 
 	<Window.Styles>
 		<Style Selector="Button.primary">
-			<Setter Property="Background" Value="{StaticResource Red}" />
-			<Setter Property="Foreground" Value="White" />
-			<Setter Property="FontWeight" Value="Bold" />
-			<Setter Property="MinWidth" Value="80" />
+			<Setter Property="Background"
+			        Value="{StaticResource Red}" />
+			<Setter Property="Foreground"
+			        Value="White" />
+			<Setter Property="FontWeight"
+			        Value="Bold" />
+			<Setter Property="MinWidth"
+			        Value="80" />
 		</Style>
 	</Window.Styles>
 

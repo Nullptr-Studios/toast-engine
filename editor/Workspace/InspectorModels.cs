@@ -10,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using editor.Components.Elements;
 using editor.Engine;
+using Proto.Events;
 
 namespace editor.Workspace;
 
@@ -278,10 +279,12 @@ public sealed record EnumOption(string Label, string Value);
 
 public partial class FieldVM : ObservableObject {
 	private readonly string? m_default; // engine-encoded, null if unknown
+	private readonly Dictionary<string, string> m_enumLabelToValue = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, string> m_enumValueToLabel = new(StringComparer.Ordinal);
 	[ObservableProperty] private bool m_bool;
+	[ObservableProperty] private string? m_enumValue;
 
 	[ObservableProperty] private float m_float;
-	[ObservableProperty] private string? m_enumValue;
 	[ObservableProperty] private int m_int;
 
 	[ObservableProperty] private bool m_isDefault = true;
@@ -289,8 +292,6 @@ public partial class FieldVM : ObservableObject {
 	[ObservableProperty] private string? m_ref;
 	[ObservableProperty] private string? m_string = "";
 	private bool m_suppress; // true while applying an engine value
-	private readonly Dictionary<string, string> m_enumLabelToValue = new(StringComparer.Ordinal);
-	private readonly Dictionary<string, string> m_enumValueToLabel = new(StringComparer.Ordinal);
 	[ObservableProperty] private bool m_visible = true;
 	[ObservableProperty] private float m_w;
 	[ObservableProperty] private float m_x;
@@ -301,7 +302,8 @@ public partial class FieldVM : ObservableObject {
 		ParameterName = info.Name;
 		Kind = InspectorFormat.KindOf(info.FieldType, info.IsArray, info.TypeName);
 		if (!info.IsArray && ReflectionDatabase.HasAttr(info.Attributes, "Enum") &&
-		    InspectorFormat.ParseEnumOptions(ReflectionDatabase.GetAttrArgs(info.Attributes, "Enum")) is { } enumOptions) {
+		    InspectorFormat.ParseEnumOptions(ReflectionDatabase.GetAttrArgs(info.Attributes, "Enum")) is
+			    { } enumOptions) {
 			Kind = WidgetKind.Enum;
 			foreach (var option in enumOptions) {
 				EnumOptions.Add(option.Label);
@@ -345,7 +347,7 @@ public partial class FieldVM : ObservableObject {
 		}
 	}
 
-	public FieldVM(Proto.Events.LuaField info) {
+	public FieldVM(LuaField info) {
 		ParameterName = info.Path;
 		IsLua = true;
 		Kind = InspectorFormat.LuaKindOf(info.Kind, info.IsArray);
@@ -586,12 +588,12 @@ public partial class FieldVM : ObservableObject {
 					var stride = InspectorFormat.ArrayElementStride(ArrayElementKind);
 					var elementCount = tokens.Length / stride;
 
-					string ElementAt(int idx) => string.Join(' ', tokens.Skip(idx * stride).Take(stride));
+					string ElementAt(int idx) {
+						return string.Join(' ', tokens.Skip(idx * stride).Take(stride));
+					}
 
 					if (elementCount == ArrayItems.Count) {
-						for (var idx = 0; idx < elementCount; idx++) {
-							ArrayItems[idx].ApplyEngineString(ElementAt(idx));
-						}
+						for (var idx = 0; idx < elementCount; idx++) ArrayItems[idx].ApplyEngineString(ElementAt(idx));
 
 						break;
 					}

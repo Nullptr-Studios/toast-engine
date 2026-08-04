@@ -53,7 +53,7 @@ public partial class PickerWindow : Window {
 
 	private void FocusResults() {
 		Dispatcher.UIThread.Post(
-			() => ItemsTree.Focus(NavigationMethod.Unspecified, KeyModifiers.None),
+			() => ItemsTree.Focus(),
 			DispatcherPriority.Background);
 	}
 

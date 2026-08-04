@@ -36,7 +36,7 @@ public sealed class BreadcrumbItem {
 	public ICommand Navigate { get; }
 }
 
-public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
+public class AssetBrowserViewModel : Tool, INotifyPropertyChanged, IDisposable {
 	// Extension sets derived dynamically from importers + asset registry
 	// TODO: Do this with reflection at some point
 	private static readonly IReadOnlyList<IAssetImporter> s_defaultImporters = [
@@ -55,11 +55,13 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		AssetTypeRegistry.All.Select(a => a.Extension),
 		StringComparer.OrdinalIgnoreCase);
 
+	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
+	private readonly List<IRelayCommand> m_actionCommands = [];
+
 	// selection
 	private readonly HashSet<object> m_selectedItems = [];
 
 	private readonly AssetTypeFilter m_unknownFilter;
-	private readonly List<IRelayCommand> m_actionCommands = [];
 	private ClipMode m_clipMode;
 	private List<string> m_clipPaths = []; // real paths
 	private string? m_preSearchFolderPath;
@@ -103,8 +105,10 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		CutCommand = Track(new RelayCommand<object>(Cut, CanCut));
 		PasteCommand = Track(new RelayCommand(Paste, CanPaste));
 		DuplicateCommand = Track(new AsyncRelayCommand<object>(DuplicateAsync, CanDuplicate));
-		NewNodeCommand = Track(new AsyncRelayCommand(() => CreatePrefab("Node", "toast::Node"), () => CanWriteToSelectedFolder));
-		NewNode3DCommand = Track(new AsyncRelayCommand(() => CreatePrefab("Node3D", "toast::Node3D"), () => CanWriteToSelectedFolder));
+		NewNodeCommand =
+			Track(new AsyncRelayCommand(() => CreatePrefab("Node", "toast::Node"), () => CanWriteToSelectedFolder));
+		NewNode3DCommand =
+			Track(new AsyncRelayCommand(() => CreatePrefab("Node3D", "toast::Node3D"), () => CanWriteToSelectedFolder));
 		NewNodeGenericCommand = Track(new AsyncRelayCommand(CreateGenericPrefab, () => CanWriteToSelectedFolder));
 		NewAssetCommand = Track(new AsyncRelayCommand<object>(o => CreateNewAsset(o as BaseAsset),
 			o => o is BaseAsset && CanWriteToSelectedFolder));
@@ -126,10 +130,11 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 				value = FindFallbackFolder();
 				if (value is null) return;
 				if (ReferenceEquals(m_selectedFolder, value)) {
-					Notify(nameof(SelectedFolder));
+					Notify();
 					return;
 				}
 			}
+
 			if (ReferenceEquals(m_selectedFolder, value)) return;
 			ClearSelection();
 			m_selectedFolder = value;
@@ -220,6 +225,13 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 	public ICommand NewNodeGenericCommand { get; }
 	public ICommand NewAssetCommand { get; }
 	public ICommand ReimportCommand { get; }
+
+	public void Dispose() {
+		AssetDatabase.ReloadedDatabase -= OnDatabaseReloaded;
+		foreach (var filter in Filters) filter.PropertyChanged -= OnFilterChanged;
+		if (ReferenceEquals(Current, this)) Current = null;
+		GC.SuppressFinalize(this);
+	}
 
 	public new event PropertyChangedEventHandler? PropertyChanged;
 
@@ -372,8 +384,6 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		}
 	}
 
-	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
-
 	private async Task RenameFile(AssetFile file) {
 		if (!IsEditable(file)) return;
 		var window = ActiveWindow();
@@ -382,7 +392,8 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		if (string.IsNullOrEmpty(newName) || newName == file.Name) return;
 		var stem = Path.GetFileNameWithoutExtension(newName);
 		if (s_reservedNames.Contains(stem)) {
-			await App.Modals.ShowWarning("Reserved Name", $"'{stem}' is a reserved keyword and cannot be used as an asset name.");
+			await App.Modals.ShowWarning("Reserved Name",
+				$"'{stem}' is a reserved keyword and cannot be used as an asset name.");
 			return;
 		}
 
@@ -411,7 +422,8 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		var newName = await new RenameModal(folder.Name).ShowDialog<string?>(window);
 		if (string.IsNullOrEmpty(newName) || newName == folder.Name) return;
 		if (s_reservedNames.Contains(newName)) {
-			await App.Modals.ShowWarning("Reserved Name", $"'{newName}' is a reserved keyword and cannot be used as a folder name.");
+			await App.Modals.ShowWarning("Reserved Name",
+				$"'{newName}' is a reserved keyword and cannot be used as a folder name.");
 			return;
 		}
 
@@ -664,7 +676,7 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 	public bool CanWriteToFolder(AssetFolder? folder) {
 		if (folder is null || !ProjectContext.IsInitialized || ProjectContext.IsUnderCore(folder.Filepath)) return false;
 		return ProjectContext.IsDatabaseRoot(folder.Filepath) ||
-		       ProjectContext.IsUnderContentDatabase(folder.Filepath);
+			ProjectContext.IsUnderContentDatabase(folder.Filepath);
 	}
 
 	public bool CanOpenForEditing(AssetFile file) {
@@ -725,8 +737,8 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 
 	private static bool IsEditablePath(string path) {
 		return ProjectContext.IsInitialized &&
-		       !ProjectContext.IsUnderCore(path) &&
-		       ProjectContext.IsUnderContentDatabase(path);
+			!ProjectContext.IsUnderCore(path) &&
+			ProjectContext.IsUnderContentDatabase(path);
 	}
 
 	private static bool IsEditable(AssetFile file) {

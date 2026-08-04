@@ -60,9 +60,9 @@ public sealed class ArrayBox : TemplatedControl {
 	private Border? m_activeLine;
 	private Button? m_add;
 	private TextBlock? m_empty;
+	private IList? m_hookedItems;
 
 	private ItemsControl? m_items;
-	private IList? m_hookedItems;
 	private PointerPressedEventArgs? m_pressArgs;
 
 	// Active reorder drag
@@ -154,14 +154,14 @@ public sealed class ArrayBox : TemplatedControl {
 			m_items.ItemsSource = Items;
 			RehookItems();
 			UpdateEmptyVisibility();
-		}
-		else if (change.Property == ItemTemplateProperty)
+		} else if (change.Property == ItemTemplateProperty) {
 			m_items.ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildRow(item));
-		else if (change.Property == ItemSpacingProperty && m_items != null)
+		} else if (change.Property == ItemSpacingProperty && m_items != null) {
 			m_items.ItemsPanel = new FuncTemplate<Panel?>(() => new StackPanel { Spacing = ItemSpacing });
-		else if ((change.Property == CanAddRemoveProperty || change.Property == IsEnabledProperty
-			         || change.Property == AddCommandProperty) && m_add != null)
+		} else if ((change.Property == CanAddRemoveProperty || change.Property == IsEnabledProperty
+			           || change.Property == AddCommandProperty) && m_add != null) {
 			m_add.IsVisible = CanAddRemove && (ItemFactory != null || AddCommand != null);
+		}
 	}
 
 	private void OnAddClick(object? sender, RoutedEventArgs e) {

@@ -66,14 +66,13 @@ public static class TextHighlight {
 
 		ranges.Sort((a, b) => a.Start.CompareTo(b.Start));
 		var merged = new List<(int Start, int End)>();
-		foreach (var r in ranges) {
+		foreach (var r in ranges)
 			if (merged.Count > 0 && r.Start <= merged[^1].End) {
 				var last = merged[^1];
 				merged[^1] = (last.Start, Math.Max(last.End, r.End));
 			} else {
 				merged.Add(r);
 			}
-		}
 
 		var red = ResolveRed();
 		var pos = 0;

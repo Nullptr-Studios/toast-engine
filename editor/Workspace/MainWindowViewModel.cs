@@ -20,34 +20,35 @@ using Proto.Events;
 
 namespace editor.Workspace;
 
-public partial class MainWindowViewModel : ViewModelBase {
+public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 	private readonly AutosaveService m_autosave;
+
+	private readonly LayoutFile m_defaultLayout;
 	private readonly DockFactory m_dockFactory;
 	private readonly ToastEngine m_toast;
 	private readonly ToastZoneFactory m_toastZoneFactory;
 
 	private readonly Dictionary<ulong, WorkspaceViewModel> m_workspaces = [];
+	[ObservableProperty] private string m_activeLayoutName = LayoutStore.DefaultName;
 	private ulong m_activeWorkspaceHandle;
+	private bool m_applyingLayout;
 	[ObservableProperty] private bool m_curveEditorVisible;
-	[ObservableProperty] private bool m_tableEditorVisible;
 	[ObservableProperty] private bool m_genericEditorVisible;
 	[ObservableProperty] private bool m_hapticsEditorVisible;
 
 	[ObservableProperty] private bool m_hierarchyVisible = true;
+	[ObservableProperty] private bool m_historyVisible;
 	[ObservableProperty] private bool m_inspectorVisible = true;
 	[ObservableProperty] private bool m_logsVisible = true;
-	[ObservableProperty] private bool m_schemaEditorVisible;
-
-	[ObservableProperty] private bool m_toastZoneActive;
-	private bool m_toastZonePinned;
 
 	[ObservableProperty] private IRootDock m_mainLayout;
-	[ObservableProperty] private IRootDock m_toastZoneLayout;
-	[ObservableProperty] private double m_toastZoneHeight = 400;
-	[ObservableProperty] private string m_activeLayoutName = LayoutStore.DefaultName;
+	[ObservableProperty] private bool m_schemaEditorVisible;
+	[ObservableProperty] private bool m_tableEditorVisible;
 
-	private readonly LayoutFile m_defaultLayout;
-	private bool m_applyingLayout;
+	[ObservableProperty] private bool m_toastZoneActive;
+	[ObservableProperty] private double m_toastZoneHeight = 400;
+	[ObservableProperty] private IRootDock m_toastZoneLayout;
+	private bool m_toastZonePinned;
 
 	public MainWindowViewModel(ToastEngine toast) {
 		m_toast = toast;
@@ -70,11 +71,13 @@ public partial class MainWindowViewModel : ViewModelBase {
 		m_dockFactory.DockableClosed += (_, e) => {
 			if (e.Dockable is WorkspaceViewModel ws) m_workspaces.Remove(ws.Handle);
 			if (e.Dockable == m_dockFactory.Hierarchy) m_hierarchyVisible = false;
+			if (e.Dockable == m_dockFactory.History) m_historyVisible = false;
 			if (e.Dockable == m_dockFactory.Inspector) m_inspectorVisible = false;
 			if (e.Dockable == m_dockFactory.GenericEditorVm) m_genericEditorVisible = false;
 			if (e.Dockable == m_dockFactory.SchemaEditorVm) m_schemaEditorVisible = false;
 
 			OnPropertyChanged(nameof(HierarchyVisible));
+			OnPropertyChanged(nameof(HistoryVisible));
 			OnPropertyChanged(nameof(InspectorVisible));
 			OnPropertyChanged(nameof(GenericEditorVisible));
 			OnPropertyChanged(nameof(SchemaEditorVisible));
@@ -82,6 +85,7 @@ public partial class MainWindowViewModel : ViewModelBase {
 			if (m_workspaces.Count == 0) {
 				m_activeWorkspaceHandle = 0;
 				m_dockFactory.Hierarchy?.Clear();
+				m_dockFactory.History?.Clear();
 				Events.Send(new SetActiveWorkspace { Handle = 0 });
 			} else {
 				m_activeWorkspaceHandle = 0;
@@ -107,24 +111,46 @@ public partial class MainWindowViewModel : ViewModelBase {
 			PlayInWindowCommand.NotifyCanExecuteChanged();
 		};
 
-		WorkspaceState.Modified += () => {
-			if (m_dockFactory.ActiveWorkspace is { } ws) ws.IsModified = true;
-		};
-
-		m_dockFactory.SchemaEditorVm!.SchemaSaved +=
-			path => m_dockFactory.GenericEditorVm?.RefreshFromSchema(path);
+		m_dockFactory.SchemaEditorVm!.SchemaSaved += OnSchemaSaved;
 
 		EditorManager.OpenRequested += OnEditorOpenRequested;
 
-		WorkspaceViewModel.PlayModeChanged += () => {
-			SaveCurrentNodeCommand.NotifyCanExecuteChanged();
-			SaveCurrentNodeAsCommand.NotifyCanExecuteChanged();
-			SaveAllNodesCommand.NotifyCanExecuteChanged();
-			PlayCommand.NotifyCanExecuteChanged();
-			PlayInWindowCommand.NotifyCanExecuteChanged();
-		};
+		WorkspaceViewModel.PlayModeChanged += OnPlayModeChanged;
 
 		m_autosave = new AutosaveService(EnumerateAutosavables);
+	}
+
+	public HierarchyViewModel? Hierarchy => m_dockFactory.Hierarchy;
+	public HistoryViewModel? History => m_dockFactory.History;
+
+	public IReadOnlyList<string> LayoutNames => LayoutStore.EnumerateNames();
+
+	public bool CanModifyActiveLayout => !LayoutStore.IsBuiltin(ActiveLayoutName);
+
+	public void Dispose() {
+		m_autosave.Stop();
+		EditorManager.OpenRequested -= OnEditorOpenRequested;
+		WorkspaceViewModel.PlayModeChanged -= OnPlayModeChanged;
+		if (m_dockFactory.SchemaEditorVm is { } schema) schema.SchemaSaved -= OnSchemaSaved;
+		foreach (var workspace in m_workspaces.Values) workspace.Dispose();
+		m_dockFactory.Hierarchy?.Dispose();
+		m_dockFactory.Inspector?.Dispose();
+		m_dockFactory.History?.Dispose();
+		m_toastZoneFactory.AssetBrowserVm?.Dispose();
+		m_toastZoneFactory.TableEditorVm?.Dispose();
+		GC.SuppressFinalize(this);
+	}
+
+	private void OnSchemaSaved(string path) {
+		m_dockFactory.GenericEditorVm?.RefreshFromSchema(path);
+	}
+
+	private void OnPlayModeChanged() {
+		SaveCurrentNodeCommand.NotifyCanExecuteChanged();
+		SaveCurrentNodeAsCommand.NotifyCanExecuteChanged();
+		SaveAllNodesCommand.NotifyCanExecuteChanged();
+		PlayCommand.NotifyCanExecuteChanged();
+		PlayInWindowCommand.NotifyCanExecuteChanged();
 	}
 
 	private IEnumerable<IAutosavable> EnumerateAutosavables() {
@@ -139,6 +165,11 @@ public partial class MainWindowViewModel : ViewModelBase {
 	[RelayCommand]
 	private Task AutosaveNow() {
 		return m_autosave.RequestAutosave();
+	}
+
+	[RelayCommand]
+	private static void OpenDocumentation() {
+		Process.Start(new ProcessStartInfo { FileName = "https://docs.nullptr.es", UseShellExecute = true });
 	}
 
 	[RelayCommand]
@@ -159,6 +190,10 @@ public partial class MainWindowViewModel : ViewModelBase {
 
 	partial void OnHierarchyVisibleChanged(bool value) {
 		ToggleMainTool("Hierarchy", value);
+	}
+
+	partial void OnHistoryVisibleChanged(bool value) {
+		ToggleMainTool("History", value);
 	}
 
 	partial void OnInspectorVisibleChanged(bool value) {
@@ -266,9 +301,11 @@ public partial class MainWindowViewModel : ViewModelBase {
 		if (m_applyingLayout) return;
 
 		// a playing tab routes to its temporary play clone, not the frozen editing workspace
-		var handle = m_dockFactory.ActiveWorkspace?.EffectiveHandle ?? 0;
+		var workspace = m_dockFactory.ActiveWorkspace;
+		var handle = workspace?.EffectiveHandle ?? 0;
 		if (handle == m_activeWorkspaceHandle) return;
 		m_activeWorkspaceHandle = handle;
+		m_dockFactory.History?.SetWorkspace(workspace is { PlayHandle: 0 } ? workspace.History : null);
 		Events.Send(new SetActiveWorkspace { Handle = handle });
 	}
 
@@ -281,10 +318,6 @@ public partial class MainWindowViewModel : ViewModelBase {
 		m_toastZonePinned = !m_toastZonePinned;
 		ToastZoneActive = m_toastZonePinned;
 	}
-
-	public IReadOnlyList<string> LayoutNames => LayoutStore.EnumerateNames();
-
-	public bool CanModifyActiveLayout => !LayoutStore.IsBuiltin(ActiveLayoutName);
 
 	private LayoutFile CaptureCurrent(string name) {
 		return new LayoutFile {
@@ -304,9 +337,9 @@ public partial class MainWindowViewModel : ViewModelBase {
 		m_applyingLayout = true;
 		try {
 			var mainRoot = m_dockFactory.RebuildLayout(file.Main)
-			               ?? m_dockFactory.RebuildLayout(m_defaultLayout.Main);
+				?? m_dockFactory.RebuildLayout(m_defaultLayout.Main);
 			var toastRoot = m_toastZoneFactory.RebuildLayout(file.Toast)
-			                ?? m_toastZoneFactory.RebuildLayout(m_defaultLayout.Toast);
+				?? m_toastZoneFactory.RebuildLayout(m_defaultLayout.Toast);
 			if (mainRoot is null || toastRoot is null) {
 				Log.Warn($"Layout '{file.Name}' describes no usable dock tree");
 				return;
@@ -360,6 +393,7 @@ public partial class MainWindowViewModel : ViewModelBase {
 #pragma warning disable MVVMTK0034
 	private void SyncVisibilityFromDocks() {
 		m_hierarchyVisible = m_dockFactory.IsToolVisible("Hierarchy");
+		m_historyVisible = m_dockFactory.IsToolVisible("History");
 		m_inspectorVisible = m_dockFactory.IsToolVisible("Inspector");
 		m_genericEditorVisible = m_dockFactory.IsToolVisible("GenericEditor");
 		m_schemaEditorVisible = m_dockFactory.IsToolVisible("SchemaEditor");
@@ -369,6 +403,7 @@ public partial class MainWindowViewModel : ViewModelBase {
 		m_tableEditorVisible = m_toastZoneFactory.IsToolVisible("Table");
 
 		OnPropertyChanged(nameof(HierarchyVisible));
+		OnPropertyChanged(nameof(HistoryVisible));
 		OnPropertyChanged(nameof(InspectorVisible));
 		OnPropertyChanged(nameof(GenericEditorVisible));
 		OnPropertyChanged(nameof(SchemaEditorVisible));

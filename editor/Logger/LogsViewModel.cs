@@ -6,7 +6,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Input.Platform;
@@ -32,28 +31,40 @@ public partial class LogsViewModel : Tool {
 	private const double SeverityBarAndGapPx = 8; // 4px color bar + 4px spacing before the label
 	private const double ColumnPaddingPx = 20;
 
-	private readonly LogClient m_client;
-	private readonly LogFilterState m_filterState = LogFilterState.Load();
-
 	private readonly List<LogEntry> m_all = [];
 
-	private readonly object m_pendingLock = new();
+	private readonly LogClient m_client;
+	private readonly LogFilterState m_filterState = LogFilterState.Load();
 	private readonly List<LogEntry> m_pendingBuffer = [];
-	private bool m_flushQueued;
+
+	private readonly object m_pendingLock = new();
 
 	private readonly SeverityFilterViewModel[] m_severityByBucket;
-	private readonly bool[] m_severityEnabled = new bool[4];
 	private readonly long[] m_severityCounts = new long[4];
+	private readonly bool[] m_severityEnabled = new bool[4];
 	private readonly Dictionary<string, SinkFilterViewModel> m_sinksByName = new(StringComparer.Ordinal);
-	private bool m_suppressSinkRebuild;
+
+	[ObservableProperty] private bool m_autoScroll = true;
+	[ObservableProperty] private double m_fileColumnWidth;
+	private bool m_flushQueued;
 
 	private double m_glyphAdvance = 8;
-	private int m_maxSinkLen = 4;
 	private int m_maxFileLen = 8;
+	private int m_maxSinkLen = 4;
+	[ObservableProperty] private int m_rowCount;
+
+	[ObservableProperty] private IReadOnlyList<ScrollMarker> m_scrollMarkers = [];
+	private CancellationTokenSource? m_searchDebounceCts;
+	[ObservableProperty] private string m_searchText = "";
 
 	private string[] m_searchTokens = [];
-	private CancellationTokenSource? m_searchDebounceCts;
+
+	[ObservableProperty] private double m_severityColumnWidth;
+	[ObservableProperty] private bool m_showTimestamps; // off by default
+	[ObservableProperty] private double m_sinkColumnWidth;
 	private bool m_started;
+	private bool m_suppressSinkRebuild;
+	[ObservableProperty] private double m_timestampColumnWidth;
 
 	public LogsViewModel() {
 		m_client = new LogClient();
@@ -91,18 +102,6 @@ public partial class LogsViewModel : Tool {
 	public ReverseLogList Rows { get; } = new();
 	public ObservableCollection<SeverityFilterViewModel> Severities { get; }
 	public ObservableCollection<SinkFilterViewModel> Sinks { get; } = [];
-
-	[ObservableProperty] private bool m_autoScroll = true;
-	[ObservableProperty] private string m_searchText = "";
-	[ObservableProperty] private bool m_showTimestamps; // off by default
-
-	[ObservableProperty] private double m_severityColumnWidth;
-	[ObservableProperty] private double m_sinkColumnWidth;
-	[ObservableProperty] private double m_fileColumnWidth;
-	[ObservableProperty] private double m_timestampColumnWidth;
-
-	[ObservableProperty] private IReadOnlyList<ScrollMarker> m_scrollMarkers = [];
-	[ObservableProperty] private int m_rowCount;
 
 	public event Action? ScrollToNewestRequested;
 
@@ -179,8 +178,9 @@ public partial class LogsViewModel : Tool {
 		m_suppressSinkRebuild = true;
 		try {
 			foreach (var sink in m_sinksByName.Values)
-				foreach (var s in sink.SeverityByBucket)
-					if (!s.IsLocked) s.IsEnabled = true;
+			foreach (var s in sink.SeverityByBucket)
+				if (!s.IsLocked)
+					s.IsEnabled = true;
 		} finally {
 			m_suppressSinkRebuild = false;
 		}
@@ -241,7 +241,7 @@ public partial class LogsViewModel : Tool {
 	private void Flush() {
 		List<LogEntry> drained;
 		lock (m_pendingLock) {
-			drained = [..m_pendingBuffer];
+			drained = [.. m_pendingBuffer];
 			m_pendingBuffer.Clear();
 		}
 

@@ -15,12 +15,6 @@ using editor.Engine;
 namespace editor.Workspace;
 
 public static class LayoutSerializer {
-	private sealed record BuildContext(
-		Factory Factory,
-		Func<string, IDockable?> Resolve,
-		IDocumentDock? Primary,
-		Action<IToolDock>? ConfigureToolDock);
-
 	public static LayoutNode? Capture(IDock? dock, IDocumentDock? primary) {
 		if (dock is null) return null;
 
@@ -319,8 +313,8 @@ public static class LayoutSerializer {
 
 		if (includeWindows && dock is IRootDock { Windows: not null } root)
 			foreach (var window in root.Windows)
-				foreach (var nested in EnumerateDocks(window.Layout, includeWindows))
-					yield return nested;
+			foreach (var nested in EnumerateDocks(window.Layout, includeWindows))
+				yield return nested;
 	}
 
 	private static T ParseEnum<T>(string? value, T fallback) where T : struct, Enum {
@@ -346,4 +340,10 @@ public static class LayoutSerializer {
 			Math.Clamp(y, area.Y, Math.Max(area.Y, area.Y + area.Height - Math.Max(height, 100)))
 		);
 	}
+
+	private sealed record BuildContext(
+		Factory Factory,
+		Func<string, IDockable?> Resolve,
+		IDocumentDock? Primary,
+		Action<IToolDock>? ConfigureToolDock);
 }

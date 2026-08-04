@@ -63,7 +63,7 @@ public sealed class ScrollMarkerOverlay : Control {
 
 			y = Math.Min(y, viewport - MarkerHeight);
 
-			if (!ResourceNodeExtensions.TryFindResource(this, marker.ColorKey, out var resource) ||
+			if (!this.TryFindResource(marker.ColorKey, out var resource) ||
 			    resource is not IBrush brush)
 				continue;
 

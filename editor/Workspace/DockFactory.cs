@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Dock.Avalonia.Controls;
 using Dock.Model.Controls;
 using Dock.Model.Core;
 using Dock.Model.Mvvm;
@@ -13,6 +12,7 @@ using editor.Editors;
 namespace editor.Workspace;
 
 public class DockFactory : Factory {
+	private const double SidePanelProportion = 0.2;
 	private IDocumentDock? m_documentDock;
 
 	private bool m_genericClosePending;
@@ -22,6 +22,7 @@ public class DockFactory : Factory {
 	private bool m_schemaClosePending;
 
 	public HierarchyViewModel? Hierarchy { get; private set; }
+	public HistoryViewModel? History { get; private set; }
 	public InspectorViewModel? Inspector { get; private set; }
 	public GenericViewModel? GenericEditorVm { get; private set; }
 	public SchemaViewModel? SchemaEditorVm { get; private set; }
@@ -30,11 +31,13 @@ public class DockFactory : Factory {
 
 	public override IRootDock CreateLayout() {
 		var hierarchy = new HierarchyViewModel { Id = "Hierarchy", Title = "Hierarchy" };
+		var history = new HistoryViewModel { Id = "History", Title = "History" };
 		var inspector = new InspectorViewModel { Id = "Inspector", Title = "Inspector" };
 		var generic = new GenericViewModel { Id = "GenericEditor", Title = "Data Editor" };
 		var schema = new SchemaViewModel { Id = "SchemaEditor", Title = "Schema Editor" };
 
 		Hierarchy = hierarchy;
+		History = history;
 		Inspector = inspector;
 		GenericEditorVm = generic;
 		SchemaEditorVm = schema;
@@ -110,6 +113,7 @@ public class DockFactory : Factory {
 		ContextLocator = new Dictionary<string, Func<object?>> {
 			["Workspace"] = () => layout,
 			["Hierarchy"] = () => layout,
+			["History"] = () => layout,
 			["Inspector"] = () => layout,
 			["GenericEditor"] = () => layout,
 			["SchemaEditor"] = () => layout
@@ -117,6 +121,7 @@ public class DockFactory : Factory {
 		DockableLocator = new Dictionary<string, Func<IDockable?>> {
 			["Root"] = () => m_rootDock,
 			["Documents"] = () => m_documentDock,
+			["History"] = () => History,
 			["GenericEditor"] = () => GenericEditorVm,
 			["SchemaEditor"] = () => SchemaEditorVm
 		};
@@ -170,8 +175,6 @@ public class DockFactory : Factory {
 			m_schemaClosePending = false;
 		}
 	}
-
-	private const double SidePanelProportion = 0.2;
 
 	/**
 	 * Re-applies the side-panel share after a dock completes
@@ -280,6 +283,7 @@ public class DockFactory : Factory {
 	public Tool? ToolById(string id) {
 		return id switch {
 			"Hierarchy" => Hierarchy,
+			"History" => History,
 			"Inspector" => Inspector,
 			"GenericEditor" => GenericEditorVm,
 			"SchemaEditor" => SchemaEditorVm,
@@ -289,13 +293,14 @@ public class DockFactory : Factory {
 
 	private IEnumerable<Tool?> AllTools() {
 		yield return Hierarchy;
+		yield return History;
 		yield return Inspector;
 		yield return GenericEditorVm;
 		yield return SchemaEditorVm;
 	}
 
 	private IToolDock? PreferredDockFor(Tool tool) {
-		return ReferenceEquals(tool, Hierarchy) ? m_leftToolDock : m_rightToolDock;
+		return ReferenceEquals(tool, Hierarchy) || ReferenceEquals(tool, History) ? m_leftToolDock : m_rightToolDock;
 	}
 
 	private void ShowTool(Tool tool, IToolDock? preferred) {

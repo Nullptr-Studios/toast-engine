@@ -21,12 +21,12 @@ public record struct ProjectListItem {
 public class ProjectList {
 	private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-	private static readonly string m_dir = System.IO.Path.Combine(
+	private static readonly string m_dir = Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
 		"ToastEngine"
 	);
 
-	private static readonly string m_path = System.IO.Path.Combine(m_dir, "project_list.json");
+	private static readonly string m_path = Path.Combine(m_dir, "project_list.json");
 
 	[JsonConstructor]
 	private ProjectList() { }
@@ -73,8 +73,8 @@ public class ProjectList {
 	}
 
 	private static ProjectListItem ReadFromToastFile(string toastPath) {
-		var dir = System.IO.Path.GetDirectoryName(toastPath) ?? "";
-		var thumbnailPath = System.IO.Path.Combine(dir, ".toast", "thumbnails", "project.png");
+		var dir = Path.GetDirectoryName(toastPath) ?? "";
+		var thumbnailPath = Path.Combine(dir, ".toast", "thumbnails", "project.png");
 		var thumbnail = File.Exists(thumbnailPath) ? thumbnailPath : "";
 		var date = DateTime.Now.ToString("dd MMM yyyy HH:mm");
 
@@ -91,7 +91,7 @@ public class ProjectList {
 			};
 		} catch {
 			return new ProjectListItem {
-				Title = System.IO.Path.GetFileNameWithoutExtension(toastPath),
+				Title = Path.GetFileNameWithoutExtension(toastPath),
 				Path = toastPath,
 				Date = date,
 				Version = "",

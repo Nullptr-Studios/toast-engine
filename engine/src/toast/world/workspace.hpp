@@ -11,9 +11,11 @@
 #pragma once
 
 #include "node_owner.hpp"
+#include "workspace_history.hpp"
 
 #include <memory>
 #include <toast/events/listener.hpp>
+#include <utility>
 
 namespace toast {
 /**
@@ -103,11 +105,24 @@ protected:
 	SnapSetting m_scale_snap {true, 0.10f};
 	bool m_game_camera = false;    ///< false = editor camera
 	std::unique_ptr<Camera> m_editor_camera;
+	std::unique_ptr<WorkspaceHistory> m_history;
 
 	[[nodiscard]]
 	auto isActiveWorkspace() const noexcept -> bool;
 
 	void eventSubscriptions();
+	void initializeHistory(bool available, bool initially_saved);
+	auto restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool;
+	void destroyOwnedTree(Box<Node>& root);
+
+	template<typename F>
+	void recordHistory(WorkspaceHistory::Context context, F&& mutation) {
+		const bool owned = m_history && m_history->beginAtomic(std::move(context));
+		std::forward<F>(mutation)();
+		if (m_history) {
+			m_history->finishAtomic(owned);
+		}
+	}
 
 	/// instantiates the prefab and sets up the root node
 	void initFromPrefab(const assets::Handle<assets::Prefab>& file);

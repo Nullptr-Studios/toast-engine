@@ -1,34 +1,36 @@
 <UserControl xmlns="https://github.com/avaloniaui"
-			 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-			 xmlns:vm="using:editor.Logger"
-			 xmlns:b="using:editor.Components.Behaviors"
-			 xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-			 xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-			 mc:Ignorable="d"
-			 d:DesignWidth="800"
-			 d:DesignHeight="450"
-			 x:Class="editor.Logger.LogsView"
-			 x:DataType="vm:LogsViewModel"
-			 Background="{StaticResource Bg2}"
-			 Padding="8">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:editor.Logger"
+             xmlns:b="using:editor.Components.Behaviors"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignWidth="800"
+             d:DesignHeight="450"
+             x:Class="editor.Logger.LogsView"
+             x:DataType="vm:LogsViewModel"
+             Background="{StaticResource Bg2}"
+             Padding="8">
 
 	<UserControl.Styles>
 		<!-- Checked -->
 		<Style Selector="ToggleButton.severity-toggle:checked TextBlock.severity-badge">
-			<Setter Property="FontWeight" Value="Bold" />
+			<Setter Property="FontWeight"
+			        Value="Bold" />
 		</Style>
 		<Style Selector="Button, ToggleButton">
-			<Setter Property="FocusAdorner" Value="{x:Null}" />
+			<Setter Property="FocusAdorner"
+			        Value="{x:Null}" />
 		</Style>
 		<Style Selector="Button.toolbar-btn, ToggleButton.toolbar-btn, ToggleButton.severity-toggle">
 			<Setter Property="Template">
 				<ControlTemplate>
 					<Border Background="{TemplateBinding Background}"
-							CornerRadius="{TemplateBinding CornerRadius}"
-							Padding="{TemplateBinding Padding}">
+					        CornerRadius="{TemplateBinding CornerRadius}"
+					        Padding="{TemplateBinding Padding}">
 						<ContentPresenter Content="{TemplateBinding Content}"
-										  HorizontalAlignment="Center"
-										  VerticalAlignment="Center" />
+						                  HorizontalAlignment="Center"
+						                  VerticalAlignment="Center" />
 					</Border>
 				</ControlTemplate>
 			</Setter>
@@ -38,69 +40,69 @@
 	<DockPanel>
 		<!-- Toolbar -->
 		<Border DockPanel.Dock="Top"
-				Background="{StaticResource Bg3}"
-				Padding="8"
-				CornerRadius="8">
+		        Background="{StaticResource Bg3}"
+		        Padding="8"
+		        CornerRadius="8">
 			<Grid ColumnDefinitions="Auto,Auto,Auto,8,Auto,8,*,8,Auto"
-				  ColumnSpacing="4">
+			      ColumnSpacing="4">
 				<ToggleButton Grid.Column="0"
-							  Classes="toolbar-btn"
-							  IsChecked="{Binding AutoScroll, Mode=TwoWay}"
-							  Background="{Binding AutoScroll, Converter={StaticResource BoolFillConverter}, ConverterParameter=Red}"
-							  CornerRadius="6"
-							  ToolTip.Tip="Auto-scroll to latest">
+				              Classes="toolbar-btn"
+				              IsChecked="{Binding AutoScroll, Mode=TwoWay}"
+				              Background="{Binding AutoScroll, Converter={StaticResource BoolFillConverter}, ConverterParameter=Red}"
+				              CornerRadius="6"
+				              ToolTip.Tip="Auto-scroll to latest">
 					<Panel>
 						<LucideIcon Kind="Lock"
-									Size="18"
-									StrokeWidth="2.5"
-									IsVisible="{Binding AutoScroll}"
-									Foreground="{Binding AutoScroll, Converter={StaticResource ToggleForegroundConverter}}" />
+						            Size="18"
+						            StrokeWidth="2.5"
+						            IsVisible="{Binding AutoScroll}"
+						            Foreground="{Binding AutoScroll, Converter={StaticResource ToggleForegroundConverter}}" />
 						<LucideIcon Kind="LockOpen"
-									Size="18"
-									StrokeWidth="2.5"
-									IsVisible="{Binding !AutoScroll}"
-									Foreground="{Binding AutoScroll, Converter={StaticResource ToggleForegroundConverter}}" />
+						            Size="18"
+						            StrokeWidth="2.5"
+						            IsVisible="{Binding !AutoScroll}"
+						            Foreground="{Binding AutoScroll, Converter={StaticResource ToggleForegroundConverter}}" />
 					</Panel>
 				</ToggleButton>
 
 				<Button Grid.Column="1"
-						Classes="toolbar-btn"
-						Command="{Binding ClearLogsCommand}"
-						Background="{StaticResource Bg4}"
-						CornerRadius="6"
-						ToolTip.Tip="Clear logs">
+				        Classes="toolbar-btn"
+				        Command="{Binding ClearLogsCommand}"
+				        Background="{StaticResource Bg4}"
+				        CornerRadius="6"
+				        ToolTip.Tip="Clear logs">
 					<LucideIcon Kind="Eraser"
-								Size="18"
-								StrokeWidth="2.5" />
+					            Size="18"
+					            StrokeWidth="2.5" />
 				</Button>
 
 				<ToggleButton Grid.Column="2"
-							  Classes="toolbar-btn"
-							  IsChecked="{Binding ShowTimestamps, Mode=TwoWay}"
-							  Background="{Binding ShowTimestamps, Converter={StaticResource BoolFillConverter}, ConverterParameter=Red}"
-							  CornerRadius="6"
-							  ToolTip.Tip="Show precise timestamps">
+				              Classes="toolbar-btn"
+				              IsChecked="{Binding ShowTimestamps, Mode=TwoWay}"
+				              Background="{Binding ShowTimestamps, Converter={StaticResource BoolFillConverter}, ConverterParameter=Red}"
+				              CornerRadius="6"
+				              ToolTip.Tip="Show precise timestamps">
 					<LucideIcon Kind="Timer"
-								Size="18"
-								StrokeWidth="2.5"
-								Foreground="{Binding ShowTimestamps, Converter={StaticResource ToggleForegroundConverter}}" />
+					            Size="18"
+					            StrokeWidth="2.5"
+					            Foreground="{Binding ShowTimestamps, Converter={StaticResource ToggleForegroundConverter}}" />
 				</ToggleButton>
 
 				<ItemsControl Grid.Column="4"
-							  ItemsSource="{Binding Severities}">
+				              ItemsSource="{Binding Severities}">
 					<ItemsControl.ItemsPanel>
 						<ItemsPanelTemplate>
 							<StackPanel Orientation="Horizontal"
-										Spacing="4" />
+							            Spacing="4" />
 						</ItemsPanelTemplate>
 					</ItemsControl.ItemsPanel>
 					<ItemsControl.ItemTemplate>
 						<DataTemplate x:DataType="vm:SeverityFilterViewModel">
 							<ToggleButton Classes="severity-toggle"
-										  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
-										  CornerRadius="6"
-										  Padding="8,6"
-										  ToolTip.Tip="{Binding Label}">
+							              IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+							              CornerRadius="6"
+							              Padding="8,6"
+							              ToolTip.Tip="{Binding Label}">
 								<ToggleButton.Background>
 									<MultiBinding Converter="{StaticResource SeverityFillConverter}">
 										<Binding Path="IsEnabled" />
@@ -108,16 +110,16 @@
 									</MultiBinding>
 								</ToggleButton.Background>
 								<StackPanel Orientation="Horizontal"
-											Spacing="4">
+								            Spacing="4">
 									<LucideIcon Kind="{Binding Icon}"
-												Size="16"
-												StrokeWidth="2.5"
-												Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
+									            Size="16"
+									            StrokeWidth="2.5"
+									            Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
 									<TextBlock Classes="severity-badge"
-											   Text="{Binding Badge}"
-											   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-											   FontWeight="Bold"
-											   Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
+									           Text="{Binding Badge}"
+									           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+									           FontWeight="Bold"
+									           Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
 								</StackPanel>
 							</ToggleButton>
 						</DataTemplate>
@@ -125,49 +127,49 @@
 				</ItemsControl>
 
 				<TextBox Grid.Column="6"
-						 Text="{Binding SearchText}"
-						 PlaceholderText="Search..."
-						 BorderThickness="0"
-						 CornerRadius="6"
-						 VerticalContentAlignment="Center"
-						 Background="{StaticResource Bg1}"
-						 KeyDown="OnSearchKeyDown" />
+				         Text="{Binding SearchText}"
+				         PlaceholderText="Search..."
+				         BorderThickness="0"
+				         CornerRadius="6"
+				         VerticalContentAlignment="Center"
+				         Background="{StaticResource Bg1}"
+				         KeyDown="OnSearchKeyDown" />
 
 				<Button Grid.Column="8"
-						Classes="toolbar-btn"
-						Background="{StaticResource Bg4}"
-						CornerRadius="6">
+				        Classes="toolbar-btn"
+				        Background="{StaticResource Bg4}"
+				        CornerRadius="6">
 					<StackPanel Orientation="Horizontal"
-								Spacing="4">
+					            Spacing="4">
 						<LucideIcon Kind="Funnel"
-									Size="18"
-									StrokeWidth="2.5" />
+						            Size="18"
+						            StrokeWidth="2.5" />
 						<TextBlock Text="Filter" />
 					</StackPanel>
 					<Button.Flyout>
 						<Flyout Placement="BottomEdgeAlignedRight">
 							<StackPanel MinWidth="300"
-										Spacing="4">
+							            Spacing="4">
 								<Grid ColumnDefinitions="*,Auto">
 									<TextBlock Grid.Column="0"
-											   Text="Sinks"
-											   FontWeight="SemiBold"
-											   VerticalAlignment="Center" />
+									           Text="Sinks"
+									           FontWeight="SemiBold"
+									           VerticalAlignment="Center" />
 									<Button Grid.Column="1"
-											Classes="toolbar-btn"
-											Command="{Binding ResetSinkFiltersCommand}"
-											Background="{StaticResource Bg4}"
-											CornerRadius="6"
-											Padding="8,3">
+									        Classes="toolbar-btn"
+									        Command="{Binding ResetSinkFiltersCommand}"
+									        Background="{StaticResource Bg4}"
+									        CornerRadius="6"
+									        Padding="8,3">
 										<TextBlock Text="Reset"
-												   FontSize="11" />
+										           FontSize="11" />
 									</Button>
 								</Grid>
 								<Separator Margin="0" />
 								<ScrollViewer MaxHeight="420"
-											  VerticalScrollBarVisibility="Auto">
+								              VerticalScrollBarVisibility="Auto">
 									<ItemsControl x:Name="SinksList"
-												  ItemsSource="{Binding Sinks}">
+									              ItemsSource="{Binding Sinks}">
 										<ItemsControl.ItemsPanel>
 											<ItemsPanelTemplate>
 												<StackPanel Spacing="2" />
@@ -176,36 +178,36 @@
 										<ItemsControl.ItemTemplate>
 											<DataTemplate x:DataType="vm:SinkFilterViewModel">
 												<Grid ColumnDefinitions="Auto,Auto"
-													  ColumnSpacing="8">
+												      ColumnSpacing="8">
 													<Button Grid.Column="0"
-															Classes="toolbar-btn"
-															Command="{Binding #SinksList.((vm:LogsViewModel)DataContext).ToggleSinkQuickCommand}"
-															CommandParameter="{Binding}"
-															Background="Transparent"
-															BorderThickness="0"
-															Padding="0"
-															HorizontalContentAlignment="Left"
-															ToolTip.Tip="Toggle Warning/Info/Trace for this sink">
+													        Classes="toolbar-btn"
+													        Command="{Binding #SinksList.((vm:LogsViewModel)DataContext).ToggleSinkQuickCommand}"
+													        CommandParameter="{Binding}"
+													        Background="Transparent"
+													        BorderThickness="0"
+													        Padding="0"
+													        HorizontalContentAlignment="Left"
+													        ToolTip.Tip="Toggle Warning/Info/Trace for this sink">
 														<TextBlock Text="{Binding Name}"
-																   Width="{Binding #SinksList.((vm:LogsViewModel)DataContext).SinkColumnWidth}"
-																   TextTrimming="CharacterEllipsis"
-																   TextWrapping="NoWrap" />
+														           Width="{Binding #SinksList.((vm:LogsViewModel)DataContext).SinkColumnWidth}"
+														           TextTrimming="CharacterEllipsis"
+														           TextWrapping="NoWrap" />
 													</Button>
 													<ItemsControl Grid.Column="1"
-																  ItemsSource="{Binding Severities}">
+													              ItemsSource="{Binding Severities}">
 														<ItemsControl.ItemsPanel>
 															<ItemsPanelTemplate>
 																<StackPanel Orientation="Horizontal"
-																			Spacing="3" />
+																            Spacing="3" />
 															</ItemsPanelTemplate>
 														</ItemsControl.ItemsPanel>
 														<ItemsControl.ItemTemplate>
 															<DataTemplate x:DataType="vm:SeverityFilterViewModel">
 																<ToggleButton Classes="severity-toggle"
-																			  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
-																			  CornerRadius="5"
-																			  Padding="6,3"
-																			  ToolTip.Tip="{Binding Label}">
+																              IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+																              CornerRadius="5"
+																              Padding="6,3"
+																              ToolTip.Tip="{Binding Label}">
 																	<ToggleButton.Background>
 																		<MultiBinding Converter="{StaticResource SeverityFillConverter}">
 																			<Binding Path="IsEnabled" />
@@ -213,16 +215,16 @@
 																		</MultiBinding>
 																	</ToggleButton.Background>
 																	<StackPanel Orientation="Horizontal"
-																				Spacing="3">
+																	            Spacing="3">
 																		<LucideIcon Kind="{Binding Icon}"
-																					Size="14"
-																					StrokeWidth="2.5"
-																					Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
+																		            Size="14"
+																		            StrokeWidth="2.5"
+																		            Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
 																		<TextBlock Text="{Binding Badge}"
-																				   FontSize="12"
-																				   FontWeight="Bold"
-																				   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-																				   Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
+																		           FontSize="12"
+																		           FontWeight="Bold"
+																		           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+																		           Foreground="{Binding IsEnabled, Converter={StaticResource ToggleForegroundConverter}}" />
 																	</StackPanel>
 																</ToggleButton>
 															</DataTemplate>
@@ -242,34 +244,42 @@
 
 		<Grid Margin="0,8,0,0">
 			<ListBox x:Name="LogList"
-					 Padding="0"
-					 BorderThickness="0"
-					 ScrollViewer.VerticalScrollBarVisibility="Auto"
-					 Background="Transparent"
-					 ItemsSource="{Binding Rows}"
-					 PointerWheelChanged="OnListPointerWheelChanged">
+			         Padding="0"
+			         BorderThickness="0"
+			         ScrollViewer.VerticalScrollBarVisibility="Auto"
+			         Background="Transparent"
+			         ItemsSource="{Binding Rows}"
+			         PointerWheelChanged="OnListPointerWheelChanged">
 				<ListBox.Styles>
 					<Style Selector="ListBoxItem">
-						<Setter Property="Padding" Value="1" />
-						<Setter Property="MinHeight" Value="0" />
+						<Setter Property="Padding"
+						        Value="1" />
+						<Setter Property="MinHeight"
+						        Value="0" />
 					</Style>
 					<Style Selector="ListBoxItem:pointerover">
-						<Setter Property="Background" Value="{StaticResource Bg3}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg3}" />
 					</Style>
 					<Style Selector="ListBoxItem:selected">
-						<Setter Property="Background" Value="{StaticResource Bg3}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg3}" />
 					</Style>
 					<Style Selector="ListBoxItem:selected:pointerover">
-						<Setter Property="Background" Value="{StaticResource Bg4}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg4}" />
 					</Style>
 					<Style Selector="ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-						<Setter Property="Background" Value="{StaticResource Bg3}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg3}" />
 					</Style>
 					<Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
-						<Setter Property="Background" Value="{StaticResource Bg3}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg3}" />
 					</Style>
 					<Style Selector="ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-						<Setter Property="Background" Value="{StaticResource Bg4}" />
+						<Setter Property="Background"
+						        Value="{StaticResource Bg4}" />
 					</Style>
 				</ListBox.Styles>
 				<ListBox.ItemsPanel>
@@ -283,37 +293,37 @@
 							<Border.ContextMenu>
 								<ContextMenu x:DataType="vm:LogEntry">
 									<MenuItem Command="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).OpenEntryCommand}"
-											  CommandParameter="{Binding}">
+									          CommandParameter="{Binding}">
 										<MenuItem.Header>
 											<StackPanel Orientation="Horizontal"
-														Spacing="8">
+											            Spacing="8">
 												<LucideIcon Kind="ExternalLink"
-															StrokeWidth="2.5"
-															Size="16" />
+												            StrokeWidth="2.5"
+												            Size="16" />
 												<TextBlock Text="Open" />
 											</StackPanel>
 										</MenuItem.Header>
 									</MenuItem>
 									<MenuItem Command="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).CopyEntryCommand}"
-											  CommandParameter="{Binding}">
+									          CommandParameter="{Binding}">
 										<MenuItem.Header>
 											<StackPanel Orientation="Horizontal"
-														Spacing="8">
+											            Spacing="8">
 												<LucideIcon Kind="ClipboardCopy"
-															StrokeWidth="2.5"
-															Size="16" />
+												            StrokeWidth="2.5"
+												            Size="16" />
 												<TextBlock Text="Copy" />
 											</StackPanel>
 										</MenuItem.Header>
 									</MenuItem>
 									<MenuItem Command="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).CopyEntryMessageCommand}"
-											  CommandParameter="{Binding}">
+									          CommandParameter="{Binding}">
 										<MenuItem.Header>
 											<StackPanel Orientation="Horizontal"
-														Spacing="8">
+											            Spacing="8">
 												<LucideIcon Kind="MessageSquareText"
-															StrokeWidth="2.5"
-															Size="16" />
+												            StrokeWidth="2.5"
+												            Size="16" />
 												<TextBlock Text="Copy message" />
 											</StackPanel>
 										</MenuItem.Header>
@@ -322,81 +332,81 @@
 							</Border.ContextMenu>
 
 							<Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto"
-								  ColumnSpacing="16"
-								  Height="24"
-								  TextElement.FontSize="13">
+							      ColumnSpacing="16"
+							      Height="24"
+							      TextElement.FontSize="13">
 								<!-- Error/Warning gradient -->
 								<Border Grid.Column="0"
-										Grid.ColumnSpan="2"
-										CornerRadius="8"
-										IsHitTestVisible="False"
-										Background="{Binding Severity, Converter={StaticResource SeverityRowGradientConverter}}" />
+								        Grid.ColumnSpan="2"
+								        CornerRadius="8"
+								        IsHitTestVisible="False"
+								        Background="{Binding Severity, Converter={StaticResource SeverityRowGradientConverter}}" />
 								<!-- Severity -->
 								<StackPanel Grid.Column="0"
-											Orientation="Horizontal"
-											Spacing="4"
-											Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SeverityColumnWidth}">
+								            Orientation="Horizontal"
+								            Spacing="4"
+								            Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SeverityColumnWidth}">
 									<Border Background="{Binding Severity, Converter={StaticResource SeverityBarColorConverter}}"
-											Width="4"
-											Height="22"
-											CornerRadius="2" />
+									        Width="4"
+									        Height="22"
+									        CornerRadius="2" />
 									<TextBlock Text="{Binding SeverityShortName}"
-											   Foreground="{Binding Severity, Converter={StaticResource SeverityToColorConverter}}"
-											   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-											   FontWeight="Bold"
-											   VerticalAlignment="Center" />
+									           Foreground="{Binding Severity, Converter={StaticResource SeverityToColorConverter}}"
+									           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+									           FontWeight="Bold"
+									           VerticalAlignment="Center" />
 								</StackPanel>
 								<!-- Sink -->
 								<TextBlock Grid.Column="1"
-										   b:TextHighlight.Text="{Binding Sink}"
-										   b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
-										   Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
-										   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-										   FontWeight="SemiBold"
-										   TextTrimming="CharacterEllipsis"
-										   TextWrapping="NoWrap"
-										   MaxLines="1"
-										   Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SinkColumnWidth}"
-										   VerticalAlignment="Center" />
+								           b:TextHighlight.Text="{Binding Sink}"
+								           b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
+								           Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
+								           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+								           FontWeight="SemiBold"
+								           TextTrimming="CharacterEllipsis"
+								           TextWrapping="NoWrap"
+								           MaxLines="1"
+								           Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SinkColumnWidth}"
+								           VerticalAlignment="Center" />
 								<!-- File and Line -->
 								<TextBlock Grid.Column="2"
-										   b:TextHighlight.Text="{Binding DisplayFileLine}"
-										   b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
-										   Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
-										   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-										   TextTrimming="CharacterEllipsis"
-										   TextWrapping="NoWrap"
-										   MaxLines="1"
-										   Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).FileColumnWidth}"
-										   VerticalAlignment="Center" />
+								           b:TextHighlight.Text="{Binding DisplayFileLine}"
+								           b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
+								           Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
+								           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+								           TextTrimming="CharacterEllipsis"
+								           TextWrapping="NoWrap"
+								           MaxLines="1"
+								           Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).FileColumnWidth}"
+								           VerticalAlignment="Center" />
 								<!-- Message -->
 								<TextBlock Grid.Column="3"
-										   b:TextHighlight.Text="{Binding DisplayMessage}"
-										   b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
-										   Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
-										   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-										   TextTrimming="CharacterEllipsis"
-										   TextWrapping="NoWrap"
-										   MaxLines="1"
-										   VerticalAlignment="Center" />
+								           b:TextHighlight.Text="{Binding DisplayMessage}"
+								           b:TextHighlight.Query="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).SearchText}"
+								           Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
+								           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+								           TextTrimming="CharacterEllipsis"
+								           TextWrapping="NoWrap"
+								           MaxLines="1"
+								           VerticalAlignment="Center" />
 								<!-- Timestamp -->
 								<TextBlock Grid.Column="4"
-										   Text="{Binding PreciseTime}"
-										   IsVisible="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).ShowTimestamps}"
-										   Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
-										   FontFamily="FiraCode Nerd Font,Consolas,monospace"
-										   Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).TimestampColumnWidth}"
-										   VerticalAlignment="Center" />
+								           Text="{Binding PreciseTime}"
+								           IsVisible="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).ShowTimestamps}"
+								           Foreground="{Binding Severity, Converter={StaticResource TraceForegroundConverter}}"
+								           FontFamily="FiraCode Nerd Font,Consolas,monospace"
+								           Width="{Binding $parent[ListBox].((vm:LogsViewModel)DataContext).TimestampColumnWidth}"
+								           VerticalAlignment="Center" />
 							</Grid>
 						</Border>
 					</DataTemplate>
 				</ListBox.ItemTemplate>
 			</ListBox>
 			<vm:ScrollMarkerOverlay Width="16"
-									HorizontalAlignment="Right"
-									IsHitTestVisible="False"
-									Markers="{Binding ScrollMarkers}"
-									TotalCount="{Binding RowCount}" />
+			                        HorizontalAlignment="Right"
+			                        IsHitTestVisible="False"
+			                        Markers="{Binding ScrollMarkers}"
+			                        TotalCount="{Binding RowCount}" />
 		</Grid>
 	</DockPanel>
 </UserControl>

@@ -36,6 +36,7 @@ public partial class ToastEngine : IDisposable {
 	private readonly CancellationTokenSource m_cancellationSource;
 
 	private readonly IntPtr m_engineInstance;
+	private readonly List<(IntPtr Handle, string Path)> m_retiredGameLibraries = [];
 
 	private readonly ManualResetEventSlim m_tickGate = new(true);
 	private readonly ManualResetEventSlim m_tickIdle = new(true);
@@ -51,7 +52,6 @@ public partial class ToastEngine : IDisposable {
 
 	private IntPtr m_gameHandle = IntPtr.Zero;
 	private string? m_gameTempPath;
-	private readonly List<(IntPtr Handle, string Path)> m_retiredGameLibraries = [];
 
 	// the engine dll lives at ../toast_engine/bin
 	static ToastEngine() {
@@ -116,12 +116,6 @@ public partial class ToastEngine : IDisposable {
 	private static string NativeLibPrefix => OperatingSystem.IsWindows() ? "" : "lib";
 	private static string NativeLibExt => OperatingSystem.IsWindows() ? ".dll" : ".so";
 
-	private string CreateGameTempPath() => Path.Combine(
-		ProjectPath,
-		".toast",
-		$"game_temp_{Environment.ProcessId}_{Guid.NewGuid():N}{NativeLibExt}"
-	);
-
 	public void Dispose() {
 		IsEngineReady = false;
 		m_cancellationSource.Cancel();
@@ -132,6 +126,14 @@ public partial class ToastEngine : IDisposable {
 		m_cancellationSource.Dispose();
 
 		UpdateProjectListOnClose();
+	}
+
+	private string CreateGameTempPath() {
+		return Path.Combine(
+			ProjectPath,
+			".toast",
+			$"game_temp_{Environment.ProcessId}_{Guid.NewGuid():N}{NativeLibExt}"
+		);
 	}
 
 	private void UpdateProjectListOnClose() {
@@ -216,6 +218,7 @@ public partial class ToastEngine : IDisposable {
 				if (newHandle != IntPtr.Zero) NativeLibrary.Free(newHandle);
 				TryDeleteGameTemp(newTempPath);
 			}
+
 			Console.Error.WriteLine($"Hot reload failed: {ex.Message}");
 		} finally {
 			m_tickGate.Set();
@@ -268,7 +271,7 @@ public partial class ToastEngine : IDisposable {
 		var candidates = libraries.Where(path => {
 			var name = Path.GetFileNameWithoutExtension(path);
 			return name.Contains("game", StringComparison.OrdinalIgnoreCase) &&
-			       !name.Equals("dummy_game", StringComparison.OrdinalIgnoreCase);
+				!name.Equals("dummy_game", StringComparison.OrdinalIgnoreCase);
 		}).ToArray();
 
 		return candidates.Length switch {
@@ -294,12 +297,14 @@ public partial class ToastEngine : IDisposable {
 			NativeLibrary.Free(m_gameHandle);
 			m_gameHandle = IntPtr.Zero;
 		}
+
 		if (m_gameTempPath is not null) TryDeleteGameTemp(m_gameTempPath);
 
 		foreach (var (handle, path) in m_retiredGameLibraries) {
 			NativeLibrary.Free(handle);
 			TryDeleteGameTemp(path);
 		}
+
 		m_retiredGameLibraries.Clear();
 	}
 
@@ -308,8 +313,7 @@ public partial class ToastEngine : IDisposable {
 			if (File.Exists(path)) File.Delete(path);
 		} catch (IOException) {
 			// Native loader teardown can briefly retain a mapped shadow copy
-		} catch (UnauthorizedAccessException) {
-		}
+		} catch (UnauthorizedAccessException) { }
 	}
 
 	private void PrepareLogServer() {

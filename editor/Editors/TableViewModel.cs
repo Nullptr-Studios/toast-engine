@@ -22,19 +22,19 @@ using editor.Workspace;
 
 namespace editor.Editors;
 
-public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
+public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable, IDisposable {
 	private const string BaseTitle = "Table Editor";
+	private readonly List<string> m_storageHeaders = [];
 
 	[ObservableProperty] private string m_currentPath = "";
 	[ObservableProperty] private string m_currentUid = "";
 	[ObservableProperty] private string m_displayTitle = BaseTitle;
 	[ObservableProperty] private string m_fileName = "";
-	[ObservableProperty] private bool m_isDirty;
 	[ObservableProperty] private bool m_hasContent;
-	[ObservableProperty] private bool m_usesAssetCells;
+	[ObservableProperty] private bool m_isDirty;
 
 	private bool m_loading;
-	private readonly List<string> m_storageHeaders = [];
+	[ObservableProperty] private bool m_usesAssetCells;
 
 	public TableViewModel() {
 		ProjectContext.LanguagesChanged += OnLanguagesChanged;
@@ -56,6 +56,11 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 		var csv = Serialize();
 		var realPath = ProjectContext.Resolve(virtualPath);
 		return Task.Run(() => File.WriteAllText(realPath, csv));
+	}
+
+	public void Dispose() {
+		ProjectContext.LanguagesChanged -= OnLanguagesChanged;
+		GC.SuppressFinalize(this);
 	}
 
 	public void OpenFile(string uid, string virtualPath, BaseAsset definition, string? contentSourceRealPath = null) {
@@ -114,6 +119,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 			m_storageHeaders.Add("id");
 			m_storageHeaders.AddRange(ProjectContext.Languages);
 		}
+
 		RebuildColumns();
 
 		for (var r = 1; r < table.Count; r++)
@@ -136,6 +142,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 			if (column.StorageIndex == 0) row.IdCell = cell;
 			else if (column.IsVisible) row.ValueCells.Add(cell);
 		}
+
 		return row;
 	}
 
@@ -155,7 +162,8 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 		AddColumn("id", true);
 		foreach (var language in ProjectContext.Languages) AddColumn(language, true);
 		foreach (var header in m_storageHeaders)
-			if (header != "id" && !configured.Contains(header)) AddColumn(header, false);
+			if (header != "id" && !configured.Contains(header))
+				AddColumn(header, false);
 	}
 
 	private void OnLanguagesChanged() {
@@ -177,7 +185,8 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 			var storedRows = Rows.Select(row => {
 				var values = Enumerable.Repeat("", m_storageHeaders.Count).ToList();
 				foreach (var cell in row.Cells)
-					if (cell.StorageIndex < values.Count) values[cell.StorageIndex] = cell.Value ?? "";
+					if (cell.StorageIndex < values.Count)
+						values[cell.StorageIndex] = cell.Value ?? "";
 				return values;
 			}).ToList();
 
@@ -195,6 +204,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 					row.Insert(0, id);
 				}
 			}
+
 			foreach (var language in ProjectContext.Languages)
 				if (!m_storageHeaders.Contains(language, StringComparer.Ordinal)) {
 					m_storageHeaders.Add(language);
@@ -258,9 +268,11 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 		foreach (var row in Rows) {
 			var stored = Enumerable.Repeat("", m_storageHeaders.Count).ToArray();
 			foreach (var cell in row.Cells)
-				if (cell.StorageIndex < stored.Length) stored[cell.StorageIndex] = cell.Value ?? "";
+				if (cell.StorageIndex < stored.Length)
+					stored[cell.StorageIndex] = cell.Value ?? "";
 			AppendCsvRow(sb, stored);
 		}
+
 		return sb.ToString();
 	}
 
@@ -285,6 +297,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 			table.Add(["id"]);
 			changed = true;
 		}
+
 		if (table[0].Count == 0) {
 			table[0].Add("id");
 			changed = true;
@@ -304,6 +317,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 				if (idIndex < table[r].Count) table[r].RemoveAt(idIndex);
 				table[r].Insert(0, id);
 			}
+
 			changed = true;
 		}
 
@@ -330,6 +344,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 			else
 				sb.Append(field);
 		}
+
 		sb.Append('\n');
 	}
 
@@ -405,7 +420,7 @@ public partial class TableViewModel : Tool, IToastZoneEditor, IAutosavable {
 	}
 }
 
-public sealed partial class TableRowVM : ObservableObject {
+public sealed class TableRowVM : ObservableObject {
 	private readonly Action m_onEdited;
 
 	public TableRowVM(Action onEdited) {

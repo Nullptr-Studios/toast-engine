@@ -20,51 +20,80 @@
 
 	<UserControl.Styles>
 		<Style Selector="Button.icon-btn">
-			<Setter Property="BorderThickness" Value="0" />
-			<Setter Property="Padding" Value="5" />
-			<Setter Property="CornerRadius" Value="6" />
-			<Setter Property="Cursor" Value="Hand" />
-			<Setter Property="Background" Value="Transparent" />
-			<Setter Property="VerticalAlignment" Value="Center" />
+			<Setter Property="BorderThickness"
+			        Value="0" />
+			<Setter Property="Padding"
+			        Value="5" />
+			<Setter Property="CornerRadius"
+			        Value="6" />
+			<Setter Property="Cursor"
+			        Value="Hand" />
+			<Setter Property="Background"
+			        Value="Transparent" />
+			<Setter Property="VerticalAlignment"
+			        Value="Center" />
 		</Style>
 		<Style Selector="Button.add-btn">
-			<Setter Property="HorizontalContentAlignment" Value="Center" />
-			<Setter Property="BorderThickness" Value="0" />
-			<Setter Property="Padding" Value="8,6" />
-			<Setter Property="CornerRadius" Value="6" />
-			<Setter Property="Cursor" Value="Hand" />
+			<Setter Property="HorizontalContentAlignment"
+			        Value="Center" />
+			<Setter Property="BorderThickness"
+			        Value="0" />
+			<Setter Property="Padding"
+			        Value="8,6" />
+			<Setter Property="CornerRadius"
+			        Value="6" />
+			<Setter Property="Cursor"
+			        Value="Hand" />
 		</Style>
 		<Style Selector="Button.add-btn /template/ ContentPresenter#PART_ContentPresenter">
-			<Setter Property="Background" Value="{StaticResource Bg4}" />
+			<Setter Property="Background"
+			        Value="{StaticResource Bg4}" />
 		</Style>
 		<Style Selector="Button.add-btn:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-			<Setter Property="Background" Value="{StaticResource Bg5}" />
+			<Setter Property="Background"
+			        Value="{StaticResource Bg5}" />
 		</Style>
 		<Style Selector="Border.gutter">
-			<Setter Property="Background" Value="{StaticResource Bg3}" />
-			<Setter Property="CornerRadius" Value="8" />
+			<Setter Property="Background"
+			        Value="{StaticResource Bg3}" />
+			<Setter Property="CornerRadius"
+			        Value="8" />
 		</Style>
 		<Style Selector="StackPanel.table-body">
-			<Setter Property="Spacing" Value="4" />
-			<Setter Property="Margin" Value="0,8" />
+			<Setter Property="Spacing"
+			        Value="4" />
+			<Setter Property="Margin"
+			        Value="0,8" />
 		</Style>
 		<Style Selector="Grid.gutter-row">
-			<Setter Property="Height" Value="34" />
-			<Setter Property="ColumnSpacing" Value="4" />
-			<Setter Property="Margin" Value="8,0" />
+			<Setter Property="Height"
+			        Value="34" />
+			<Setter Property="ColumnSpacing"
+			        Value="4" />
+			<Setter Property="Margin"
+			        Value="8,0" />
 		</Style>
 		<Style Selector="Border.head-cell">
-			<Setter Property="Height" Value="34" />
-			<Setter Property="MinWidth" Value="160" />
-			<Setter Property="Margin" Value="2,0" />
-			<Setter Property="Padding" Value="8,6" />
-			<Setter Property="Background" Value="{StaticResource Bg3}" />
-			<Setter Property="CornerRadius" Value="6" />
+			<Setter Property="Height"
+			        Value="34" />
+			<Setter Property="MinWidth"
+			        Value="160" />
+			<Setter Property="Margin"
+			        Value="2,0" />
+			<Setter Property="Padding"
+			        Value="8,6" />
+			<Setter Property="Background"
+			        Value="{StaticResource Bg3}" />
+			<Setter Property="CornerRadius"
+			        Value="6" />
 		</Style>
 		<Style Selector="Panel.cell">
-			<Setter Property="Height" Value="34" />
-			<Setter Property="MinWidth" Value="160" />
-			<Setter Property="Margin" Value="2,0" />
+			<Setter Property="Height"
+			        Value="34" />
+			<Setter Property="MinWidth"
+			        Value="160" />
+			<Setter Property="Margin"
+			        Value="2,0" />
 		</Style>
 	</UserControl.Styles>
 
@@ -73,57 +102,80 @@
 	</Design.DataContext>
 
 	<Panel>
-		<DockPanel IsVisible="{Binding HasContent}" VerticalSpacing="8">
+		<DockPanel IsVisible="{Binding HasContent}"
+		           VerticalSpacing="8">
 
 			<!-- Toolbar -->
-			<Border DockPanel.Dock="Top" Background="{StaticResource Bg3}" Padding="8" CornerRadius="8">
+			<Border DockPanel.Dock="Top"
+			        Background="{StaticResource Bg3}"
+			        Padding="8"
+			        CornerRadius="8">
 				<DockPanel>
 					<Button DockPanel.Dock="Right"
 					        Classes="icon-btn"
 					        Command="{Binding SaveCommand}"
 					        Background="{StaticResource Red}"
 					        ToolTip.Tip="Save (Ctrl+S)">
-						
-						<StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-							<lucide:LucideIcon Kind="Save" Size="16" StrokeWidth="2.5" />
-							<TextBlock Text="Save" FontWeight="Bold" />
+
+						<StackPanel Orientation="Horizontal"
+						            Spacing="4"
+						            VerticalAlignment="Center">
+							<lucide:LucideIcon Kind="Save"
+							                   Size="16"
+							                   StrokeWidth="2.5" />
+							<TextBlock Text="Save"
+							           FontWeight="Bold" />
 						</StackPanel>
 					</Button>
-					
-					<StackPanel Orientation="Horizontal" Spacing="8">
-						<StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-							<lucide:LucideIcon Kind="Globe" Size="16" StrokeWidth="2.5"
+
+					<StackPanel Orientation="Horizontal"
+					            Spacing="8">
+						<StackPanel Orientation="Horizontal"
+						            Spacing="8"
+						            VerticalAlignment="Center">
+							<lucide:LucideIcon Kind="Globe"
+							                   Size="16"
+							                   StrokeWidth="2.5"
 							                   Foreground="{StaticResource TextMuted}" />
-							<TextBlock Text="{Binding DisplayTitle}" FontWeight="Bold"
-							           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+							<TextBlock Text="{Binding DisplayTitle}"
+							           FontWeight="Bold"
+							           VerticalAlignment="Center"
+							           TextTrimming="CharacterEllipsis" />
 						</StackPanel>
-						
+
 						<Button Classes="add-btn"
 						        Command="{Binding AddRowCommand}">
-							<StackPanel Orientation="Horizontal" Spacing="4">
-								<lucide:LucideIcon Kind="Plus" Size="16" StrokeWidth="3" />
-								<TextBlock Text="Add Row" FontWeight="Bold" />
+							<StackPanel Orientation="Horizontal"
+							            Spacing="4">
+								<lucide:LucideIcon Kind="Plus"
+								                   Size="16"
+								                   StrokeWidth="3" />
+								<TextBlock Text="Add Row"
+								           FontWeight="Bold" />
 							</StackPanel>
 						</Button>
 					</StackPanel>
 				</DockPanel>
 			</Border>
-			
+
 
 			<!-- Table -->
 			<ScrollViewer HorizontalScrollBarVisibility="Disabled"
 			              VerticalScrollBarVisibility="Auto">
 				<Grid>
 					<Grid.ColumnDefinitions>
-						<ColumnDefinition Width="260" MinWidth="140" />
+						<ColumnDefinition Width="260"
+						                  MinWidth="140" />
 						<ColumnDefinition Width="8" />
-						<ColumnDefinition Width="*" MinWidth="160" />
+						<ColumnDefinition Width="*"
+						                  MinWidth="160" />
 					</Grid.ColumnDefinitions>
 
 					<Panel>
 						<Border Classes="gutter" />
 						<StackPanel Classes="table-body">
-							<Grid Classes="gutter-row" ColumnDefinitions="30,*">
+							<Grid Classes="gutter-row"
+							      ColumnDefinitions="30,*">
 								<TextBlock Grid.Column="1"
 								           Text="Id"
 								           FontWeight="Bold"
@@ -138,12 +190,15 @@
 								</ItemsControl.ItemsPanel>
 								<ItemsControl.ItemTemplate>
 									<DataTemplate x:DataType="vm:TableRowVM">
-										<Grid Classes="gutter-row" ColumnDefinitions="30,*">
+										<Grid Classes="gutter-row"
+										      ColumnDefinitions="30,*">
 											<Button Classes="icon-btn"
 											        Command="{Binding $parent[ItemsControl].((vm:TableViewModel)DataContext).DeleteRowCommand}"
 											        CommandParameter="{Binding}"
 											        ToolTip.Tip="Delete row">
-												<lucide:LucideIcon Kind="X" Size="14" StrokeWidth="3"
+												<lucide:LucideIcon Kind="X"
+												                   Size="14"
+												                   StrokeWidth="3"
 												                   Foreground="{StaticResource TextMuted}" />
 											</Button>
 											<elements:StringBox Grid.Column="1"
@@ -179,7 +234,7 @@
 											<TextBlock Text="{Binding Name}"
 											           FontWeight="Bold"
 											           VerticalAlignment="Center"
-											           TextTrimming="CharacterEllipsis"/>
+											           TextTrimming="CharacterEllipsis" />
 										</Border>
 									</DataTemplate>
 								</ItemsControl.ItemTemplate>
@@ -207,7 +262,7 @@
 														                    Value="{Binding Value, Mode=TwoWay}" />
 														<elements:AssetBox IsVisible="{Binding IsAssetReference}"
 														                   AssetType="ui_image"
-														                   Value="{Binding Value, Mode=TwoWay}"/>
+														                   Value="{Binding Value, Mode=TwoWay}" />
 													</Panel>
 												</DataTemplate>
 											</ItemsControl.ItemTemplate>

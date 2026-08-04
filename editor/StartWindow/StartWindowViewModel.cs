@@ -29,9 +29,9 @@ public partial class StartWindowViewModel : ViewModelBase {
 		Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../toast_engine"));
 
 	private readonly ProjectList m_projectList = ProjectList.LoadList();
-	private Window? m_window;
 
 	[ObservableProperty] private string m_searchText = "";
+	private Window? m_window;
 
 	// Fake data for the previewer
 	public StartWindowViewModel() {
@@ -93,17 +93,13 @@ public partial class StartWindowViewModel : ViewModelBase {
 		tasks.Add(LoaderTask.Do("Check for missing files", AssetDatabase.RelocateMissingAssets));
 		tasks.Add(LoaderTask.Do("Check for missing artwork", AssetDatabase.RelocateMissingArtwork));
 
-		tasks.Add(LoaderTask.Do("Generate missing metadata", async log => {
-			AssetDatabase.GenerateMissingMetas(log);
-			await Task.CompletedTask;
-		}));
+		tasks.Add(LoaderTask.Do("Generate missing metadata",
+			async log => { await Task.Run(() => AssetDatabase.GenerateMissingMetas(log)); }));
 
 		tasks.Add(LoaderTask.Do("Generate asset database", async log => {
-			AssetDatabase.RebuildAssetDatabase();
+			await Task.Run(() => AssetDatabase.RebuildAssetDatabase(false));
 			log(
 				$"Rebuilt asset database ({string.Join(", ", ProjectContext.Databases.Select(db => db + "://"))}, core://)");
-
-			await Task.CompletedTask;
 		}));
 
 		tasks.Add(LoaderTask.Do("Check for artwork changes", AssetDatabase.CheckArtworkChanges));
@@ -174,7 +170,7 @@ public partial class StartWindowViewModel : ViewModelBase {
 			));
 
 			await modal.ShowDialog(m_window!);
-			RemoveProject(projectToRemove);
+			await RemoveProject(projectToRemove);
 
 			return;
 		}

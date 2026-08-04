@@ -35,10 +35,10 @@ public static class LayoutStore {
 
 	public static bool IsValidName(string? name) {
 		return !string.IsNullOrWhiteSpace(name)
-		       && !IsBuiltin(name)
-		       && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
-		       && !string.Equals(name, Path.GetFileNameWithoutExtension(SessionFileName),
-			       StringComparison.OrdinalIgnoreCase);
+			&& !IsBuiltin(name)
+			&& name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+			&& !string.Equals(name, Path.GetFileNameWithoutExtension(SessionFileName),
+				StringComparison.OrdinalIgnoreCase);
 	}
 
 	public static IReadOnlyList<string> EnumerateNames() {
