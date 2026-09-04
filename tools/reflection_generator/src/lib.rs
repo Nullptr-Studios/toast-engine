@@ -57,8 +57,8 @@ pub struct Signal {
     pub name: String,
     pub typename: String,
     pub field_type: FieldType,
-    #[serde(skip)]
-    pub attributes: Vec<Attribute>,
+    pub arguments: Vec<String>,
+    pub attrs_list: Vec<Attribute>,
     #[serde(rename = "attributes")]
     pub attrib_json: json_t,
 }

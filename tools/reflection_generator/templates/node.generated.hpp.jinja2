@@ -74,10 +74,10 @@ struct Reflect<{{ qualified_name }}> {
 	{
 		.name = "{{ s.name }}",
 		.type = "{{ s.typename }}",
-		.args = {{ '{{}}' }},
-		.attributes = "{{ '{{' }}{% for a in s.attrs_list %}{"{{ a.name }}", {{ '{' }}{% for v in a.args %}"{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}}{% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }}",
-		.get = {{ s.typename }}::get,
-		.set = {{ s.typename }}::set,
+		.args = {{ '{{' }}{% for a in s.arguments %}&typeid(std::decay_t<{{ a }}>){% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }},
+		.attributes = {{ '{{' }}{% for a in s.attrs_list %}{"{{ a.name }}", {{ '{' }}{% for v in a.args %}"{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}}{% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }},
+		.get = {{ s.typename }}::get<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
+		.set = {{ s.typename }}::set<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
 	}{% if not loop.last %},{% endif %}
 
 {% endfor %}

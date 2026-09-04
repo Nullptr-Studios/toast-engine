@@ -433,11 +433,13 @@ fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
         if !type_name.contains("Signal<") {
             continue;
         }
+        let template_args = parse_template_args(&type_name);
         signals.push(Signal {
             name: source[field_node.byte_range()].to_string(),
             typename: type_name.clone(),
             field_type: infer_field_type(&type_name),
-            attributes: attributes.clone(),
+            arguments: template_args,
+            attrs_list: attributes.clone(),
             attrib_json: attrs_to_json(&attributes)
         });
     }
@@ -527,4 +529,53 @@ fn infer_field_type(type_name: &str) -> FieldType {
         "quat" | "quaternion" => FieldType::Quaternion,
         _ => FieldType::Int, // unknown types silently become Int; accessor compiles but the inspector widget will be wrong
     }
+}
+
+fn parse_template_args(type_name: &str) -> Vec<String> {
+    // Find the opening '<' and trailing '>'
+    let Some(start) = type_name.find('<') else {
+        return Vec::new();
+    };
+    let Some(end) = type_name.rfind('>') else {
+        return Vec::new();
+    };
+
+    if start >= end {
+        return Vec::new();
+    }
+
+    let inner = &type_name[start + 1..end];
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+
+    for c in inner.chars() {
+        match c {
+            '<' => {
+                depth += 1;
+                current.push(c);
+            }
+            '>' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    args.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        args.push(trimmed.to_string());
+    }
+
+    args
 }
