@@ -262,6 +262,26 @@ auto AssetManager::loadBytes(std::string_view uri) -> std::optional<std::vector<
 	return openFile(*real_path);
 }
 
+auto AssetManager::tryLoadBytes(std::string_view uri) -> std::optional<std::vector<uint8_t>> {
+	std::lock_guard lock(mutex);
+
+	const auto sep = uri.find("://");
+	if (sep == std::string_view::npos) {
+		return std::nullopt;
+	}
+
+	if (mounts.contains(std::string(uri.substr(0, sep)))) {
+		return readVirtualPath(uri);
+	}
+
+	const auto real_path = resolveVirtualPath(uri);
+	std::error_code ec;
+	if (!real_path || !std::filesystem::exists(*real_path, ec)) {
+		return std::nullopt;
+	}
+	return openFile(*real_path);
+}
+
 void AssetManager::reloadManifest() {
 	ZoneScoped;
 	clearUnusedAssets();
@@ -314,6 +334,7 @@ void AssetManager::reloadManifest() {
 
 			load_collection("mesh");
 			load_collection("material");
+			load_collection("material_instance");
 			load_collection("texture");
 			load_collection("schema");
 			load_collection("data");
@@ -330,7 +351,15 @@ void AssetManager::reloadManifest() {
 			load_collection("input_action");
 			load_collection("input_layout");
 			load_collection("input_settings");
+			load_collection("color_scheme");
+			load_collection("font");
+			load_collection("ui_image");
+			load_collection("ui_element");
+			load_collection("ui_style");
+			load_collection("localization");
+			load_collection("image_localization");
 			load_collection("script");
+			load_collection("shader");
 		} catch (const std::exception& e) { TOAST_ERROR("AssetManager", "Failed to parse manifest {}: {}", uri, e.what()); }
 	};
 
@@ -409,7 +438,8 @@ auto AssetManager::readVirtualPath(std::string_view virtual_path) -> std::option
 			return data;
 		}
 		// Not found in pack
-		TOAST_WARN("AssetManager", "Pack mount '{}://' does not contain '{}', falling back to filesystem", scheme, rel);
+		TOAST_ERROR("AssetManager", "Pack mount '{}://' does not contain '{}'", scheme, rel);
+		return std::nullopt;
 	}
 
 	// Filesystem fallback
@@ -527,18 +557,29 @@ auto AssetManager::typeOf(toast::UID uid) -> std::string {
 	return it != manager.manifest.end() ? it->second.type : std::string {};
 }
 
-void AssetManager::pollModifiedScripts() {
+void AssetManager::pollModifiedAssets() {
 	ZoneScoped;
 
-	std::vector<toast::UID> changed;
+	struct ChangedAsset {
+		toast::UID uid;
+		std::string type;
+	};
+
+	std::vector<ChangedAsset> changed;
 	{
 		std::lock_guard lock(mutex);
-		for (auto& [id, asset] : cache) {
-			auto manifest_it = manifest.find(id);
-			if (manifest_it == manifest.end() || manifest_it->second.type != "script") {
+		for (const auto& [id, info] : manifest) {
+			const std::string& type = info.type;
+			const bool is_ui = type == "ui_element" || type == "ui_style" || type == "color_scheme" || type == "localization" ||
+			                   type == "image_localization";
+			auto asset_it = cache.find(id);
+			if (!is_ui && asset_it == cache.end()) {
 				continue;
 			}
-			auto real_path = resolveVirtualPath(manifest_it->second.path);
+			if (type != "script" && type != "shader" && type != "material" && type != "material_instance" && !is_ui) {
+				continue;
+			}
+			auto real_path = resolveVirtualPath(info.path);
 			if (!real_path) {
 				continue;
 			}
@@ -548,22 +589,65 @@ void AssetManager::pollModifiedScripts() {
 			if (ec) {
 				continue;
 			}
-			auto [it, first_seen] = script_mtimes.try_emplace(id, mtime);
+			auto [it, first_seen] = asset_mtimes.try_emplace(id, mtime);
 			if (first_seen || it->second == mtime) {
 				continue;    // unchanged
 			}
 			it->second = mtime;
 
-			if (auto raw = readVirtualPath(manifest_it->second.path)) {
-				static_cast<Script*>(asset.get())->setData(std::move(*raw));
-				changed.emplace_back(id);
+			auto raw = readVirtualPath(info.path);
+			if (!raw) {
+				continue;
 			}
+
+			if (is_ui && asset_it == cache.end()) {
+				// .rcss files are reloaded directly through the VFS
+			} else if (type == "script") {
+				static_cast<Script*>(asset_it->second.get())->setData(std::move(*raw));
+			} else if (type == "shader") {
+				static_cast<Shader*>(asset_it->second.get())->setSource(std::move(*raw));
+			} else if (type == "ui_element") {
+				static_cast<UIElement*>(asset_it->second.get())->setSource(std::move(*raw));
+			} else if (type == "ui_style") {
+				static_cast<UIStyle*>(asset_it->second.get())->setSource(std::move(*raw));
+			} else if (type == "color_scheme") {
+				try {
+					const std::string_view toml_str(reinterpret_cast<const char*>(raw->data()), raw->size());
+					static_cast<ColorScheme*>(asset_it->second.get())->reload(toml::parse(toml_str));
+				} catch (const toml::parse_error& err) {
+					TOAST_ERROR("AssetManager", "Hot reload parse error for {}: {}", info.path, err.description());
+					continue;
+				}
+			} else if (type == "localization") {
+				static_cast<Localization*>(asset_it->second.get())->reload(std::move(*raw));
+			} else if (type == "image_localization") {
+				static_cast<ImageLocalization*>(asset_it->second.get())->reload(std::move(*raw));
+			} else {
+				// Materials re-parse their TOML in place so existing handles stay valid
+				try {
+					const std::string_view toml_str(reinterpret_cast<const char*>(raw->data()), raw->size());
+					static_cast<Data*>(asset_it->second.get())->reload(toml::parse(toml_str));
+				} catch (const toml::parse_error& err) {
+					TOAST_ERROR("AssetManager", "Hot reload parse error for {}: {}", info.path, err.description());
+					continue;
+				}
+			}
+			changed.push_back(ChangedAsset {.uid = toast::UID(id), .type = type});
 		}
 	}
 
-	for (toast::UID uid : changed) {
-		TOAST_INFO("AssetManager", "Script changed on disk, reloading: {}", getURI(uid));
-		event::send<event::ScriptAssetReloaded>(uid);
+	for (const auto& [uid, type] : changed) {
+		TOAST_INFO("AssetManager", "Asset changed on disk, reloading: {} ({})", getURI(uid), type);
+		if (type == "script") {
+			event::send<event::ScriptAssetReloaded>(uid);
+		} else if (type == "shader") {
+			event::send<event::ShaderAssetReloaded>(uid);
+		} else if (type == "ui_element" || type == "ui_style" || type == "color_scheme" || type == "localization" ||
+		           type == "image_localization") {
+			event::send<event::UIAssetReloaded>(uid, type);
+		} else {
+			event::send<event::MaterialAssetReloaded>(uid);
+		}
 	}
 }
 

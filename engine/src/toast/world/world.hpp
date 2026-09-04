@@ -44,6 +44,11 @@ public:
 
 	void tick() override;
 
+	[[nodiscard]]
+	auto participatesIn(NodeOwnerParticipation /*use*/) const noexcept -> bool override {
+		return true;
+	}
+
 	/**
 	 * @brief Records a tick ordering constraint between two active nodes
 	 * @param from Node that must be ticked before `to`
@@ -129,13 +134,6 @@ public:
 	 */
 	static void hotReloadScripts(toast::UID script_uid);
 
-	/**
-	 * @brief Invalidates the world transforms of all Node3D nodes that depend on the given node
-	 * @param node The node whose transform changed
-	 * @note Called by Node3D setters; only nodes listed in inverse_connections are dirtied
-	 */
-	static void markNode3DDependantsDirty(const Box<Node>& node) noexcept;
-
 	[[nodiscard]]
 	auto dependencyGraphGraphviz() const -> std::string;
 
@@ -144,6 +142,7 @@ private:
 
 	/// Rebuilds the dependency graph from the current node set and recomputes the tick schedule
 	void computeDependencyGraph();
+	void applyActiveCamera() override;
 
 	/// Atomically replaces the world root; the old root is returned as a cached node
 	auto swapRoot(Node& node) -> Box<Node>;
