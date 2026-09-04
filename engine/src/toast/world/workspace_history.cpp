@@ -179,7 +179,7 @@ auto nodeFingerprint(const assets::Prefab::BasicNode& node) -> std::string {
 }
 
 auto luaValue(const assets::Prefab::BasicNode& node, std::string_view path) -> std::optional<std::string> {
-	if (auto* value = node.findLuaVar(path)) {
+	if (const auto* value = node.findLuaVar(path)) {
 		return value->value;
 	}
 	return std::nullopt;
@@ -361,9 +361,13 @@ void WorkspaceHistory::apply(const event::WorkspaceApplyHistorySnapshot& request
 	result.workspace_handle = m_handle;
 	result.request = request.request;
 	if (!m_available || m_transaction || request.snapshot.empty()) {
-		result.error = !m_available    ? "History is unavailable"
-		               : m_transaction ? "Finish the current inspector edit before navigating history"
-		                               : "The history snapshot is empty";
+		if (!m_available) {
+			result.error = "History is unavailable";
+		} else if (m_transaction) {
+			result.error = "Finish the current inspector edit before navigating history";
+		} else {
+			result.error = "The history snapshot is empty";
+		}
 		event::send<event::WorkspaceHistorySnapshotApplied>(result);
 		return;
 	}
@@ -446,12 +450,12 @@ void WorkspaceHistory::beginMerge(
 	m_pending->result = std::make_shared<Snapshot>(*m_pending->current);
 
 	using Action = PendingMerge::Action;
-	auto addConflict = [&](Action action,
-	                       event::HistoryConflictKind kind,
-	                       std::string field,
-	                       std::string base,
-	                       std::string current,
-	                       std::string incoming) {
+	auto add_conflict = [&](Action action,
+	                        event::HistoryConflictKind kind,
+	                        std::string field,
+	                        std::string base,
+	                        std::string current,
+	                        std::string incoming) {
 		event::HistoryConflict conflict;
 		conflict.id = m_pending->conflicts.size() + 1;
 		conflict.node_uid = action.node;
@@ -465,9 +469,13 @@ void WorkspaceHistory::beginMerge(
 		conflict.current_value = std::move(current);
 		conflict.incoming_value = std::move(incoming);
 		if (action.incoming_field || action.current_field || action.base_field) {
-			const auto& typed = action.incoming_field  ? action.incoming_field
-			                    : action.current_field ? action.current_field
-			                                           : action.base_field;
+			const auto* typed = action.incoming_field ? &*action.incoming_field : nullptr;
+			if (!typed && action.current_field) {
+				typed = &*action.current_field;
+			}
+			if (!typed) {
+				typed = &*action.base_field;
+			}
 			conflict.value_type = static_cast<uint32_t>(typed->type);
 			conflict.is_array = typed->is_array;
 		}
@@ -475,10 +483,10 @@ void WorkspaceHistory::beginMerge(
 		m_pending->conflicts.push_back(std::move(conflict));
 	};
 
-	auto eraseResultNode = [&](UID uid) {
+	auto erase_result_node = [&](UID uid) {
 		std::erase_if(m_pending->result->nodes, [&](const auto& node) { return uidOf(node).data() == uid.data(); });
 	};
-	auto putResultNode = [&](const assets::Prefab::BasicNode& node) {
+	auto put_result_node = [&](const assets::Prefab::BasicNode& node) {
 		auto uid = uidOf(node);
 		if (auto* existing = findNode(*m_pending->result, uid)) {
 			*existing = node;
@@ -496,12 +504,12 @@ void WorkspaceHistory::beginMerge(
 				continue;
 			}
 			if (nodeFingerprint(*current_node) == nodeFingerprint(base_node)) {
-				eraseResultNode(uid);
+				erase_result_node(uid);
 			} else {
 				Action action {.kind = Action::Kind::existence, .node = uid};
 				action.base_node = base_node;
 				action.current_node = *current_node;
-				addConflict(std::move(action), event::HistoryConflictKind::existence, "Existence", "Exists", "Modified", "Deleted");
+				add_conflict(std::move(action), event::HistoryConflictKind::existence, "Existence", "Exists", "Modified", "Deleted");
 			}
 			continue;
 		}
@@ -510,18 +518,18 @@ void WorkspaceHistory::beginMerge(
 				Action action {.kind = Action::Kind::existence, .node = uid};
 				action.base_node = base_node;
 				action.incoming_node = *incoming_node;
-				addConflict(std::move(action), event::HistoryConflictKind::existence, "Existence", "Exists", "Deleted", "Modified");
+				add_conflict(std::move(action), event::HistoryConflictKind::existence, "Existence", "Exists", "Deleted", "Modified");
 			}
 			continue;
 		}
 
-		auto mergeText = [&](Action::Kind action_kind,
-		                     event::HistoryConflictKind conflict_kind,
-		                     std::string field,
-		                     const std::string& base,
-		                     const std::string& current,
-		                     const std::string& incoming,
-		                     auto&& apply) {
+		auto merge_text = [&](Action::Kind action_kind,
+		                      event::HistoryConflictKind conflict_kind,
+		                      std::string field,
+		                      const std::string& base,
+		                      const std::string& current,
+		                      const std::string& incoming,
+		                      auto&& apply) {
 			if (incoming == base || incoming == current) {
 				return;
 			}
@@ -533,11 +541,11 @@ void WorkspaceHistory::beginMerge(
 			action.base_text = base;
 			action.current_text = current;
 			action.incoming_text = incoming;
-			addConflict(std::move(action), conflict_kind, std::move(field), base, current, incoming);
+			add_conflict(std::move(action), conflict_kind, std::move(field), base, current, incoming);
 		};
 
 		auto* result_node = findNode(*m_pending->result, uid);
-		mergeText(
+		merge_text(
 		    Action::Kind::name,
 		    event::HistoryConflictKind::name,
 		    "Name",
@@ -546,7 +554,7 @@ void WorkspaceHistory::beginMerge(
 		    incoming_node->name,
 		    [&](const auto& value) { result_node->name = value; }
 		);
-		mergeText(
+		merge_text(
 		    Action::Kind::type,
 		    event::HistoryConflictKind::type,
 		    "Type",
@@ -591,10 +599,13 @@ void WorkspaceHistory::beginMerge(
 			action.base_field = base_value;
 			action.current_field = current_value;
 			action.incoming_field = incoming_value;
-			auto kind = name == "m_parent"          ? event::HistoryConflictKind::parent
-			            : name == "m_local_enabled" ? event::HistoryConflictKind::enabled
-			                                        : event::HistoryConflictKind::value;
-			addConflict(std::move(action), kind, name, fieldText(base_value), fieldText(current_value), fieldText(incoming_value));
+			auto kind = event::HistoryConflictKind::value;
+			if (name == "m_parent") {
+				kind = event::HistoryConflictKind::parent;
+			} else if (name == "m_local_enabled") {
+				kind = event::HistoryConflictKind::enabled;
+			}
+			add_conflict(std::move(action), kind, name, fieldText(base_value), fieldText(current_value), fieldText(incoming_value));
 		}
 
 		std::unordered_set<std::string> lua_paths;
@@ -622,7 +633,7 @@ void WorkspaceHistory::beginMerge(
 			action.base_text = base_value;
 			action.current_text = current_value;
 			action.incoming_text = incoming_value;
-			addConflict(
+			add_conflict(
 			    std::move(action),
 			    event::HistoryConflictKind::lua_value,
 			    path,
@@ -643,7 +654,7 @@ void WorkspaceHistory::beginMerge(
 				Action action {.kind = Action::Kind::existence, .node = uid};
 				action.current_node = *current_node;
 				action.incoming_node = incoming_node;
-				addConflict(
+				add_conflict(
 				    std::move(action),
 				    event::HistoryConflictKind::existence,
 				    "Existence",
@@ -653,7 +664,7 @@ void WorkspaceHistory::beginMerge(
 				);
 			}
 		} else {
-			putResultNode(incoming_node);
+			put_result_node(incoming_node);
 		}
 	}
 
@@ -675,7 +686,7 @@ void WorkspaceHistory::beginMerge(
 			action.base_order = base_order;
 			action.current_order = current_order;
 			action.incoming_order = incoming_order;
-			addConflict(
+			add_conflict(
 			    std::move(action), event::HistoryConflictKind::order, "Node order", "Original order", "Current order", "Incoming order"
 			);
 		}
@@ -723,7 +734,7 @@ void WorkspaceHistory::resolve(const event::WorkspaceResolveHistoryConflicts& re
 			continue;
 		}
 
-		auto selectText = [&]() -> std::optional<std::string> {
+		auto select_text = [&]() -> std::optional<std::string> {
 			if (choice == event::HistoryConflictResolution::Choice::base) {
 				return action.base_text;
 			}
@@ -732,16 +743,20 @@ void WorkspaceHistory::resolve(const event::WorkspaceResolveHistoryConflicts& re
 			}
 			return resolution->custom_value;
 		};
-		auto selectField = [&]() -> std::optional<assets::Prefab::Field> {
+		auto select_field = [&]() -> std::optional<assets::Prefab::Field> {
 			if (choice == event::HistoryConflictResolution::Choice::base) {
 				return action.base_field;
 			}
 			if (choice == event::HistoryConflictResolution::Choice::incoming) {
 				return action.incoming_field;
 			}
-			const auto& shape = action.incoming_field  ? action.incoming_field
-			                    : action.current_field ? action.current_field
-			                                           : action.base_field;
+			const auto* shape = action.incoming_field ? &*action.incoming_field : nullptr;
+			if (!shape && action.current_field) {
+				shape = &*action.current_field;
+			}
+			if (!shape && action.base_field) {
+				shape = &*action.base_field;
+			}
 			if (!shape) {
 				return std::nullopt;
 			}
@@ -756,23 +771,23 @@ void WorkspaceHistory::resolve(const event::WorkspaceResolveHistoryConflicts& re
 
 		switch (action.kind) {
 			case PendingMerge::Action::Kind::name:
-				if (auto* node = findNode(*m_pending->result, action.node); node && selectText()) {
-					node->name = *selectText();
+				if (auto* node = findNode(*m_pending->result, action.node); node && select_text()) {
+					node->name = *select_text();
 				}
 				break;
 			case PendingMerge::Action::Kind::type:
-				if (auto* node = findNode(*m_pending->result, action.node); node && selectText()) {
-					node->type = *selectText();
+				if (auto* node = findNode(*m_pending->result, action.node); node && select_text()) {
+					node->type = *select_text();
 				}
 				break;
 			case PendingMerge::Action::Kind::field:
 				if (auto* node = findNode(*m_pending->result, action.node)) {
-					setField(*node, action.field, selectField());
+					setField(*node, action.field, select_field());
 				}
 				break;
 			case PendingMerge::Action::Kind::lua_value:
 				if (auto* node = findNode(*m_pending->result, action.node)) {
-					setLuaValue(*node, action.field, selectText());
+					setLuaValue(*node, action.field, select_text());
 				}
 				break;
 			case PendingMerge::Action::Kind::existence: {

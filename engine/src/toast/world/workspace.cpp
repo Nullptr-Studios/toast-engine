@@ -594,9 +594,13 @@ void Workspace::eventSubscriptions() {
 			current = dest_parent->name();
 		} else {
 			auto old_it = std::ranges::find(old_parent->m_children, node);
-			previous = old_it == old_parent->m_children.begin() ? "Start"
-			           : old_it != old_parent->m_children.end() ? std::string {(*(old_it - 1))->name()}
-			                                                    : "End";
+			if (old_it == old_parent->m_children.begin()) {
+				previous = "Start";
+			} else if (old_it != old_parent->m_children.end()) {
+				previous = std::string {(*(old_it - 1))->name()};
+			} else {
+				previous = "End";
+			}
 			if (e.predecessor.data() == 0) {
 				current = "Start";
 			} else if (e.predecessor.data() == std::numeric_limits<uint64_t>::max()) {
