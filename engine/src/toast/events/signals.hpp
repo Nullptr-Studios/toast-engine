@@ -17,15 +17,13 @@ class Node;
 namespace signals {
 namespace _detail { }
 
-template<typename F, typename NodeType, typename... Args>
-concept SignalCallback = std::is_invocable_r_v<void, F, NodeType&, Args...> ||    //
-                         std::is_invocable_r_v<void, F, NodeType&> ||             //
-                         std::is_invocable_r_v<void, F, Args...> ||               //
-                         std::is_invocable_r_v<void, F>;                          //
+template<typename F, typename... Args>
+concept SignalCallback = std::is_invocable_r_v<void, F, Args...> ||    //
+                         std::is_invocable_r_v<void, F>;               //
 
-template<typename NodeType, typename... Args>
+template<typename... Args>
 class Signal {
-	using callback_t = std::function<void(NodeType&, Args...)>;
+	using callback_t = std::function<void(Args...)>;
 
 	struct SigGroup {
 		toast::Box<toast::Node> node;
@@ -38,13 +36,19 @@ class Signal {
 	} m;
 
 public:
+	auto listeners() -> std::vector<SigGroup>&;
+
 	template<typename F>
-	  requires SignalCallback<F, NodeType, Args...>
+	  requires SignalCallback<F, Args...>
 	void subscribe(toast::Node& node, F&& cb);
 
 	void subscribe(toast::Node& node, std::string_view identifier);
 
-	void fire(NodeType& source_node, Args... args);
+	void unsubscribe(toast::Node& node, std::string_view identifier);
+
+	void clear() { m.listeners.clear(); }
+
+	void fire(Args... args);
 };
 
 }
