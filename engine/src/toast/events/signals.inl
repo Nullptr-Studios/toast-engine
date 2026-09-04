@@ -1,5 +1,6 @@
 #pragma once
 #include "signals.hpp"
+#include "toast/world/node.hpp"
 
 namespace signals {
 
@@ -26,7 +27,7 @@ inline void Signal<NodeType, Args...>::subscribe(toast::Node& node, F&& cb) {
 }
 
 template<typename NodeType, typename... Args>
-inline void Signal<NodeType, Args...>::subscrive(toast::Node& node, std::string_view identifier) {
+inline void Signal<NodeType, Args...>::subscribe(toast::Node& node, std::string_view identifier) {
 	callback_t wrapper = [name = std::string(identifier), box = toast::Box<toast::Node>(node)](NodeType& n, Args... args) {
 		box->call(name, n, args...);
 	};

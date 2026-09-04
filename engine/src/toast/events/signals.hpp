@@ -42,7 +42,7 @@ public:
 	  requires SignalCallback<F, NodeType, Args...>
 	void subscribe(toast::Node& node, F&& cb);
 
-	void subscrive(toast::Node& node, std::string_view identifier);
+	void subscribe(toast::Node& node, std::string_view identifier);
 
 	void fire(NodeType& source_node, Args... args);
 };
