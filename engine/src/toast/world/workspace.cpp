@@ -42,6 +42,36 @@ using scripting::stringifyLuaValue;
 
 static std::unique_ptr<assets::Prefab> s_clipboard;
 
+static auto historyContext(
+    event::HistoryOperation operation, const Box<Node>& node = {}, std::string subject = {}, std::string previous = {},
+    std::string current = {}
+) -> WorkspaceHistory::Context {
+	WorkspaceHistory::Context context;
+	context.operation = operation;
+	if (node.exists()) {
+		context.node = node->uid();
+		context.node_name = node->name();
+	}
+	context.subject = std::move(subject);
+	context.previous_value = std::move(previous);
+	context.current_value = std::move(current);
+	return context;
+}
+
+static auto inspectorValue(Node& node, const FieldInfo& field) -> std::string {
+	std::any value = field.get(&node);
+	if (field.value_type == FieldType::quaternion_t && !field.is_array) {
+		auto degrees = glm::degrees(glm::eulerAngles(std::any_cast<glm::quat>(value)));
+		return std::format("{} {} {}", degrees.x, degrees.y, degrees.z);
+	}
+	if (field.value_type == FieldType::uid_t && !field.is_array) {
+		if (auto* box = std::any_cast<Box<Node>>(&value)) {
+			return box->exists() ? (*box)->uid().get() : "";
+		}
+	}
+	return assets::Prefab::stringifyValue(field.value_type, field.is_array, value);
+}
+
 Workspace::Workspace(UID handle, EmptyTag) : m_handle(handle) {
 	m_editor_camera = std::make_unique<Camera>();
 	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
@@ -74,6 +104,7 @@ Workspace::Workspace(std::string_view type, UID handle) : m_handle(handle) {
 	node->propagateEnable();
 
 	m_root_node = node;
+	initializeHistory(true, false);
 	TOAST_INFO("World", "Created new workspace");
 }
 
@@ -91,6 +122,7 @@ Workspace::Workspace(UID uid) : m_handle(uid) {
 
 	initFromPrefab(file);
 	if (m_root_node.exists()) {
+		initializeHistory(true, true);
 		TOAST_INFO("World", "Opened workspace from {}", uid);
 	}
 }
@@ -113,6 +145,7 @@ Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
 	assets::Handle<assets::Prefab> file(&prefab, uid, "");
 	initFromPrefab(file);
 	if (m_root_node.exists()) {
+		initializeHistory(true, false);
 		TOAST_INFO("World", "Opened workspace {} from {}", uid, source_uri);
 	}
 }
@@ -142,6 +175,81 @@ void Workspace::initFromPrefab(const assets::Handle<assets::Prefab>& file) {
 	node->propagateEnable();
 
 	m_root_node = node;
+}
+
+void Workspace::initializeHistory(bool available, bool initially_saved) {
+	m_history = std::make_unique<WorkspaceHistory>(
+	    m_handle.data(),
+	    [this] { return assets::Prefab(*m_root_node); },
+	    [this](const assets::Prefab& snapshot) { return restoreHistorySnapshot(snapshot); },
+	    available,
+	    initially_saved
+	);
+}
+
+void Workspace::destroyOwnedTree(Box<Node>& root) {
+	if (!root.exists()) {
+		return;
+	}
+
+	root->propagateCallTick(root->info(), TickFunctionList::on_disable);
+	root->propagateCallTick(root->info(), TickFunctionList::end);
+	root->propagateCallTick(root->info(), TickFunctionList::destroy);
+
+	std::vector<Node*> victims;
+	auto collect = [&victims](this auto&& self, Node& n) -> void {
+		victims.push_back(&n);
+		for (auto& child : n.m_children) {
+			self(*child);
+		}
+	};
+	collect(*root);
+	root = {};
+
+	for (Node* victim : victims) {
+		_detail::ControlBox* control = _detail::ControlBox::get(victim);
+		const NodeInfo* info = victim->info();
+		victim->m_parent = {};
+		victim->m_children.clear();
+		victim->m_listener.reset();
+		if (info && info->destroy) {
+			info->destroy(victim);
+		} else {
+			delete victim;
+		}
+		releaseNode(*control);
+	}
+	reapTombstones();
+}
+
+auto Workspace::restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool {
+	assets::Handle<assets::Prefab> handle(const_cast<assets::Prefab*>(&snapshot), toast::UID(0), "");
+	INodeOwner::InstantiateContext context;
+	context.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
+	Box<Node> replacement = instantiate(handle, context);
+	if (!replacement.exists()) {
+		TOAST_WARN("World", "Could not restore workspace history snapshot");
+		return false;
+	}
+
+	const UID focused_uid = m_focused_node.exists() ? m_focused_node->uid() : UID {};
+	replacement->m_parent = {};
+	replacement->changeNodeState(NodeState::root);
+	replacement->m_type = NodeType::world_root;
+	replacement->m_inherited_enabled = true;
+	replacement->propagateCallTick(replacement->info(), TickFunctionList::init);
+	replacement->propagateCallTick(replacement->info(), TickFunctionList::begin);
+	replacement->propagateEnable();
+
+	m_focused_node = {};
+	destroyOwnedTree(m_root_node);
+	m_root_node = replacement;
+	if (focused_uid.data() != 0) {
+		m_focused_node = findFrom(m_root_node, focused_uid);
+	}
+	applyActiveCamera();
+	event::send<event::RequestHierarchyUpdate>();
+	return true;
 }
 
 void Workspace::applyActiveCamera() {
@@ -256,6 +364,61 @@ auto Workspace::searchFrom(const Node& origin, std::string_view query) -> std::v
 }
 
 void Workspace::eventSubscriptions() {
+	m_listener.subscribe<event::RequestWorkspaceHistory>([this](const auto& e) {
+		if (e.workspace_handle != 0 && e.workspace_handle != m_handle.data()) {
+			return false;
+		}
+		if (e.workspace_handle == 0 && m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
+		if (m_history) {
+			m_history->sendInitial();
+		}
+		return true;
+	});
+	m_listener.subscribe<event::WorkspaceApplyHistorySnapshot>([this](const auto& e) {
+		if (e.workspace_handle != m_handle.data() || !m_history) {
+			return false;
+		}
+		m_history->apply(e);
+		return true;
+	});
+	m_listener.subscribe<event::WorkspacePrepareHistoryMerge>([this](const auto& e) {
+		if (e.workspace_handle != m_handle.data() || !m_history) {
+			return false;
+		}
+		m_history->prepareMerge(e);
+		return true;
+	});
+
+	m_listener.subscribe<event::WorkspaceResolveHistoryConflicts>([this](const auto& e) {
+		if (e.workspace_handle != m_handle.data() || !m_history) {
+			return false;
+		}
+		m_history->resolve(e);
+		return true;
+	});
+	m_listener.subscribe<event::WorkspaceHistoryTransaction>([this](const auto& e) {
+		if (e.workspace_handle != m_handle.data() || !m_history) {
+			return false;
+		}
+		if (e.phase == event::WorkspaceHistoryTransaction::Phase::begin) {
+			WorkspaceHistory::Context context;
+			context.operation = e.operation;
+			context.node = e.node;
+			context.subject = e.subject;
+			if (auto node = findFrom(m_root_node, e.node); node.exists()) {
+				context.node_name = node->name();
+			}
+			m_history->begin(e.transaction, std::move(context));
+		} else if (e.phase == event::WorkspaceHistoryTransaction::Phase::commit) {
+			m_history->commit(e.transaction);
+		} else {
+			m_history->cancel(e.transaction);
+		}
+		return true;
+	});
+
 	// Whenever we get notified that the hierarchy needs an update, send the update back to the editor
 	m_listener.subscribe<event::RequestHierarchyUpdate>(
 	    [this] {
@@ -281,8 +444,14 @@ void Workspace::eventSubscriptions() {
 			return true;
 		}
 
-		auto node = requestRuntimeCreate(parent, e.type);
-		TOAST_INFO("World", "Created node {} in Workspace {}", node->name(), m_root_node->name());
+		std::string created_name;
+		recordHistory(historyContext(event::HistoryOperation::create, {}, "Created"), [&] {
+			auto node = requestRuntimeCreate(parent, e.type);
+			if (node.exists()) {
+				created_name = node->name();
+			}
+		});
+		TOAST_INFO("World", "Created node {} in Workspace {}", created_name, m_root_node->name());
 		event::send<event::RequestHierarchyUpdate>();
 		return true;
 	});
@@ -301,38 +470,40 @@ void Workspace::eventSubscriptions() {
 
 		auto parent = node->parentInternal();
 		auto name = std::string {node->name()};
+		auto context = historyContext(event::HistoryOperation::remove, node, "Deleted");
+		recordHistory(std::move(context), [&] {
+			// Detach from the parent so the editor no longer reaches the subtree
+			std::erase(parent->m_children, node);
 
-		// Detach from the parent so the editor no longer reaches the subtree
-		std::erase(parent->m_children, node);
+			// Collect the whole subtree into raw pointers
+			std::vector<Node*> victims;
+			auto collect = [&victims](this auto&& self, Node& n) -> void {
+				victims.push_back(&n);
+				for (auto& c : n.m_children) {
+					self(*c);
+				}
+			};
+			collect(*node);
+			node = {};
 
-		// Collect the whole subtree into raw pointers
-		std::vector<Node*> victims;
-		auto collect = [&victims](this auto&& self, Node& n) -> void {
-			victims.push_back(&n);
-			for (auto& c : n.m_children) {
-				self(*c);
+			// Free every node in place
+			for (Node* victim : victims) {
+				_detail::ControlBox* control = _detail::ControlBox::get(victim);
+				const NodeInfo* info = victim->info();
+
+				victim->m_parent = {};
+				victim->m_children.clear();
+				victim->m_listener.reset();
+
+				if (info && info->destroy) {
+					info->destroy(victim);
+				} else {
+					delete victim;
+				}
+				releaseNode(*control);
 			}
-		};
-		collect(*node);
-		node = {};    // drop our own reference; nothing external holds the subtree now
-
-		// Free every node in place
-		for (Node* victim : victims) {
-			_detail::ControlBox* control = _detail::ControlBox::get(victim);
-			const NodeInfo* info = victim->info();
-
-			victim->m_parent = {};
-			victim->m_children.clear();
-			victim->m_listener.reset();
-
-			if (info && info->destroy) {
-				info->destroy(victim);
-			} else {
-				delete victim;
-			}
-			releaseNode(*control);
-		}
-		reapTombstones();
+			reapTombstones();
+		});
 
 		event::send<event::RequestHierarchyUpdate>();
 		TOAST_INFO("World", "Removed node {} in Workspace {}", name, m_root_node->name());
@@ -340,21 +511,32 @@ void Workspace::eventSubscriptions() {
 	});
 
 	m_listener.subscribe<event::WorkspaceSave>([this](const auto& e) {
-		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+		if ((e.workspace_handle != 0 && e.workspace_handle != m_handle.data()) ||
+		    (e.workspace_handle == 0 && m_handle.data() != Engine::get()->activeWorkspace().data())) {
 			return false;
 		}
+		event::WorkspaceSaveCompleted completed;
+		completed.workspace_handle = m_handle.data();
+		completed.request = e.request;
 		auto node = findFrom(m_root_node, e.target);
 		if (not node.exists()) {
 			TOAST_WARN("World", "Tried to save workspace but the target node couldn't be found");
+			completed.error = "The workspace root could not be found";
+			event::send<event::WorkspaceSaveCompleted>(completed);
 			return true;
 		}
 
 		// TODO: rename the root node to the file stem once SetNodeParameter exists
 		assets::Prefab prefab(*node);
 		auto bytes = prefab.serialize(assets::SaveMode::editor);
-		if (assets::AssetManager::get().saveBytes(e.uri, bytes)) {
+		completed.success = assets::AssetManager::get().saveBytes(e.uri, bytes);
+		if (completed.success) {
 			TOAST_INFO("World", "Saved workspace {} to {}", node->name(), e.uri);
+			completed.snapshot = assets::Prefab(*m_root_node).toBinary();
+		} else {
+			completed.error = "The workspace file could not be written";
 		}
+		event::send<event::WorkspaceSaveCompleted>(completed);
 
 		event::send<event::ReloadAssetsManifest>();
 		return true;
@@ -403,28 +585,61 @@ void Workspace::eventSubscriptions() {
 			return true;
 		}
 
-		// Detach from the current parent
-		if (auto old_parent = node->parentInternal(); old_parent.exists()) {
-			std::erase(old_parent->m_children, node);
-		}
-
-		node->m_parent = dest_parent;
-
-		// Insert at the position requested by the predecessor uid
-		auto& children = dest_parent->m_children;
-		uint64_t pred = e.predecessor.data();
-		if (pred == 0) {
-			children.insert(children.begin(), node);
-		} else if (pred == std::numeric_limits<uint64_t>::max()) {
-			children.push_back(node);
+		auto old_parent = node->parentInternal();
+		const bool reparenting = old_parent != dest_parent;
+		std::string previous;
+		std::string current;
+		if (reparenting) {
+			previous = old_parent.exists() ? std::string {old_parent->name()} : "";
+			current = dest_parent->name();
 		} else {
-			auto it = std::ranges::find_if(children, [pred](const Box<Node>& c) { return c->m_uid.data() == pred; });
-			if (it != children.end()) {
-				children.insert(it + 1, node);
+			auto old_it = std::ranges::find(old_parent->m_children, node);
+			if (old_it == old_parent->m_children.begin()) {
+				previous = "Start";
+			} else if (old_it != old_parent->m_children.end()) {
+				previous = std::string {(*(old_it - 1))->name()};
 			} else {
-				children.push_back(node);
+				previous = "End";
+			}
+			if (e.predecessor.data() == 0) {
+				current = "Start";
+			} else if (e.predecessor.data() == std::numeric_limits<uint64_t>::max()) {
+				current = "End";
+			} else if (auto predecessor = findFrom(m_root_node, e.predecessor); predecessor.exists()) {
+				current = predecessor->name();
 			}
 		}
+		auto context = historyContext(
+		    reparenting ? event::HistoryOperation::reparent : event::HistoryOperation::move,
+		    node,
+		    reparenting ? "Change parent" : "Moved",
+		    previous,
+		    current
+		);
+		recordHistory(std::move(context), [&] {
+			// Detach from the current parent
+			if (old_parent.exists()) {
+				std::erase(old_parent->m_children, node);
+			}
+
+			node->m_parent = dest_parent;
+
+			// Insert at the position requested by the predecessor uid
+			auto& children = dest_parent->m_children;
+			uint64_t pred = e.predecessor.data();
+			if (pred == 0) {
+				children.insert(children.begin(), node);
+			} else if (pred == std::numeric_limits<uint64_t>::max()) {
+				children.push_back(node);
+			} else {
+				auto it = std::ranges::find_if(children, [pred](const Box<Node>& c) { return c->m_uid.data() == pred; });
+				if (it != children.end()) {
+					children.insert(it + 1, node);
+				} else {
+					children.push_back(node);
+				}
+			}
+		});
 
 		event::send<event::RequestHierarchyUpdate>();
 		TOAST_INFO("World", "Moved node {} in Workspace {}", node->name(), m_root_node->name());
@@ -446,11 +661,12 @@ void Workspace::eventSubscriptions() {
 		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
 			return false;
 		}
-		if (not m_focused_node.exists()) {
+		auto target = e.node.data() != 0 ? findFrom(m_root_node, e.node) : m_focused_node;
+		if (not target.exists()) {
 			return false;
 		}
 
-		const auto* field = m_focused_node->info()->search(e.parameter);
+		const auto* field = target->info()->search(e.parameter);
 		if (field == nullptr) {
 			TOAST_WARN("World", "NodeChangeParam: unknown parameter '{}'", e.parameter);
 			return true;
@@ -479,11 +695,16 @@ void Workspace::eventSubscriptions() {
 			value = std::move(*parsed);
 		}
 
-		field->set(&*m_focused_node, value);
-		m_focused_node->onReflectedFieldChanged(field->name);
+		const std::string previous = inspectorValue(*target, *field);
+		auto context =
+		    historyContext(event::HistoryOperation::change_value, target, std::format("{} changed", e.parameter), previous, e.value);
+		recordHistory(std::move(context), [&] {
+			field->set(&*target, value);
+			target->onReflectedFieldChanged(field->name);
+		});
 
 		if (field->name == "m_scripts") {
-			m_focused_node->reloadScripts();
+			target->reloadScripts();
 			event::send<event::RequestHierarchyUpdate>();
 		}
 		return true;
@@ -494,10 +715,11 @@ void Workspace::eventSubscriptions() {
 		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
 			return false;
 		}
-		if (not m_focused_node.exists()) {
+		auto target = e.node.data() != 0 ? findFrom(m_root_node, e.node) : m_focused_node;
+		if (not target.exists()) {
 			return false;
 		}
-		scripting::ScriptRuntime* rt = m_focused_node->scriptRuntime();
+		scripting::ScriptRuntime* rt = target->scriptRuntime();
 		if (rt == nullptr) {
 			return true;
 		}
@@ -530,7 +752,13 @@ void Workspace::eventSubscriptions() {
 
 		std::any value = parseLuaValue(*desc, e.value, find_node);
 		if (value.has_value()) {
-			rt->setVarByPath(instance, var_path, value);
+			std::string previous;
+			if (auto old = rt->getVarByPath(instance, var_path); old.has_value()) {
+				previous = stringifyLuaValue(*desc, old);
+			}
+			auto context =
+			    historyContext(event::HistoryOperation::change_value, target, std::format("{} changed", e.path), previous, e.value);
+			recordHistory(std::move(context), [&] { rt->setVarByPath(instance, var_path, value); });
 		} else {
 			TOAST_WARN("World", "NodeChangeLuaParam: couldn't parse '{}' for '{}'", e.value, e.path);
 		}
@@ -540,6 +768,9 @@ void Workspace::eventSubscriptions() {
 	// Renames go through their own event so the engine is the single source of truth and can refresh
 	// the hierarchy itself, rather than the editor mutating the name and forcing an update
 	m_listener.subscribe<event::NodeChangeName>([this](const auto& e) {
+		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
 		if (not m_root_node.exists()) {
 			return false;
 		}
@@ -547,24 +778,30 @@ void Workspace::eventSubscriptions() {
 		if (not node.exists()) {
 			return false;
 		}
-		node->m_name = e.name;
+		auto context = historyContext(event::HistoryOperation::rename, node, "Renamed", std::string {node->name()}, e.name);
+		recordHistory(std::move(context), [&] { node->m_name = e.name; });
 		event::send<event::RequestHierarchyUpdate>();
 		return true;
 	});
 
 	m_listener.subscribe<event::NodeCallFunction>([this](const auto& e) {
-		if (m_handle.data() != Engine::get()->activeWorkspace().data() || not m_focused_node.exists()) {
+		if (m_handle.data() != Engine::get()->activeWorkspace().data()) {
+			return false;
+		}
+		auto target = e.node.data() != 0 ? findFrom(m_root_node, e.node) : m_focused_node;
+		if (!target.exists()) {
 			return false;
 		}
 
-		const FunctionInfo* method = m_focused_node->info()->getMethod(e.function);
+		const FunctionInfo* method = target->info()->getMethod(e.function);
 		if (method == nullptr || not method->hasAttribute("Button") || method->return_type != "void" ||
 		    not method->parameters.empty()) {
 			TOAST_WARN("World", "NodeCallFunction: '{}' is not an inspector button", e.function);
 			return true;
 		}
 
-		m_focused_node->info()->call(&*m_focused_node, e.function);
+		auto context = historyContext(event::HistoryOperation::call_function, target, std::format("{} invoked", e.function));
+		recordHistory(std::move(context), [&] { target->info()->call(&*target, e.function); });
 		return true;
 	});
 
@@ -579,7 +816,14 @@ void Workspace::eventSubscriptions() {
 		if (not node.exists()) {
 			return false;
 		}
-		node->enabled(e.enabled);
+		auto context = historyContext(
+		    event::HistoryOperation::enable,
+		    node,
+		    "Enabled changed",
+		    node->m_local_enabled ? "Enabled" : "Disabled",
+		    e.enabled ? "Enabled" : "Disabled"
+		);
+		recordHistory(std::move(context), [&] { node->enabled(e.enabled); });
 		event::send<event::RequestHierarchyUpdate>();
 		return true;
 	});
@@ -596,12 +840,15 @@ void Workspace::eventSubscriptions() {
 			return true;
 		}
 
-		// requestRuntimeSpawn sends RequestHierarchyUpdate on success
-		if (e.is_uri) {
-			requestRuntimeSpawn(parent, e.uri);
-		} else {
-			requestRuntimeSpawn(parent, e.uid);
-		}
+		auto context = historyContext(event::HistoryOperation::spawn_prefab, {}, "Spawn prefab", "", e.is_uri ? e.uri : e.uid.get());
+		recordHistory(std::move(context), [&] {
+			// requestRuntimeSpawn sends RequestHierarchyUpdate on success
+			if (e.is_uri) {
+				requestRuntimeSpawn(parent, e.uri);
+			} else {
+				requestRuntimeSpawn(parent, e.uid);
+			}
+		});
 		return true;
 	});
 
@@ -616,43 +863,45 @@ void Workspace::eventSubscriptions() {
 			TOAST_WARN("World", "WorkspaceDuplicateNode: source or parent not found");
 			return true;
 		}
+		auto history_context = historyContext(event::HistoryOperation::duplicate, {}, "Duplicated", std::string {src->name()}, "");
+		recordHistory(std::move(history_context), [&] {
+			assets::Prefab prefab(*src);
+			assets::Handle<assets::Prefab> handle(&prefab, toast::UID(0), "");
 
-		assets::Prefab prefab(*src);
-		assets::Handle<assets::Prefab> handle(&prefab, toast::UID(0), "");
-
-		InstantiateContext ctx;
-		ctx.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
-		Box<Node> copy = instantiate(handle, ctx);
-		if (not copy.exists()) {
-			TOAST_WARN("World", "WorkspaceDuplicateNode: instantiation failed");
-			return true;
-		}
-
-		// Regenerate UIDs on every node in the copy to avoid collisions with the originals
-		auto regen = [&](auto& self, Box<Node>& node) -> void {
-			INodeOwner::generateUid(node);
-			for (auto& child : node->m_children) {
-				self(self, child);
+			InstantiateContext ctx;
+			ctx.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
+			Box<Node> copy = instantiate(handle, ctx);
+			if (not copy.exists()) {
+				TOAST_WARN("World", "WorkspaceDuplicateNode: instantiation failed");
+				return;
 			}
-		};
-		regen(regen, copy);
 
-		// The in-memory prefab has no meaningful UID, so clear the root's source_prefab
-		// to avoid marking the copy as a prefab instance with UID 0
-		copy->m_source_prefab = {};
+			// Regenerate UIDs on every node in the copy to avoid collisions with the originals
+			auto regen = [&](auto& self, Box<Node>& node) -> void {
+				INodeOwner::generateUid(node);
+				for (auto& child : node->m_children) {
+					self(self, child);
+				}
+			};
+			regen(regen, copy);
 
-		// Ensure the copy doesn't share its name with an existing sibling
-		copy->m_name = uniqueChildName(*par, copy->name());
+			// The in-memory prefab has no meaningful UID, so clear the root's source_prefab
+			// to avoid marking the copy as a prefab instance with UID 0
+			copy->m_source_prefab = {};
 
-		copy->m_parent = par;
-		par->m_children.emplace_back(copy);
-		copy->m_state = par->m_state;
-		copy->m_type = NodeType::child;
-		copy->m_inherited_enabled = par->enabled();
+			// Ensure the copy doesn't share its name with an existing sibling
+			copy->m_name = uniqueChildName(*par, copy->name());
 
-		copy->propagateCallTick(copy->info(), TickFunctionList::init);
-		copy->propagateCallTick(copy->info(), TickFunctionList::begin);
-		copy->enabled(true);
+			copy->m_parent = par;
+			par->m_children.emplace_back(copy);
+			copy->m_state = par->m_state;
+			copy->m_type = NodeType::child;
+			copy->m_inherited_enabled = par->enabled();
+
+			copy->propagateCallTick(copy->info(), TickFunctionList::init);
+			copy->propagateCallTick(copy->info(), TickFunctionList::begin);
+			copy->enabled(true);
+		});
 
 		event::send<event::RequestHierarchyUpdate>();
 		TOAST_INFO("World", "Duplicated {} under {}", src->name(), par->name());
@@ -675,52 +924,55 @@ void Workspace::eventSubscriptions() {
 			TOAST_WARN("World", "NodeChangeType: cannot change type of root node");
 			return true;
 		}
+		auto history_context =
+		    historyContext(event::HistoryOperation::retype, target, "Change type", std::string {target->info()->type}, e.type);
+		recordHistory(std::move(history_context), [&] {
+			// Allocate the replacement node
+			Box<Node> fresh = nodeAllocation(e.type);
+			fresh->propagateCallTick(fresh->info(), TickFunctionList::pre_init);
 
-		// Allocate the replacement node
-		Box<Node> fresh = nodeAllocation(e.type);
-		fresh->propagateCallTick(fresh->info(), TickFunctionList::pre_init);
+			fresh->m_uid = target->m_uid;
+			fresh->m_name = target->m_name;
+			fresh->m_state = target->m_state;
+			fresh->m_type = target->m_type;
+			fresh->m_inherited_enabled = target->m_inherited_enabled;
 
-		fresh->m_uid = target->m_uid;
-		fresh->m_name = target->m_name;
-		fresh->m_state = target->m_state;
-		fresh->m_type = target->m_type;
-		fresh->m_inherited_enabled = target->m_inherited_enabled;
+			// Transfer children from the old node to the new one
+			for (auto& child : target->m_children) {
+				child->m_parent = fresh;
+				fresh->m_children.push_back(std::move(child));
+			}
+			target->m_children.clear();
 
-		// Transfer children from the old node to the new one
-		for (auto& child : target->m_children) {
-			child->m_parent = fresh;
-			fresh->m_children.push_back(std::move(child));
-		}
-		target->m_children.clear();
+			// Replace the old node in the parent's children list
+			fresh->m_parent = parent;
+			auto& siblings = parent->m_children;
+			auto it = std::ranges::find(siblings, target);
+			if (it != siblings.end()) {
+				*it = fresh;
+			}
 
-		// Replace the old node in the parent's children list
-		fresh->m_parent = parent;
-		auto& siblings = parent->m_children;
-		auto it = std::ranges::find(siblings, target);
-		if (it != siblings.end()) {
-			*it = fresh;
-		}
+			// Destroy the old node using the same pattern as WorkspaceRemoveNode
+			Node* old_raw = &*target;
+			_detail::ControlBox* old_ctrl = _detail::ControlBox::get(old_raw);
+			const NodeInfo* old_info = old_raw->info();
+			old_raw->m_parent = {};
+			old_raw->m_listener.reset();
+			target = {};
 
-		// Destroy the old node using the same pattern as WorkspaceRemoveNode
-		Node* old_raw = &*target;
-		_detail::ControlBox* old_ctrl = _detail::ControlBox::get(old_raw);
-		const NodeInfo* old_info = old_raw->info();
-		old_raw->m_parent = {};
-		old_raw->m_listener.reset();
-		target = {};
+			if (old_info && old_info->destroy) {
+				old_info->destroy(old_raw);
+			} else {
+				delete old_raw;
+			}
+			releaseNode(*old_ctrl);
+			reapTombstones();
 
-		if (old_info && old_info->destroy) {
-			old_info->destroy(old_raw);
-		} else {
-			delete old_raw;
-		}
-		releaseNode(*old_ctrl);
-		reapTombstones();
-
-		// Initialize the fresh node
-		fresh->callTick(fresh->info(), TickFunctionList::init);
-		fresh->callTick(fresh->info(), TickFunctionList::begin);
-		fresh->enabled(true);
+			// Initialize the fresh node
+			fresh->callTick(fresh->info(), TickFunctionList::init);
+			fresh->callTick(fresh->info(), TickFunctionList::begin);
+			fresh->enabled(true);
+		});
 
 		event::send<event::RequestHierarchyUpdate>();
 		TOAST_INFO("World", "Changed node type to {}", e.type);
@@ -746,47 +998,49 @@ void Workspace::eventSubscriptions() {
 			TOAST_WARN("World", "WorkspacePromoteNode: cannot promote root node");
 			return true;
 		}
+		auto history_context = historyContext(event::HistoryOperation::promote, target, "Promote to prefab", "", e.path);
+		recordHistory(std::move(history_context), [&] {
+			// Write the node content to the file the C# side already created on disk
+			assets::Prefab prefab(*target);
+			auto bytes = prefab.serialize(assets::SaveMode::editor);
+			assets::AssetManager::get().saveBytes(e.path, bytes);
 
-		// Write the node content to the file the C# side already created on disk
-		assets::Prefab prefab(*target);
-		auto bytes = prefab.serialize(assets::SaveMode::editor);
-		assets::AssetManager::get().saveBytes(e.path, bytes);
+			std::erase(parent->m_children, target);
 
-		std::erase(parent->m_children, target);
+			std::vector<Node*> victims;
+			auto collect = [&victims](this auto&& self, Node& n) -> void {
+				victims.push_back(&n);
+				for (auto& c : n.m_children) {
+					self(*c);
+				}
+			};
+			collect(*target);
+			target = {};
 
-		std::vector<Node*> victims;
-		auto collect = [&victims](this auto&& self, Node& n) -> void {
-			victims.push_back(&n);
-			for (auto& c : n.m_children) {
-				self(*c);
+			for (Node* victim : victims) {
+				_detail::ControlBox* ctrl = _detail::ControlBox::get(victim);
+				const NodeInfo* info = victim->info();
+				victim->m_parent = {};
+				victim->m_children.clear();
+				victim->m_listener.reset();
+				if (info && info->destroy) {
+					info->destroy(victim);
+				} else {
+					delete victim;
+				}
+				releaseNode(*ctrl);
 			}
-		};
-		collect(*target);
-		target = {};
+			reapTombstones();
 
-		for (Node* victim : victims) {
-			_detail::ControlBox* ctrl = _detail::ControlBox::get(victim);
-			const NodeInfo* info = victim->info();
-			victim->m_parent = {};
-			victim->m_children.clear();
-			victim->m_listener.reset();
-			if (info && info->destroy) {
-				info->destroy(victim);
+			// Spawn the saved file as a prefab child of the same parent
+			auto uid = assets::resolveURI(e.path);
+			if (uid.has_value()) {
+				requestRuntimeSpawn(parent, *uid);
 			} else {
-				delete victim;
+				TOAST_WARN("World", "WorkspacePromoteNode: couldn't resolve UID for {}", e.path);
+				event::send<event::RequestHierarchyUpdate>();
 			}
-			releaseNode(*ctrl);
-		}
-		reapTombstones();
-
-		// Spawn the saved file as a prefab child of the same parent
-		auto uid = assets::resolveURI(e.path);
-		if (uid.has_value()) {
-			requestRuntimeSpawn(parent, *uid);
-		} else {
-			TOAST_WARN("World", "WorkspacePromoteNode: couldn't resolve UID for {}", e.path);
-			event::send<event::RequestHierarchyUpdate>();
-		}
+		});
 
 		TOAST_INFO("World", "Promoted node to {}", e.path);
 		return true;
@@ -864,35 +1118,37 @@ void Workspace::eventSubscriptions() {
 			TOAST_WARN("World", "WorkspacePasteNode: parent not found");
 			return true;
 		}
-
-		assets::Handle<assets::Prefab> handle(s_clipboard.get(), toast::UID(0), "");
-		InstantiateContext ctx;
-		ctx.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
-		Box<Node> copy = instantiate(handle, ctx);
-		if (not copy.exists()) {
-			TOAST_WARN("World", "WorkspacePasteNode: instantiation failed");
-			return true;
-		}
-
-		auto regen = [&](auto& self, Box<Node>& node) -> void {
-			INodeOwner::generateUid(node);
-			for (auto& child : node->m_children) {
-				self(self, child);
+		auto history_context = historyContext(event::HistoryOperation::paste, {}, "Pasted");
+		recordHistory(std::move(history_context), [&] {
+			assets::Handle<assets::Prefab> handle(s_clipboard.get(), toast::UID(0), "");
+			InstantiateContext ctx;
+			ctx.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
+			Box<Node> copy = instantiate(handle, ctx);
+			if (not copy.exists()) {
+				TOAST_WARN("World", "WorkspacePasteNode: instantiation failed");
+				return;
 			}
-		};
-		regen(regen, copy);
 
-		copy->m_source_prefab = {};
-		copy->m_name = uniqueChildName(*par, copy->name());
-		copy->m_parent = par;
-		par->m_children.emplace_back(copy);
-		copy->m_state = par->m_state;
-		copy->m_type = NodeType::child;
-		copy->m_inherited_enabled = par->enabled();
+			auto regen = [&](auto& self, Box<Node>& node) -> void {
+				INodeOwner::generateUid(node);
+				for (auto& child : node->m_children) {
+					self(self, child);
+				}
+			};
+			regen(regen, copy);
 
-		copy->propagateCallTick(copy->info(), TickFunctionList::init);
-		copy->propagateCallTick(copy->info(), TickFunctionList::begin);
-		copy->enabled(true);
+			copy->m_source_prefab = {};
+			copy->m_name = uniqueChildName(*par, copy->name());
+			copy->m_parent = par;
+			par->m_children.emplace_back(copy);
+			copy->m_state = par->m_state;
+			copy->m_type = NodeType::child;
+			copy->m_inherited_enabled = par->enabled();
+
+			copy->propagateCallTick(copy->info(), TickFunctionList::init);
+			copy->propagateCallTick(copy->info(), TickFunctionList::begin);
+			copy->enabled(true);
+		});
 
 		event::send<event::RequestHierarchyUpdate>();
 		return true;

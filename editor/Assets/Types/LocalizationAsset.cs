@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-using editor.Assets;
 using Lucide.Avalonia;
 
 namespace editor.Assets.Types;

@@ -199,6 +199,40 @@ auto removeSpaces(const std::string& text) -> std::string {
 }
 
 namespace assets {
+Prefab::Prefab(const Prefab& other)
+    : global_fields(other.global_fields),
+      nodes(other.nodes),
+      m_self_uid(other.m_self_uid),
+      m_allowed_uids(other.m_allowed_uids) { }
+
+Prefab::Prefab(Prefab&& other) noexcept
+    : global_fields(std::move(other.global_fields)),
+      nodes(std::move(other.nodes)),
+      m_self_uid(other.m_self_uid),
+      m_allowed_uids(std::move(other.m_allowed_uids)) { }
+
+auto Prefab::operator=(const Prefab& other) -> Prefab& {
+	if (this == &other) {
+		return *this;
+	}
+	global_fields = other.global_fields;
+	nodes = other.nodes;
+	m_self_uid = other.m_self_uid;
+	m_allowed_uids = other.m_allowed_uids;
+	return *this;
+}
+
+auto Prefab::operator=(Prefab&& other) noexcept -> Prefab& {
+	if (this == &other) {
+		return *this;
+	}
+	global_fields = std::move(other.global_fields);
+	nodes = std::move(other.nodes);
+	m_self_uid = other.m_self_uid;
+	m_allowed_uids = std::move(other.m_allowed_uids);
+	return *this;
+}
+
 Prefab::Prefab(std::istream& file) {
 	std::vector<std::string> lines;
 	std::string line;

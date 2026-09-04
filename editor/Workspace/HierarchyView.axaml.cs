@@ -21,6 +21,8 @@ namespace editor.Workspace;
 public partial class HierarchyView : UserControl {
 	private const double DragThreshold = 4;
 
+	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
+
 	private HierarchyElement? m_dropTarget;
 	private PointerPressedEventArgs? m_pressArgs;
 
@@ -168,18 +170,17 @@ public partial class HierarchyView : UserControl {
 			CommitRename(el);
 	}
 
-	private static readonly HashSet<string> s_reservedNames = ["root", "world", "global"];
-
 	private static async void CommitRename(HierarchyElement el) {
 		el.IsRenaming = false;
 		var name = el.DraftName?.Trim();
 		if (string.IsNullOrEmpty(name) || name == el.Name) return;
 		if (s_reservedNames.Contains(name)) {
-			await App.Modals.ShowWarning("Reserved Name", $"'{name}' is a reserved keyword and cannot be used as a node name.");
+			await App.Modals.ShowWarning("Reserved Name",
+				$"'{name}' is a reserved keyword and cannot be used as a node name.");
 			return;
 		}
+
 		Events.Send(new NodeChangeName { Node = el.Uid, Name = name });
-		WorkspaceState.MarkModified();
 	}
 
 	// the middle of a row reparents; the top/bottom edge reorders

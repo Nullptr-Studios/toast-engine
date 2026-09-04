@@ -25,7 +25,12 @@ public partial class GenericFieldVM : ObservableObject, IRowSplittable, IRowVisi
 	[ObservableProperty] private bool m_boolVal;
 	[ObservableProperty] private bool m_childrenLocked;
 
+	// Inspector display name override
+	[ObservableProperty] private string m_displayName = "";
+
 	private IReadOnlyList<string> m_enumAllowedValues = [];
+
+	[ObservableProperty] private bool m_expanded = true;
 
 	[ObservableProperty] private float m_floatVal;
 	[ObservableProperty] private int m_intVal;
@@ -36,21 +41,16 @@ public partial class GenericFieldVM : ObservableObject, IRowSplittable, IRowVisi
 	[ObservableProperty] private string m_name = "";
 	[ObservableProperty] private bool m_nameEditable = true;
 
-	// Inspector display name override
-	[ObservableProperty] private string m_displayName = "";
-
 	// Asset/node subtype constraint
 	[ObservableProperty] private string m_refType = "";
 	[ObservableProperty] private string m_refUid = "";
 	[ObservableProperty] private string m_stringVal = "";
 	[ObservableProperty] private string m_typeKey = "string";
+
+	[ObservableProperty] private string m_unit = "";
 	[ObservableProperty] private bool m_variantVisible = true;
 
 	[ObservableProperty] private float m_x, m_y, m_z, m_w;
-
-	[ObservableProperty] private string m_unit = "";
-
-	[ObservableProperty] private bool m_expanded = true;
 
 	public IReadOnlyList<string> FieldTypes { get; set; } = AllFieldTypes;
 
@@ -104,6 +104,8 @@ public partial class GenericFieldVM : ObservableObject, IRowSplittable, IRowVisi
 	public bool IsNamedField => !NameEditable && !string.IsNullOrEmpty(Name);
 	public bool IsUnnamedScalar => IsScalar && !IsNamedScalar;
 
+	public string DisplayLabel => string.IsNullOrEmpty(DisplayName) ? FormatFieldName(Name) : DisplayName;
+
 	public bool ShouldSplitRow => NameEditable;
 
 	public bool RowVisible => VariantVisible;
@@ -145,8 +147,6 @@ public partial class GenericFieldVM : ObservableObject, IRowSplittable, IRowVisi
 		OnPropertyChanged(nameof(IsStructRow));
 		NotifyDirty?.Invoke();
 	}
-
-	public string DisplayLabel => string.IsNullOrEmpty(DisplayName) ? FormatFieldName(Name) : DisplayName;
 
 	public static string FormatFieldName(string raw) {
 		if (string.IsNullOrEmpty(raw)) return raw;
@@ -418,11 +418,6 @@ public record SchemaFieldDescriptor(
 	string RefType,
 	TypeSwitchDescriptor? TypeSwitch
 ) {
-	/// Inspector display name (x-toast-display-name); empty uses the field key
-	public string DisplayName { get; init; } = "";
-
-	public string Unit { get; init; } = "";
-
 	public SchemaFieldDescriptor(string Name, string TypeKey, bool IsArray, string DefaultStr, string Description)
 		: this(Name, TypeKey, IsArray, DefaultStr, Description, [], null, null, [], "", null) { }
 
@@ -435,6 +430,11 @@ public record SchemaFieldDescriptor(
 		string Name, string TypeKey, bool IsArray, string DefaultStr, string Description,
 		IReadOnlyList<string> EnumOptions, double? MinValue, double? MaxValue)
 		: this(Name, TypeKey, IsArray, DefaultStr, Description, EnumOptions, MinValue, MaxValue, [], "", null) { }
+
+	/// Inspector display name (x-toast-display-name); empty uses the field key
+	public string DisplayName { get; init; } = "";
+
+	public string Unit { get; init; } = "";
 }
 
 public record TypeSwitchCase(string TypeKey, string DefaultStr);
