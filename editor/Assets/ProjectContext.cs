@@ -28,12 +28,23 @@ public static class ProjectContext {
 
 	// Fired after an import batch completes
 	public static event Action? AssetsChanged;
+
 	// Fired after project settings have been saved and the configured language list was changed
 	public static event Action? LanguagesChanged;
 
 	public static void RaiseAssetsChanged() {
 		AssetsChanged?.Invoke();
 		Events.Send(new ReloadAssetsManifest());
+	}
+
+	public static void Reset() {
+		UIBindStubGenerator.StopWatching();
+		AssetDatabase.Reset();
+		IsInitialized = false;
+		ProjectPath = ArtworkPath = AssetsPath = CachePath = CorePath = SavedPath = "";
+		Databases = ["assets"];
+		Languages = ["en"];
+		s_schemes.Clear();
 	}
 
 	public static void Initialize(string projectPath, string corePath) {
@@ -153,6 +164,14 @@ public static class ProjectContext {
 		return false;
 	}
 
+	public static bool IsUnderCore(string realPath) {
+		if (!IsInitialized) return false;
+		var canonical = Path.GetFullPath(realPath);
+		var root = Path.GetFullPath(CorePath);
+		return string.Equals(canonical, root, StringComparison.OrdinalIgnoreCase) ||
+			canonical.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+	}
+
 	private static void RegisterSchemes() {
 		s_schemes.Clear();
 
@@ -208,6 +227,7 @@ public static class ProjectContext {
 		Directory.CreateDirectory(CachePath);
 		Directory.CreateDirectory(Path.Combine(CachePath, "thumbnails"));
 		Directory.CreateDirectory(Path.Combine(CachePath, "autosaves"));
+		Directory.CreateDirectory(Path.Combine(CachePath, "layouts"));
 
 		foreach (var root in DatabaseRoots)
 			Directory.CreateDirectory(root);

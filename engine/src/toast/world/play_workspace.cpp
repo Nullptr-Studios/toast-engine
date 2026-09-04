@@ -34,6 +34,7 @@ PlayWorkspace::PlayWorkspace(UID handle, assets::Prefab& prefab) : Workspace(han
 	node->propagateEnable();
 
 	m_root_node = node;
+	initializeHistory(false, false);
 
 	m_listener.subscribe<event::WorkspacePause>([this](const auto& e) {
 		if (e.handle != m_handle.data()) {

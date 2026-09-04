@@ -38,12 +38,12 @@ public partial class ViewportControl : UserControl {
 	private CancellationTokenSource? m_hintCts;
 	private Transitions? m_hintTransitions;
 	private ulong m_lastFrameId;
+	private double m_lastScale;
 
 	private IPointer? m_pointer;
 	private int m_surfaceH;
 
 	private int m_surfaceW;
-	private double m_lastScale;
 	private DispatcherTimer? m_timer;
 	private TopLevel? m_topLevel;
 	private bool m_wasVisible;

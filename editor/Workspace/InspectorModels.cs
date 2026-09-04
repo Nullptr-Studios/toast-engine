@@ -4,12 +4,14 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using editor.Components.Elements;
 using editor.Engine;
+using Proto.Events;
 
 namespace editor.Workspace;
 
@@ -277,11 +279,17 @@ public static class InspectorFormat {
 public sealed record EnumOption(string Label, string Value);
 
 public partial class FieldVM : ObservableObject {
+	private InspectorPasteCommand? m_appendArrayPasteCommand;
+	private IInspectorClipboardHost? m_clipboardHost;
 	private readonly string? m_default; // engine-encoded, null if unknown
+	private readonly Dictionary<string, string> m_enumLabelToValue = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, string> m_enumValueToLabel = new(StringComparer.Ordinal);
+	private InspectorPasteCommand? m_pasteArrayItemCommand;
+	private InspectorPasteCommand? m_pasteCommand;
 	[ObservableProperty] private bool m_bool;
+	[ObservableProperty] private string? m_enumValue;
 
 	[ObservableProperty] private float m_float;
-	[ObservableProperty] private string? m_enumValue;
 	[ObservableProperty] private int m_int;
 
 	[ObservableProperty] private bool m_isDefault = true;
@@ -289,8 +297,6 @@ public partial class FieldVM : ObservableObject {
 	[ObservableProperty] private string? m_ref;
 	[ObservableProperty] private string? m_string = "";
 	private bool m_suppress; // true while applying an engine value
-	private readonly Dictionary<string, string> m_enumLabelToValue = new(StringComparer.Ordinal);
-	private readonly Dictionary<string, string> m_enumValueToLabel = new(StringComparer.Ordinal);
 	[ObservableProperty] private bool m_visible = true;
 	[ObservableProperty] private float m_w;
 	[ObservableProperty] private float m_x;
@@ -301,7 +307,8 @@ public partial class FieldVM : ObservableObject {
 		ParameterName = info.Name;
 		Kind = InspectorFormat.KindOf(info.FieldType, info.IsArray, info.TypeName);
 		if (!info.IsArray && ReflectionDatabase.HasAttr(info.Attributes, "Enum") &&
-		    InspectorFormat.ParseEnumOptions(ReflectionDatabase.GetAttrArgs(info.Attributes, "Enum")) is { } enumOptions) {
+		    InspectorFormat.ParseEnumOptions(ReflectionDatabase.GetAttrArgs(info.Attributes, "Enum")) is
+			    { } enumOptions) {
 			Kind = WidgetKind.Enum;
 			foreach (var option in enumOptions) {
 				EnumOptions.Add(option.Label);
@@ -345,7 +352,7 @@ public partial class FieldVM : ObservableObject {
 		}
 	}
 
-	public FieldVM(Proto.Events.LuaField info) {
+	public FieldVM(LuaField info) {
 		ParameterName = info.Path;
 		IsLua = true;
 		Kind = InspectorFormat.LuaKindOf(info.Kind, info.IsArray);
@@ -420,7 +427,25 @@ public partial class FieldVM : ObservableObject {
 
 	public bool IsColor3 => Kind == WidgetKind.Color3;
 	public bool IsColor4 => Kind == WidgetKind.Color4;
+	public bool IsVectorOrColor => Kind is WidgetKind.Vec2 or WidgetKind.Vec3 or WidgetKind.Vec4
+		or WidgetKind.Color3 or WidgetKind.Color4;
+	public int ComponentCount => Kind switch {
+		WidgetKind.Vec2 => 2,
+		WidgetKind.Vec3 or WidgetKind.Color3 => 3,
+		WidgetKind.Vec4 or WidgetKind.Color4 => 4,
+		_ => 0
+	};
 	public ObservableCollection<string> EnumOptions { get; } = [];
+	internal string EngineValue => ToEngineString();
+	public IAsyncCanExecuteCommand PasteCommand => m_pasteCommand ??= new InspectorPasteCommand(
+		component => m_clipboardHost?.PasteFieldAsync(this, ClipboardComponent(component)) ?? Task.CompletedTask,
+		component => m_clipboardHost?.CanPasteFieldAsync(this, ClipboardComponent(component)) ?? Task.FromResult(false));
+	public IAsyncCanExecuteCommand PasteArrayItemCommand => m_pasteArrayItemCommand ??= new InspectorPasteCommand(
+		item => m_clipboardHost?.PasteArrayItemAsync(this, item) ?? Task.CompletedTask,
+		item => m_clipboardHost?.CanPasteArrayItemAsync(this, item) ?? Task.FromResult(false));
+	public IAsyncCanExecuteCommand AppendArrayPasteCommand => m_appendArrayPasteCommand ??= new InspectorPasteCommand(
+		_ => m_clipboardHost?.AppendArrayPasteAsync(this) ?? Task.CompletedTask,
+		_ => m_clipboardHost?.CanAppendArrayPasteAsync(this) ?? Task.FromResult(false));
 
 	public event Action<FieldVM, string>? Edited;
 
@@ -476,12 +501,79 @@ public partial class FieldVM : ObservableObject {
 		OnUserEdited();
 	}
 
-	private FieldVM CreateArrayElement() {
-		return new FieldVM(ArrayElementKind, "", ReadOnly, Unit, RefType, Min, Max);
+	private void WireChild(FieldVM child) {
+		child.AttachClipboardHost(m_clipboardHost);
+		child.Edited += (_, _) => OnUserEdited();
 	}
 
-	private void WireChild(FieldVM child) {
-		child.Edited += (_, _) => OnUserEdited();
+	internal FieldVM CreateArrayElement() {
+		var child = new FieldVM(ArrayElementKind, "", ReadOnly, Unit, RefType, Min, Max);
+		child.AttachClipboardHost(m_clipboardHost);
+		return child;
+	}
+
+	internal void AttachClipboardHost(IInspectorClipboardHost? host) {
+		m_clipboardHost = host;
+		foreach (var child in ArrayItems) child.AttachClipboardHost(host);
+	}
+
+	internal float Component(int index) {
+		return index switch {
+			0 => X,
+			1 => Y,
+			2 => Z,
+			3 => W,
+			_ => 0
+		};
+	}
+
+	internal float[] Components() {
+		return Enumerable.Range(0, ComponentCount).Select(Component).ToArray();
+	}
+
+	internal float ClampComponent(int component, float value) {
+		if (Kind == WidgetKind.Color4 && component == 3) return Math.Clamp(value, 0f, 1f);
+		var min = Kind is WidgetKind.Color3 or WidgetKind.Color4
+			? Math.Max(0f, double.IsNegativeInfinity(Min) ? 0f : (float)Min)
+			: double.IsNegativeInfinity(Min) ? float.MinValue : (float)Min;
+		var max = double.IsPositiveInfinity(Max) ? float.MaxValue : (float)Max;
+		return min <= max ? Math.Clamp(value, min, max) : value;
+	}
+
+	internal string JoinArrayValues(IEnumerable<string> values) {
+		return string.Join(ArrayElementKind == WidgetKind.String ? "\x1f" : " ", values);
+	}
+
+	internal bool TryEnumEngineValue(string label, out string value) {
+		return m_enumLabelToValue.TryGetValue(label, out value!);
+	}
+
+	internal bool ApplyPastedEngineString(string value) {
+		var current = ToEngineString();
+		if (InspectorFormat.ValuesEqual(Kind, current, value)) return false;
+		ApplyEngineString(value);
+		LastEdit = DateTime.UtcNow;
+		Edited?.Invoke(this, value);
+		return true;
+	}
+
+	[RelayCommand]
+	private Task Copy(object? component) {
+		return m_clipboardHost?.CopyFieldAsync(this, ClipboardComponent(component)) ?? Task.CompletedTask;
+	}
+
+	[RelayCommand]
+	private Task CopyArrayItem(object? item) {
+		return m_clipboardHost?.CopyArrayItemAsync(this, item) ?? Task.CompletedTask;
+	}
+
+	private static int? ClipboardComponent(object? value) {
+		return value switch {
+			int component => component,
+			string text when int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture,
+				out var component) => component,
+			_ => null
+		};
 	}
 
 	private void OnUserEdited() {
@@ -586,12 +678,12 @@ public partial class FieldVM : ObservableObject {
 					var stride = InspectorFormat.ArrayElementStride(ArrayElementKind);
 					var elementCount = tokens.Length / stride;
 
-					string ElementAt(int idx) => string.Join(' ', tokens.Skip(idx * stride).Take(stride));
+					string ElementAt(int idx) {
+						return string.Join(' ', tokens.Skip(idx * stride).Take(stride));
+					}
 
 					if (elementCount == ArrayItems.Count) {
-						for (var idx = 0; idx < elementCount; idx++) {
-							ArrayItems[idx].ApplyEngineString(ElementAt(idx));
-						}
+						for (var idx = 0; idx < elementCount; idx++) ArrayItems[idx].ApplyEngineString(ElementAt(idx));
 
 						break;
 					}
@@ -690,24 +782,34 @@ public partial class ButtonVM : ObservableObject {
 	}
 }
 
-public partial class SubgroupVM : ObservableObject {
+public partial class SubgroupVM : ObservableObject, IInspectorClipboardScope {
+	private readonly IInspectorClipboardHost m_clipboardHost;
 	private readonly string m_key;
 	private readonly bool m_ready;
 	private readonly InspectorState m_state;
+	private InspectorPasteCommand? m_pasteScopeCommand;
 
 	[ObservableProperty] private bool m_collapsed;
 	[ObservableProperty] private bool m_visible = true;
 
-	public SubgroupVM(string name, string key, InspectorState state) {
+	internal SubgroupVM(string name, string key, InspectorState state, IInspectorClipboardHost clipboardHost) {
 		Name = name;
 		m_key = key;
 		m_state = state;
+		m_clipboardHost = clipboardHost;
 		Collapsed = state.Get(key, true);
 		m_ready = true;
 	}
 
 	public string Name { get; }
 	public ObservableCollection<FieldVM> Fields { get; } = [];
+	public IAsyncCanExecuteCommand PasteScopeCommand => m_pasteScopeCommand ??= new InspectorPasteCommand(
+		_ => m_clipboardHost.PasteScopeAsync(this),
+		_ => m_clipboardHost.CanPasteScopeAsync(this));
+	InspectorClipboardScope IInspectorClipboardScope.ClipboardScope => InspectorClipboardScope.Subgroup;
+	string IInspectorClipboardScope.ScopeKey => m_key;
+	string IInspectorClipboardScope.ScopeName => Name;
+	IEnumerable<FieldVM> IInspectorClipboardScope.ClipboardFields => Fields;
 
 	public bool Expanded {
 		get => !Collapsed;
@@ -717,6 +819,11 @@ public partial class SubgroupVM : ObservableObject {
 	partial void OnCollapsedChanged(bool value) {
 		OnPropertyChanged(nameof(Expanded));
 		if (m_ready) m_state.Set(m_key, value);
+	}
+
+	[RelayCommand]
+	private Task CopyScope() {
+		return m_clipboardHost.CopyScopeAsync(this);
 	}
 
 	public bool ApplyFilter(string query) {
@@ -727,19 +834,23 @@ public partial class SubgroupVM : ObservableObject {
 	}
 }
 
-public partial class GroupVM : ObservableObject {
+public partial class GroupVM : ObservableObject, IInspectorClipboardScope {
+	private readonly IInspectorClipboardHost m_clipboardHost;
 	private readonly string m_key;
 	private readonly bool m_ready;
 	private readonly InspectorState m_state;
+	private InspectorPasteCommand? m_pasteScopeCommand;
 
 	[ObservableProperty] private bool m_collapsed;
 	[ObservableProperty] private bool m_visible = true;
 
-	public GroupVM(string name, string colorKey, string key, InspectorState state) {
+	internal GroupVM(string name, string colorKey, string key, InspectorState state,
+		IInspectorClipboardHost clipboardHost) {
 		Name = name;
 		ColorKey = colorKey;
 		m_key = key;
 		m_state = state;
+		m_clipboardHost = clipboardHost;
 		Collapsed = state.Get(key, true);
 		m_ready = true;
 	}
@@ -748,6 +859,14 @@ public partial class GroupVM : ObservableObject {
 	public string ColorKey { get; }
 	public ObservableCollection<FieldVM> Fields { get; } = [];
 	public ObservableCollection<SubgroupVM> Subgroups { get; } = [];
+	public IAsyncCanExecuteCommand PasteScopeCommand => m_pasteScopeCommand ??= new InspectorPasteCommand(
+		_ => m_clipboardHost.PasteScopeAsync(this),
+		_ => m_clipboardHost.CanPasteScopeAsync(this));
+	InspectorClipboardScope IInspectorClipboardScope.ClipboardScope => InspectorClipboardScope.Group;
+	string IInspectorClipboardScope.ScopeKey => m_key;
+	string IInspectorClipboardScope.ScopeName => Name;
+	IEnumerable<FieldVM> IInspectorClipboardScope.ClipboardFields =>
+		Fields.Concat(Subgroups.SelectMany(s => ((IInspectorClipboardScope)s).ClipboardFields));
 
 	public bool Expanded {
 		get => !Collapsed;
@@ -757,6 +876,11 @@ public partial class GroupVM : ObservableObject {
 	partial void OnCollapsedChanged(bool value) {
 		OnPropertyChanged(nameof(Expanded));
 		if (m_ready) m_state.Set(m_key, value);
+	}
+
+	[RelayCommand]
+	private Task CopyScope() {
+		return m_clipboardHost.CopyScopeAsync(this);
 	}
 
 	public bool ApplyFilter(string query) {
@@ -768,15 +892,18 @@ public partial class GroupVM : ObservableObject {
 	}
 }
 
-public partial class ClassCardVM : ObservableObject {
+public partial class ClassCardVM : ObservableObject, IInspectorClipboardScope {
+	private readonly IInspectorClipboardHost m_clipboardHost;
 	private readonly string m_key;
 	private readonly bool m_ready;
 	private readonly InspectorState m_state;
+	private InspectorPasteCommand? m_pasteScopeCommand;
 
 	[ObservableProperty] private bool m_expanded = true;
 	[ObservableProperty] private bool m_visible = true;
 
-	public ClassCardVM(string typeName, string colorKey, string iconName, string key, InspectorState state) {
+	internal ClassCardVM(string typeName, string colorKey, string iconName, string key, InspectorState state,
+		IInspectorClipboardHost clipboardHost) {
 		TypeName = typeName;
 		ColorKey = colorKey;
 		try {
@@ -790,6 +917,7 @@ public partial class ClassCardVM : ObservableObject {
 
 		m_key = key;
 		m_state = state;
+		m_clipboardHost = clipboardHost;
 		Expanded = !state.Get(key, false); // class cards default expanded
 		m_ready = true;
 	}
@@ -804,9 +932,22 @@ public partial class ClassCardVM : ObservableObject {
 	public bool HasFields => Fields.Any();
 	public bool HasGroups => Groups.Any();
 	public bool HasButtons => Buttons.Any();
+	public IAsyncCanExecuteCommand PasteScopeCommand => m_pasteScopeCommand ??= new InspectorPasteCommand(
+		_ => m_clipboardHost.PasteScopeAsync(this),
+		_ => m_clipboardHost.CanPasteScopeAsync(this));
+	InspectorClipboardScope IInspectorClipboardScope.ClipboardScope => InspectorClipboardScope.Class;
+	string IInspectorClipboardScope.ScopeKey => m_key;
+	string IInspectorClipboardScope.ScopeName => TypeName;
+	IEnumerable<FieldVM> IInspectorClipboardScope.ClipboardFields => Fields.Concat(Groups.SelectMany(g =>
+		((IInspectorClipboardScope)g).ClipboardFields));
 
 	partial void OnExpandedChanged(bool value) {
 		if (m_ready) m_state.Set(m_key, !value);
+	}
+
+	[RelayCommand]
+	private Task CopyScope() {
+		return m_clipboardHost.CopyScopeAsync(this);
 	}
 
 	public void ApplyFilter(string query) {
