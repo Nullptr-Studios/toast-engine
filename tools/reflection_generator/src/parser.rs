@@ -430,7 +430,7 @@ fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
             .map(|t| source[t.byte_range()].trim().to_string())
             .unwrap_or_default();
 
-        if type_name.contains("Signal<") {
+        if !type_name.contains("Signal<") {
             continue;
         }
         signals.push(Signal {
