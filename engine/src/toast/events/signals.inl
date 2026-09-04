@@ -53,8 +53,4 @@ inline void Signal<Args...>::fire(Args... args) {
 	}
 }
 
-template<typename... Args>
-inline auto Signal<Args...>::listeners() -> std::vector<SigGroup>& {
-	return m.listeners;
-}
 }

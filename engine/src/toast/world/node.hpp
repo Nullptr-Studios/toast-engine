@@ -72,7 +72,6 @@ class [[ToastNode, Icon("Circle")]] TOAST_API Node {
 	friend struct toast::_detail::WorldTestAccess;
 
 public:
-	[[Signal]]
 	signals::Signal<> on_destroy;
 
 	Node();

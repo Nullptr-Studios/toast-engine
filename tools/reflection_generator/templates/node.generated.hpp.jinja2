@@ -69,6 +69,21 @@ struct Reflect<{{ qualified_name }}> {
 {% endfor %}
 	{{ '}}' }};
 
+	inline static const std::array<const SignalInfo, {{ signals | length }}> signal_info = {{ '{{' }}
+{% for s in signals %}
+	{
+		.name = "{{ s.name }}",
+		.type = "{{ s.typename }}",
+		.args = {{ '{{}}' }},
+		.attributes = "{{ '{{' }}{% for a in s.attrs_list %}{"{{ a.name }}", {{ '{' }}{% for v in a.args %}"{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}}{% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }}",
+		.get = {{ s.typename }}::get,
+		.set = {{ s.typename }}::set,
+	}{% if not loop.last %},{% endif %}
+
+{% endfor %}
+	{{ '}}' }};
+
+
 	inline static const std::array<const FieldInfo*, {{ global_field_indices | length }}> field_info = {{ '{{' }}
 {% for idx in global_field_indices %}
 		&_all_field_info[{{ idx }}],

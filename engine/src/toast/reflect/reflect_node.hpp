@@ -190,6 +190,7 @@ struct TOAST_API NodeInfo {
 
 	std::string_view type;
 	const NodeInfo* base_type;
+	std::span<const SignalInfo> signals;
 	std::span<const FieldInfo> all_fields;
 	std::span<const FieldInfo* const> fields;
 	std::span<const GroupInfo> groups;

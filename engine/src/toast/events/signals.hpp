@@ -36,7 +36,9 @@ class Signal {
 	} m;
 
 public:
-	auto listeners() -> std::vector<SigGroup>&;
+	static auto get(void* signal) -> std::vector<std::pair<uint64_t, std::string>> { }
+
+	static void set(void* signal, std::vector<std::pair<uint64_t, std::string>>&) { }
 
 	template<typename F>
 	  requires SignalCallback<F, Args...>

@@ -76,6 +76,7 @@ fn get_class(node: tree_sitter::Node, source: &str, file_path: &str) -> Option<C
         functions: get_functions(node, source),
         methods: get_methods(node, source),
         fields: get_fields(node, source),
+        signals: get_signals(node, source),
         source_file: file_path.to_string(),
     })
 }
@@ -377,6 +378,9 @@ fn get_fields(node: tree_sitter::Node, source: &str) -> Vec<Field> {
             .child_by_field_name("default_value")
             .map(|d| source[d.byte_range()].trim().to_string());
 
+        if type_name.contains("Signal<") {
+            continue;
+        }
         fields.push(Field {
             name: source[field_node.byte_range()].to_string(),
             typename: type_name.clone(),
@@ -388,6 +392,56 @@ fn get_fields(node: tree_sitter::Node, source: &str) -> Vec<Field> {
         });
     }
     fields
+}
+
+fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
+    let query = Query::new(
+        &tree_sitter_cpp::LANGUAGE.into(),
+        "(field_identifier) @field",
+    )
+    .unwrap();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(&query, node, source.as_bytes());
+
+    let mut signals = Vec::new();
+    while let Some((m, _)) = captures.next() {
+        let field_node = m.captures[0].node;
+        let Some(parent) = field_node.parent() else {
+            continue;
+        };
+        if parent.kind() != "field_declaration" {
+            continue;
+        }
+
+        // Skip nested struct definitions
+        if let Some(ty) = parent.child_by_field_name("type")
+            && ty.kind() == "struct_specifier"
+        {
+            continue;
+        }
+
+        let all_attrs = get_attributes(parent, source);
+        let attributes: Vec<Attribute> = all_attrs
+            .into_iter()
+            .collect();
+
+        let type_name = parent
+            .child_by_field_name("type")
+            .map(|t| source[t.byte_range()].trim().to_string())
+            .unwrap_or_default();
+
+        if type_name.contains("Signal<") {
+            continue;
+        }
+        signals.push(Signal {
+            name: source[field_node.byte_range()].to_string(),
+            typename: type_name.clone(),
+            field_type: infer_field_type(&type_name),
+            attributes: attributes.clone(),
+            attrib_json: attrs_to_json(&attributes)
+        });
+    }
+    signals
 }
 
 fn get_attributes(node: tree_sitter::Node, source: &str) -> Vec<Attribute> {

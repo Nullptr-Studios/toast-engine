@@ -44,6 +44,19 @@ enum class FieldType : uint8_t {
 	quaternion_t,
 };
 
+struct TOAST_API SignalInfo {
+	using SignalGetterPtr = std::vector<std::pair<uint64_t, std::string>> (*)(void*);
+	using SignalSetterPtr = void (*)(void*, std::vector<std::pair<uint64_t, std::string>>&);
+
+	std::string_view name;
+	std::string_view type;
+	std::vector<std::string_view> args;
+	nlohmann::json attributes;
+
+	SignalGetterPtr get;
+	SignalSetterPtr set;
+};
+
 /**
  * @brief Runtime descriptor for one reflected field
  *
