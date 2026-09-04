@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -15,7 +16,7 @@ using Proto.Events;
 
 namespace editor.Workspace;
 
-public partial class InspectorViewModel : Tool, IDisposable {
+public partial class InspectorViewModel : Tool, IDisposable, IInspectorClipboardHost {
 	private static readonly string[] Palette =
 		["Red", "Green", "Blue", "Magenta", "Orange", "Yellow", "Cyan", "Beige"];
 
@@ -31,6 +32,7 @@ public partial class InspectorViewModel : Tool, IDisposable {
 	private string? m_builtType;
 	private string? m_builtUid;
 	private string? m_editField;
+	private bool m_isPasteBatch;
 	private ulong m_editTransaction;
 	private ulong m_editWorkspaceHandle;
 	[ObservableProperty] private bool m_enabled = true;
@@ -381,17 +383,17 @@ public partial class InspectorViewModel : Tool, IDisposable {
 		// class cards show the bare type name; the namespaced form lives in the header label only
 		var typeName = info.Name;
 		var card = new ClassCardVM(typeName, ReflectionDatabase.ResolveColor(typeName),
-			ReflectionDatabase.ResolveIcon(typeName), $"class:{typeName}", m_state!);
+			ReflectionDatabase.ResolveIcon(typeName), $"class:{typeName}", m_state!, this);
 
 		foreach (var f in info.GlobalFields) AddField(card.Fields, f);
 
 		foreach (var g in info.Groups) {
 			var colorKey = Palette[colorCounter++ % Palette.Length];
-			var group = new GroupVM(g.Name, colorKey, $"group:{typeName}/{g.Name}", m_state!);
+			var group = new GroupVM(g.Name, colorKey, $"group:{typeName}/{g.Name}", m_state!, this);
 			foreach (var f in g.Fields) AddField(group.Fields, f);
 
 			foreach (var sg in g.Subgroups) {
-				var sub = new SubgroupVM(sg.Name, $"sub:{typeName}/{g.Name}/{sg.Name}", m_state!);
+				var sub = new SubgroupVM(sg.Name, $"sub:{typeName}/{g.Name}/{sg.Name}", m_state!, this);
 				foreach (var f in sg.Fields) AddField(sub.Fields, f);
 				group.Subgroups.Add(sub);
 			}
@@ -416,6 +418,7 @@ public partial class InspectorViewModel : Tool, IDisposable {
 	private void AddField(ObservableCollection<FieldVM> target, FieldInfo info) {
 		if (ReflectionDatabase.HasAttr(info.Attributes, "Hidden")) return;
 		var vm = new FieldVM(info);
+		vm.AttachClipboardHost(this);
 		vm.Edited += OnFieldEdited;
 		target.Add(vm);
 		m_fieldByParam[vm.ParameterName] = vm;
@@ -423,7 +426,7 @@ public partial class InspectorViewModel : Tool, IDisposable {
 
 	private void OnFieldEdited(FieldVM field, string value) {
 		if (m_uid is null) return;
-		BeginFieldEdit(field);
+		if (!m_isPasteBatch) BeginFieldEdit(field);
 		if (field.IsLua)
 			Events.Send(new NodeChangeLuaParam { Node = m_uid, Path = field.ParameterName, Value = value });
 		else
@@ -483,17 +486,17 @@ public partial class InspectorViewModel : Tool, IDisposable {
 		var colorCounter = 0;
 		foreach (var script in e.Scripts) {
 			var title = ScriptStem(script.Script);
-			var card = new ClassCardVM(title, "Magenta", "Circle", $"lua:{title}", m_state!);
+			var card = new ClassCardVM(title, "Magenta", "Circle", $"lua:{title}", m_state!, this);
 
 			foreach (var f in script.Fields) AddLuaField(card.Fields, f);
 
 			foreach (var g in script.Groups) {
 				var colorKey = Palette[colorCounter++ % Palette.Length];
-				var group = new GroupVM(g.Name, colorKey, $"group:lua/{title}/{g.Name}", m_state!);
+				var group = new GroupVM(g.Name, colorKey, $"group:lua/{title}/{g.Name}", m_state!, this);
 				foreach (var f in g.Fields) AddLuaField(group.Fields, f);
 
 				foreach (var sg in g.Subgroups) {
-					var sub = new SubgroupVM(sg.Name, $"sub:lua/{title}/{g.Name}/{sg.Name}", m_state!);
+					var sub = new SubgroupVM(sg.Name, $"sub:lua/{title}/{g.Name}/{sg.Name}", m_state!, this);
 					foreach (var f in sg.Fields) AddLuaField(sub.Fields, f);
 					group.Subgroups.Add(sub);
 				}
@@ -511,6 +514,7 @@ public partial class InspectorViewModel : Tool, IDisposable {
 
 	private void AddLuaField(ObservableCollection<FieldVM> target, LuaField info) {
 		var vm = new FieldVM(info);
+		vm.AttachClipboardHost(this);
 		vm.Edited += OnFieldEdited;
 		target.Add(vm);
 		m_fieldByParam[vm.ParameterName] = vm;
@@ -528,6 +532,211 @@ public partial class InspectorViewModel : Tool, IDisposable {
 		var name = slash >= 0 ? path[(slash + 1)..] : path;
 		var dot = name.LastIndexOf('.');
 		return dot > 0 ? name[..dot] : name;
+	}
+
+	async Task IInspectorClipboardHost.CopyFieldAsync(FieldVM field, int? component) {
+		if (!IsCurrentField(field)) return;
+		var value = component is { } index
+			? InspectorClipboardConverter.CaptureComponent(field, index)
+			: InspectorClipboardConverter.Capture(field);
+		var scope = field.IsArray && component is null
+			? InspectorClipboardScope.Array
+			: InspectorClipboardScope.Value;
+		var payload = new InspectorClipboardPayload(
+			InspectorClipboardPayload.CurrentVersion, scope, null, value, null);
+		var text = field.IsArray ? field.EngineValue.Replace('\x1f', '\n') : value.EngineValue;
+		await InspectorClipboardService.WriteAsync(payload, text);
+	}
+
+	async Task IInspectorClipboardHost.PasteFieldAsync(FieldVM field, int? component) {
+		if (!field.Editable || !IsCurrentField(field)) return;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		if (uid is null || uid != m_uid || !IsCurrentField(field) || payload is null ||
+		    !TryPrepareFieldPaste(field, component, payload, out var value)) return;
+
+		ApplyPasteBatch([(field, value)], $"{field.DisplayName} pasted");
+	}
+
+	async Task<bool> IInspectorClipboardHost.CanPasteFieldAsync(FieldVM field, int? component) {
+		if (!field.Editable || !IsCurrentField(field)) return false;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		return uid is not null && uid == m_uid && IsCurrentField(field) && payload is not null &&
+		       TryPrepareFieldPaste(field, component, payload, out _);
+	}
+
+	async Task IInspectorClipboardHost.CopyArrayItemAsync(FieldVM array, object? item) {
+		if (!IsCurrentField(array) || item is not FieldVM field || !array.ArrayItems.Contains(field)) return;
+		var payload = new InspectorClipboardPayload(
+			InspectorClipboardPayload.CurrentVersion,
+			InspectorClipboardScope.Value,
+			null,
+			InspectorClipboardConverter.Capture(field),
+			null);
+		await InspectorClipboardService.WriteAsync(payload, field.EngineValue);
+	}
+
+	async Task IInspectorClipboardHost.PasteArrayItemAsync(FieldVM array, object? item) {
+		if (!array.Editable || !IsCurrentField(array) || item is not FieldVM field || !array.ArrayItems.Contains(field))
+			return;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		if (uid is null || uid != m_uid || !IsCurrentField(array) || !array.ArrayItems.Contains(field) ||
+		    payload is not { Scope: InspectorClipboardScope.Value, Value: { } source } ||
+		    !InspectorClipboardConverter.TryConvert(field, source, out var value)) return;
+		ApplyPasteBatch([(field, value)], $"{array.DisplayName} element pasted");
+	}
+
+	async Task<bool> IInspectorClipboardHost.CanPasteArrayItemAsync(FieldVM array, object? item) {
+		if (!array.Editable || !IsCurrentField(array) || item is not FieldVM field || !array.ArrayItems.Contains(field))
+			return false;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		return uid is not null && uid == m_uid && IsCurrentField(array) && array.ArrayItems.Contains(field) &&
+		       payload is { Scope: InspectorClipboardScope.Value, Value: { } source } &&
+		       InspectorClipboardConverter.TryConvert(field, source, out _);
+	}
+
+	async Task IInspectorClipboardHost.AppendArrayPasteAsync(FieldVM array) {
+		if (!array.Editable || !IsCurrentField(array)) return;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		if (uid is null || uid != m_uid || !IsCurrentField(array) || payload is null ||
+		    !InspectorClipboardConverter.TryAppend(array, payload, out var value)) return;
+		ApplyPasteBatch([(array, value)], $"{array.DisplayName} appended");
+	}
+
+	async Task<bool> IInspectorClipboardHost.CanAppendArrayPasteAsync(FieldVM array) {
+		if (!array.Editable || !IsCurrentField(array)) return false;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		return uid is not null && uid == m_uid && IsCurrentField(array) && payload is not null &&
+		       InspectorClipboardConverter.TryAppend(array, payload, out var value) &&
+		       !InspectorFormat.ValuesEqual(WidgetKind.Array, array.EngineValue, value);
+	}
+
+	async Task IInspectorClipboardHost.CopyScopeAsync(IInspectorClipboardScope scope) {
+		if (!IsCurrentScope(scope)) return;
+		var fields = scope.ClipboardFields.ToArray();
+		var payloadFields = fields
+			.Select(field => new InspectorClipboardField(field.ParameterName,
+				InspectorClipboardConverter.Capture(field)))
+			.ToArray();
+		var payload = new InspectorClipboardPayload(
+			InspectorClipboardPayload.CurrentVersion,
+			scope.ClipboardScope,
+			scope.ScopeKey,
+			null,
+			payloadFields);
+		var text = string.Join('\n', fields.Select(field => $"{field.DisplayName} = {field.EngineValue}"));
+		await InspectorClipboardService.WriteAsync(payload, text);
+	}
+
+	async Task IInspectorClipboardHost.PasteScopeAsync(IInspectorClipboardScope scope) {
+		if (!IsCurrentScope(scope)) return;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		if (uid is null || uid != m_uid || !IsCurrentScope(scope) || payload is null ||
+		    !TryPrepareScopePaste(scope, payload, out var updates)) return;
+		ApplyPasteBatch(updates, $"{scope.ScopeName} pasted");
+	}
+
+	async Task<bool> IInspectorClipboardHost.CanPasteScopeAsync(IInspectorClipboardScope scope) {
+		if (!IsCurrentScope(scope)) return false;
+		var uid = m_uid;
+		var payload = await InspectorClipboardService.ReadAsync();
+		return uid is not null && uid == m_uid && IsCurrentScope(scope) && payload is not null &&
+		       TryPrepareScopePaste(scope, payload, out var updates) && updates.Count > 0;
+	}
+
+	private static bool TryPrepareFieldPaste(
+		FieldVM field, int? component, InspectorClipboardPayload payload, out string value) {
+		value = "";
+		if (payload.Value is not { } source) return false;
+		if (component is { } index) {
+			if (payload.Scope != InspectorClipboardScope.Value) return false;
+			// A component menu has one Paste entry: scalar payloads target the clicked component,
+			// while vector/color payloads replace the whole value.
+			return InspectorClipboardConverter.TryConvertComponent(field, index, source, out value) ||
+			       InspectorClipboardConverter.TryConvert(field, source, out value);
+		}
+
+		var expectedScope = field.IsArray ? InspectorClipboardScope.Array : InspectorClipboardScope.Value;
+		return payload.Scope == expectedScope && InspectorClipboardConverter.TryConvert(field, source, out value);
+	}
+
+	private static bool TryPrepareScopePaste(
+		IInspectorClipboardScope scope,
+		InspectorClipboardPayload payload,
+		out List<(FieldVM Field, string Value)> updates) {
+		updates = [];
+		if (payload.Fields is not { } sources || payload.Scope != scope.ClipboardScope ||
+		    payload.ScopeId != scope.ScopeKey) return false;
+		var targets = scope.ClipboardFields.ToArray();
+		if (targets.Length != sources.Length) return false;
+		for (var i = 0; i < targets.Length; i++)
+			if (targets[i].ParameterName != sources[i].ParameterName ||
+			    !InspectorClipboardConverter.SameShape(targets[i], sources[i].Value)) return false;
+		for (var i = 0; i < targets.Length; i++) {
+			if (!targets[i].Editable) continue;
+			if (!InspectorClipboardConverter.TryConvert(targets[i], sources[i].Value, out var value)) return false;
+			updates.Add((targets[i], value));
+		}
+		return true;
+	}
+
+	private void ApplyPasteBatch(IEnumerable<(FieldVM Field, string Value)> requested, string subject) {
+		if (m_uid is null) return;
+		var updates = requested
+			.Where(update => update.Field.Editable && IsCurrentField(update.Field) &&
+			                 !InspectorFormat.ValuesEqual(update.Field.Kind, update.Field.EngineValue, update.Value))
+			.ToArray();
+		if (updates.Length == 0) return;
+
+		CommitFieldEdit();
+		var handle = HierarchyViewModel.Current?.ActiveWorkspaceHandle ?? 0;
+		if (handle == 0) return;
+		var transaction = m_nextEditTransaction++;
+		HierarchyViewModel.Current?.ActiveWorkspace?.History.SetTransactionOpen(true);
+		Events.Send(new WorkspaceHistoryTransaction {
+			WorkspaceHandle = handle,
+			Transaction = transaction,
+			Phase = WorkspaceHistoryTransaction.Types.Phase.Begin,
+			Operation = HistoryOperation.HistoryPaste,
+			Node = m_uid,
+			Subject = subject
+		});
+
+		m_isPasteBatch = true;
+		try {
+			foreach (var (field, value) in updates) field.ApplyPastedEngineString(value);
+		} finally {
+			m_isPasteBatch = false;
+			Events.Send(new WorkspaceHistoryTransaction {
+				WorkspaceHandle = handle,
+				Transaction = transaction,
+				Phase = WorkspaceHistoryTransaction.Types.Phase.Commit
+			});
+			HierarchyViewModel.Current?.ActiveWorkspace?.History.SetTransactionOpen(false);
+		}
+	}
+
+	private bool IsCurrentField(FieldVM field) {
+		return m_fieldByParam.Values.Any(candidate => ReferenceEquals(candidate, field) ||
+			candidate.ArrayItems.Any(item => ReferenceEquals(item, field)));
+	}
+
+	private bool IsCurrentScope(IInspectorClipboardScope scope) {
+		foreach (var card in Cards) {
+			if (ReferenceEquals(card, scope)) return true;
+			foreach (var group in card.Groups) {
+				if (ReferenceEquals(group, scope)) return true;
+				if (group.Subgroups.Any(subgroup => ReferenceEquals(subgroup, scope))) return true;
+			}
+		}
+
+		return false;
 	}
 
 	private void ApplyFilter() {

@@ -56,6 +56,21 @@ public sealed class ArrayBox : TemplatedControl {
 	public static readonly StyledProperty<double> ItemSpacingProperty =
 		AvaloniaProperty.Register<ArrayBox, double>(nameof(ItemSpacing), 4.0);
 
+	public static readonly StyledProperty<ICommand?> CopyCommandProperty =
+		AvaloniaProperty.Register<ArrayBox, ICommand?>(nameof(CopyCommand));
+
+	public static readonly StyledProperty<ICommand?> PasteCommandProperty =
+		AvaloniaProperty.Register<ArrayBox, ICommand?>(nameof(PasteCommand));
+
+	public static readonly StyledProperty<ICommand?> CopyItemCommandProperty =
+		AvaloniaProperty.Register<ArrayBox, ICommand?>(nameof(CopyItemCommand));
+
+	public static readonly StyledProperty<ICommand?> PasteItemCommandProperty =
+		AvaloniaProperty.Register<ArrayBox, ICommand?>(nameof(PasteItemCommand));
+
+	public static readonly StyledProperty<ICommand?> AppendPasteCommandProperty =
+		AvaloniaProperty.Register<ArrayBox, ICommand?>(nameof(AppendPasteCommand));
+
 	// Insertion indicator currently shown during a drag
 	private Border? m_activeLine;
 	private Button? m_add;
@@ -119,6 +134,31 @@ public sealed class ArrayBox : TemplatedControl {
 		set => SetValue(ItemSpacingProperty, value);
 	}
 
+	public ICommand? CopyCommand {
+		get => GetValue(CopyCommandProperty);
+		set => SetValue(CopyCommandProperty, value);
+	}
+
+	public ICommand? PasteCommand {
+		get => GetValue(PasteCommandProperty);
+		set => SetValue(PasteCommandProperty, value);
+	}
+
+	public ICommand? CopyItemCommand {
+		get => GetValue(CopyItemCommandProperty);
+		set => SetValue(CopyItemCommandProperty, value);
+	}
+
+	public ICommand? PasteItemCommand {
+		get => GetValue(PasteItemCommandProperty);
+		set => SetValue(PasteItemCommandProperty, value);
+	}
+
+	public ICommand? AppendPasteCommand {
+		get => GetValue(AppendPasteCommandProperty);
+		set => SetValue(AppendPasteCommandProperty, value);
+	}
+
 	public Func<object?>? ItemFactory { get; set; }
 
 	protected override Type StyleKeyOverride => typeof(ArrayBox);
@@ -143,7 +183,9 @@ public sealed class ArrayBox : TemplatedControl {
 		if (m_add != null) {
 			m_add.Click += OnAddClick;
 			m_add.IsVisible = CanAddRemove && (ItemFactory != null || AddCommand != null);
+			m_add.ContextMenu = AppendPasteCommand is not null ? BuildAppendMenu() : null;
 		}
+		UpdateClipboardMenu();
 	}
 
 	protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -159,8 +201,13 @@ public sealed class ArrayBox : TemplatedControl {
 		} else if (change.Property == ItemSpacingProperty && m_items != null) {
 			m_items.ItemsPanel = new FuncTemplate<Panel?>(() => new StackPanel { Spacing = ItemSpacing });
 		} else if ((change.Property == CanAddRemoveProperty || change.Property == IsEnabledProperty
-			           || change.Property == AddCommandProperty) && m_add != null) {
+		           || change.Property == AddCommandProperty) && m_add != null) {
 			m_add.IsVisible = CanAddRemove && (ItemFactory != null || AddCommand != null);
+		} else if (change.Property == CopyCommandProperty || change.Property == PasteCommandProperty ||
+		           change.Property == CopyItemCommandProperty || change.Property == PasteItemCommandProperty ||
+		           change.Property == AppendPasteCommandProperty) {
+			UpdateClipboardMenu();
+			if (m_items != null) m_items.ItemTemplate = new FuncDataTemplate<object>((item, _) => BuildRow(item));
 		}
 	}
 
@@ -399,6 +446,7 @@ public sealed class ArrayBox : TemplatedControl {
 		var topLine = MakeInsertLine(VerticalAlignment.Top);
 		var bottomLine = MakeInsertLine(VerticalAlignment.Bottom);
 		var row = new Grid();
+		if (CopyItemCommand is not null || PasteItemCommand is not null) row.ContextMenu = BuildItemMenu(item);
 		row.Children.Add(wrapped);
 		row.Children.Add(topLine);
 		row.Children.Add(bottomLine);
@@ -411,6 +459,42 @@ public sealed class ArrayBox : TemplatedControl {
 		BindRowVisibility(row, item);
 
 		return row;
+	}
+
+	private void UpdateClipboardMenu() {
+		ContextMenu = CopyCommand is not null || PasteCommand is not null ? BuildArrayMenu() : null;
+		if (m_add != null) m_add.ContextMenu = AppendPasteCommand is not null ? BuildAppendMenu() : null;
+	}
+
+	private ContextMenu BuildArrayMenu() {
+		var menu = new ContextMenu();
+		menu.Items.Add(CommandItem("Copy Array", CopyCommandProperty, null));
+		menu.Items.Add(CommandItem("Paste Array", PasteCommandProperty, null));
+		AsyncCommandMenu.Attach(menu);
+		return menu;
+	}
+
+	private ContextMenu BuildItemMenu(object item) {
+		var menu = new ContextMenu();
+		menu.Items.Add(CommandItem("Copy Element", CopyItemCommandProperty, item));
+		menu.Items.Add(CommandItem("Paste Element", PasteItemCommandProperty, item));
+		AsyncCommandMenu.Attach(menu);
+		return menu;
+	}
+
+	private ContextMenu BuildAppendMenu() {
+		var menu = new ContextMenu();
+		menu.Items.Add(CommandItem("Paste", AppendPasteCommandProperty, null));
+		AsyncCommandMenu.Attach(menu);
+		return menu;
+	}
+
+	private MenuItem CommandItem(string header, StyledProperty<ICommand?> property, object? parameter) {
+		return new MenuItem {
+			Header = header,
+			Command = GetValue(property),
+			CommandParameter = parameter
+		};
 	}
 
 	private static Border MakeInsertLine(VerticalAlignment side) {
