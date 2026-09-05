@@ -29,7 +29,7 @@ class Signal {
 	struct SigGroup {
 		toast::UID uid;
 		std::string identifier;
-		
+
 		toast::Box<toast::Node> node;
 		callback_t cb;
 	};
@@ -56,18 +56,14 @@ public:
 		if (!signal) {
 			return {};
 		}
-
 		auto* node = static_cast<NodeType*>(signal);
 		// Access member via pointer-to-member syntax (node->*MemberPtr)
 		const auto& target_signal = node->*MemberPtr;
-
 		std::vector<std::pair<uint64_t, std::string>> result;
 		result.reserve(target_signal.m.listeners.size());
-
 		for (const auto& group : target_signal.m.listeners) {
-			result.emplace_back(reinterpret_cast<uint64_t>(group.node.get()), group.identifier);
+			result.emplace_back(reinterpret_cast<uint64_t>(group.uid.data()), group.identifier);
 		}
-
 		return result;
 	}
 
@@ -76,21 +72,22 @@ public:
 		if (!signal) {
 			return;
 		}
-
 		auto* node = static_cast<NodeType*>(signal);
 		auto& target_signal = node->*MemberPtr;
-
 		target_signal.m.listeners.clear();
 		target_signal.m.listeners.reserve(data.size());
-
-		for (const auto& [node_ptr_val, identifier] : data) {
+		for (const auto& [uid, fn_identifier] : data) {
 			using SigGroupType = typename std::decay_t<decltype(target_signal)>::SigGroup;
-
 			SigGroupType group;
-			group.node = reinterpret_cast<toast::Node*>(node_ptr_val);
-			group.identifier = identifier;
-			group.cb = nullptr;
-
+			group.uid = uid;
+			group.identifier = fn_identifier;
+			group.node = nullptr;
+			group.cb = [](Args...) { };
+			// TODO: reconstruct group.node (toast::Box<toast::Node>) and group.cb
+			// (callback_t) from node_ptr_val/identifier. These aren't serialized
+			// as live objects, so they need to be rebuilt/rebound here (e.g. by
+			// resolving node_ptr_val back to a real Node and re-subscribing the
+			// appropriate callback for `identifier`) rather than default-constructed.
 			target_signal.m.listeners.push_back(std::move(group));
 		}
 	}
