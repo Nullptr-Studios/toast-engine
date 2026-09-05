@@ -23,13 +23,10 @@ class VulkanCore;
 
 /**
  * @class MaterialRuntime
- * @brief GPU-facing view of one Material
+ * @brief GPU-facing view of one Material, owned by the render thread
  *
- * Merges the reflection of the material's shader vector, bakes the material's
- * DataValues into CPU bytes using reflection offsets, resolves texture handles
- * and owns the VulkanSamplers described by the material's sampler settings
- *
- * Owned by the render thread
+ * Merges the reflection of the material's shader vector, bakes its DataValues into CPU bytes at the
+ * reflected offsets, resolves texture handles and owns the samplers its settings describe
  */
 class MaterialRuntime {
 public:
@@ -68,10 +65,7 @@ public:
 
 	auto uniformBlobs() -> const std::vector<UboBlob>&;
 
-	/**
-	 * @brief Gets the push-constant blob with material values baked in
-	 * @returns a reference to the push-constant blob
-	 */
+	/// @brief The push-constant blob with material values baked in
 	auto pushBlob() -> const std::vector<std::byte>&;
 
 	[[nodiscard]]
@@ -79,11 +73,29 @@ public:
 		return m_model_offset;
 	}
 
+	/// @returns byte offset of the push-constant "jointOffset" field, if the shader declares one
+	[[nodiscard]]
+	auto jointOffsetOffset() const -> std::optional<uint32_t> {
+		return m_joint_offset_offset;
+	}
+
+	/// @returns push-constant offset of `instanceBase`, when the shader draws instanced
+	///
+	/// Declaring it means the model matrix comes from the instance buffer, which is what lets many proxies
+	/// collapse into one draw. A shader declaring `model` instead keeps the per-draw path; both work, chosen
+	/// per material by what its push block holds
+	[[nodiscard]]
+	auto instanceBaseOffset() const -> std::optional<uint32_t> {
+		return m_instance_base_offset;
+	}
+
 	struct TextureSlot {
 		uint32_t set = 0;
 		uint32_t binding = 0;
 		assets::Handle<assets::Texture> texture;
 		vk::Sampler sampler;
+		std::string default_fallback;    ///< "white" (default), "black", or "flat_normal" - see ShaderInspectorMeta
+		bool linear_data = false;        ///< [Linear] - must not be bound an sRGB-encoded texture
 	};
 
 	auto textureSlots() -> const std::vector<TextureSlot>&;
@@ -108,6 +120,8 @@ private:
 	std::vector<UboBlob> m_ubo_blobs;
 	std::vector<std::byte> m_push_blob;
 	std::optional<uint32_t> m_model_offset;
+	std::optional<uint32_t> m_joint_offset_offset;
+	std::optional<uint32_t> m_instance_base_offset;
 	std::vector<TextureSlot> m_texture_slots;
 	bool m_values_dirty = true;
 	bool m_textures_dirty = true;

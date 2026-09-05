@@ -51,7 +51,11 @@ else ()
     set(EXTERNAL_DLLS_RELEASE ${EXTERNAL_LIBS_RELEASE})
 endif ()
 
-file(GLOB_RECURSE SOURCE "src/*.cpp" "generated/*.cpp" "generated/*.cc")
+# CONFIGURE_DEPENDS: run_codegen() deletes and regenerates engine/generated on every configure, and the
+# reflection generator writes there too. Without it this list is frozen at the first configure, so a rebuild
+# that re-globs for any other reason can end up with a target that no longer compiles the .pb.cc files - which
+# surfaces as a few hundred unresolved protobuf externals at link time, nowhere near the actual cause
+file(GLOB_RECURSE SOURCE CONFIGURE_DEPENDS "src/*.cpp" "generated/*.cpp" "generated/*.cc")
 add_library(toast_engine SHARED ${SOURCE})
 
 # Reflection generator
@@ -115,14 +119,28 @@ foreach (config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
 endforeach ()
 
 target_compile_definitions(toast_engine PRIVATE TOAST_EXPORT)
+
+# windows.h defines min/max as macros, which breaks any std::numeric_limits<T>::max() that lands in the
+# same translation unit. With UNITY_BUILD on, which sources share a TU shifts every time a file is added,
+# so this surfaces as unrelated files suddenly failing to compile - pin it off for good.
+if (WIN32)
+    target_compile_definitions(toast_engine PRIVATE NOMINMAX)
+endif ()
 target_precompile_headers(toast_engine PRIVATE pch.h)
 # vma.cpp defines VMA_IMPLEMENTATION, it must not consume the PCH
 set_source_files_properties(src/toast/renderer/vma.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
+# hdr_image.cpp defines STB_IMAGE_IMPLEMENTATION, same reasoning as vma.cpp above
+set_source_files_properties(src/toast/assets/hdr_image.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
 
 # protoc-generated .pb.cc files use file-local symbol names, so avoid UNITY inclusion
 file(GLOB _TOAST_PROTO_SOURCES "generated/*.pb.cc")
 set_source_files_properties(${_TOAST_PROTO_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-set_target_properties(toast_engine PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
+# Off for the clang-tidy build: a unity TU collapses every source into unity_N.cxx, so compile_commands.json
+# has no entry for the file you want to check. Configure that one with -DTOAST_UNITY_BUILD=OFF
+option(TOAST_UNITY_BUILD "Merge engine sources into unity translation units" ON)
+if (TOAST_UNITY_BUILD)
+    set_target_properties(toast_engine PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
+endif ()
 
 target_compile_definitions(toast_engine PUBLIC
         $<$<CONFIG:Debug>:DEBUG>
@@ -131,6 +149,9 @@ target_compile_definitions(toast_engine PUBLIC
 )
 
 if (MSVC)
+    # UNITY_BUILD merges 8 sources per TU, and the resulting objects already sit near COFF's 65k section
+    # ceiling - adding a single source file is enough to push one over it
+    target_compile_options(toast_engine PRIVATE /bigobj)
     target_compile_options(toast_engine PRIVATE $<$<CONFIG:Release>:/O2;/Ob2;/Oi;/Ot;/GL;/Gy;/Gw;/fp:fast>)
     target_link_options(toast_engine PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif ()

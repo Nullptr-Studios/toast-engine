@@ -7,13 +7,17 @@ struct ClusterParams
     float3 _pad0;
 };
 
+// Only the first two members are read here, but this indexes the same buffer mesh.slang does, so the whole
+// layout - stride included - has to match renderer::VulkanRenderer::GpuLight exactly
 struct GpuLight
 {
     float4 worldPosRange;   // xyz world-space position, w = attenuation range
     float4 viewPosType;     // xyz view-space position (culling only), w = type (0=point,1=spot)
     float4 colorIntensity;  // rgb color, a intensity
-    float4 directionPad;    // xyz world-space direction (spot only)
-    float4 coneAngles;      // x = cos(outer), y = cos(inner)
+    float4 directionPad;    // xyz world-space direction (spot only), w = shadow layer index, -1 = not casting
+    float4 coneAngles;      // x = cos(outer), y = cos(inner), z = shadow near, w = shadow far
+    float4 shadowAtlas;     // x = fraction of the shadow layer this light rendered into
+    float4x4 shadowViewProjection;
 };
 
 struct ClusterAABB

@@ -1,11 +1,12 @@
 /// @file VulkanCore.hpp
 /// @author dario
-/// @date 14/05/2026.
+/// @date 14/05/2026
 
 #pragma once
 
 #include "vulkan_common.hpp"
 
+#include <algorithm>
 #include <external/inc/renderdoc/renderdoc_app.h>
 #include <limits>
 #include <mutex>
@@ -43,10 +44,7 @@ struct DeviceScore {
 
 	std::vector<std::string> missing_extensions;
 
-	/**
-	 * @brief Converts the device score to a string representation.
-	 * @return A string containing the device score details.
-	 */
+	/// @brief Converts the device score to a string representation
 	[[nodiscard]]
 	auto toString() const noexcept -> std::string;
 };
@@ -118,6 +116,51 @@ public:
 		return rdoc_api;
 	}
 
+	/// @returns true when ray queries and acceleration structures are available
+	///
+	/// Every traceable feature keeps its raster path: RT replaces how something is computed, never whether
+	/// it exists
+	[[nodiscard]]
+	auto isRayTracingSupported() const noexcept -> bool {
+		return m_ray_tracing_supported;
+	}
+
+	/// @returns the device address of @p buffer
+	[[nodiscard]]
+	auto getBufferAddress(vk::Buffer buffer) const -> vk::DeviceAddress {
+		vk::BufferDeviceAddressInfo info {};
+		info.buffer = buffer;
+		return m_device.getBufferAddress(info);
+	}
+
+	/// @returns bytes to allocate so @p needed bytes are reachable at an aligned address
+	///
+	/// One alignment of slack: the allocation's own address does not satisfy the stricter AS requirement, so
+	/// the usable address is rounded up inside it
+	[[nodiscard]]
+	auto getScratchAllocationSize(vk::DeviceSize needed) const noexcept -> vk::DeviceSize {
+		return needed + std::max(m_as_scratch_alignment, 1u);
+	}
+
+	/// @returns the first address inside @p buffer a build may use as scratch
+	///
+	/// Pair with getScratchAllocationSize(), which reserves the slack this rounds into. Getting it wrong
+	/// corrupts the build and takes the device out later, rather than failing here
+	[[nodiscard]]
+	auto getAlignedScratchAddress(vk::Buffer buffer) const -> vk::DeviceAddress {
+		const auto alignment = static_cast<vk::DeviceAddress>(std::max(m_as_scratch_alignment, 1u));
+		return (getBufferAddress(buffer) + alignment - 1) & ~(alignment - 1);
+	}
+
+	/// @returns true when VK_EXT_frame_boundary is enabled, so submits can carry a frame delimiter
+	///
+	/// The editor never presents, so a graphics debugger has nothing to delimit frames by and can report
+	/// seeing no API at all. This supplies the boundary instead
+	[[nodiscard]]
+	auto isFrameBoundarySupported() const noexcept -> bool {
+		return m_frame_boundary_supported;
+	}
+
 	/// @brief Which Nsight Graphics activity (if any) is initialized for this process - none if no Nsight
 	/// Graphics installation was found, or its SDK init failed
 	[[nodiscard]]
@@ -126,10 +169,10 @@ public:
 	}
 
 #if defined(_WIN32)
-	/// @brief Lazily activates Nsight GPU Trace on its first call (no-op afterwards, and a no-op entirely
-	/// when getNsightMode() isn't gpu_trace). Blocks until the Nsight Graphics host application attaches -
-	/// must only be called from the render thread's F12 handler, never eagerly at startup, or it can hang
-	/// the engine indefinitely waiting for a host that may never come. See vulkan_core.cpp for the full story
+	/// @brief Lazily activates Nsight GPU Trace on first call; no-op afterwards and unless mode is gpu_trace
+	///
+	/// @warning Blocks until the Nsight Graphics host attaches - render thread's F12 handler only, never at
+	/// startup, or it hangs the engine waiting for a host that may never come
 	void activateNsightGpuTraceIfNeeded() const;
 #endif
 
@@ -159,31 +202,20 @@ public:
 	}
 
 private:
-	/**
-	 * Evaluates available Vulkan physical devices and selects the most suitable one
-	 * based on required extension support, queue family constraints, and a calculated suitability score.
-	 * Updates internal state with the selected device and corresponding queue family indices
-	 *
-	 * Logs evaluation details, scoring breakdowns, and rejection criteria for each candidate
-	 * @param required_device_extensions A span of C-string pointers specifying the Vulkan device
-	 *        extensions that must be supported by the selected physical device
-	 */
+	/// @brief Picks the highest-scoring physical device supporting @p required_device_extensions, and stores
+	/// it with its queue family indices
+	///
+	/// Logs the scoring breakdown and rejection reason for every candidate
 	void pickPhysicalDevice(std::span<const char* const> required_device_extensions);
 	/**
-	 * Creates a Vulkan logical device and initializes the associated memory allocator.
+	 * Creates a Vulkan logical device and initializes the associated memory allocator
 	 */
 	void createLogicalDeviceAndAllocator(std::span<const char* const> required_device_extensions);
 
-	/**
-	 * Evaluates a Vulkan physical device suitability by computing a weighted score based on device type,
-	 * available memory, hardware limits, feature support, extension availability, API version, and queue
-	 * family configuration. Required extensions are validated against the device, applying penalties for
-	 * missing capabilities and rewards for supported optional extensions and modern Vulkan features
-	 *
-	 * @param device The Vulkan physical device to evaluate.
-	 * @param required_device_extensions A span of required device extension names that the device must support
-	 * @return A DeviceScore structure containing individual category scores and the aggregated total score
-	 */
+	/// @brief Weighted suitability score for @p device: type, memory, limits, features, extensions, API
+	/// version and queue families
+	///
+	/// Penalties rather than gates, so the total ranks candidates instead of rejecting them
 	[[nodiscard]]
 	auto calculateDeviceScore(const vk::PhysicalDevice& device, std::span<const char* const> required_device_extensions)
 	    -> DeviceScore;
@@ -222,13 +254,21 @@ private:
 
 	mutable std::mutex m_graphics_submit_mutex;
 
-	// renderdoc api
 	RENDERDOC_API_1_6_0* rdoc_api = nullptr;
 
 	// Mutated lazily from activateNsightGpuTraceIfNeeded(), which callers reach through a const VulkanCore*
 	// (see VulkanRenderer::m_core) - the activation is logically a one-time cache fill, not a state change
 	// callers need to observe through a non-const handle
 	mutable NsightMode m_nsight_mode = NsightMode::none;
+
+	/// Whether VK_EXT_frame_boundary was available and enabled on the device
+	bool m_frame_boundary_supported = false;
+
+	/// Whether acceleration structures + ray query were available and enabled
+	bool m_ray_tracing_supported = false;
+
+	/// minAccelerationStructureScratchOffsetAlignment, queried once when RT is available
+	uint32_t m_as_scratch_alignment = 0;
 	mutable bool m_nsight_gputrace_activated = false;
 };
 }

@@ -1,55 +1,8 @@
 import toast;
 
-struct DirectionalLightGpu
-{
-    float4 direction;        // world-space, w unused
-    float4 colorIntensity;   // rgb color, a intensity
-};
-
-struct CameraUBO
-{
-    float4x4 view;
-    float4x4 projection;
-    float4x4 viewProjection;
-
-    float3 position;
-    float time;
-
-    float4 ambientColorIntensity;    // rgb color, a intensity; zero if there's no AmbientLight
-    uint4 directionalLightCountPad;  // x = directionalLightCount, yzw unused padding
-    DirectionalLightGpu directionalLights[4];
-    uint4 renderModePad;             // x = render mode (0 Lit, 1 ClusterHeatmap), yzw unused padding
-};
-
-[[vk::binding(0,0)]]
-ConstantBuffer<CameraUBO> gCamera;
-
-struct ClusterParams
-{
-    float4x4 inverseProjection;
-    uint4 clusterDims;         // x,y,z dims, w = maxLightsPerCluster
-    float4 screenSizeNearFar;  // x,y screen dims, z near, w far
-    uint lightCount;
-    float3 _pad0;
-};
-
-struct GpuLight
-{
-    float4 worldPosRange;   // xyz world-space position, w = attenuation range
-    float4 viewPosType;     // xyz view-space position (culling only), w = type (0=point,1=spot)
-    float4 colorIntensity;  // rgb color, a intensity
-    float4 directionPad;    // xyz world-space direction (spot only)
-    float4 coneAngles;      // x = cos(outer), y = cos(inner)
-};
-
-[[vk::binding(1,0)]]
-ConstantBuffer<ClusterParams> gClusterParams;
-[[vk::binding(2,0)]]
-StructuredBuffer<GpuLight> gLights;
-[[vk::binding(3,0)]]
-StructuredBuffer<uint> gClusterLightGrid;
-[[vk::binding(4,0)]]
-StructuredBuffer<uint> gLightIndexList;
+// The scene lighting model, and with it every set-0 binding the engine fills in. Anything else that can
+// describe a Surface imports the same module and resolves through identical code
+import lighting;
 
 struct MaterialUBO
 {
@@ -61,6 +14,38 @@ struct MaterialUBO
 
     [Reflect] [Name("Roughness")] [Range(0.045, 1.0)]
     float roughness;
+
+    // 0 disables the test, so a material only pays for it by opting in. Cutout is order-independent and
+    // still writes depth, which is what makes it right for foliage and grate cards where blending is not
+    [Reflect] [Name("Alpha Cutoff")] [Range(0.0, 1.0)]
+    float alphaCutoff;
+
+    // How much of gOcclusionMap's baked ambient occlusion to apply, glTF's occlusionTexture.strength. 0
+    // ignores the map entirely, which is what a material authored before these parameters existed bakes to
+    [Reflect] [Name("Occlusion Strength")] [Range(0.0, 1.0)]
+    float occlusionStrength;
+
+    // Self-illumination added after shading and before tonemapping, so it survives being in shadow but is
+    // still rolled off by the Reinhard curve. Zero intensity (the pre-existing-material default) is no emission
+    [Reflect] [Color] [Name("Emissive Color")]
+    float3 emissiveColor;
+
+    [Reflect] [Name("Emissive Intensity")] [Range(0.0, 64.0)]
+    float emissiveIntensity;
+
+    // 0=R, 1=G, 2=B, 3=A. R is the default so materials predating these keep working; glTF packs metal and
+    // roughness into one texture, and a channel selector is what lets it bind to several slots at once
+    //
+    // No [Group]: a grouped parameter is looked up inside the group's TOML table, and these sit at the top
+    // level beside the factors they pair with
+    [Reflect] [Name("Metallic Channel")] [Range(0.0, 3.0)]
+    float metallicChannel;
+
+    [Reflect] [Name("Roughness Channel")] [Range(0.0, 3.0)]
+    float roughnessChannel;
+
+    [Reflect] [Name("Occlusion Channel")] [Range(0.0, 3.0)]
+    float occlusionChannel;
 };
 
 [[vk::binding(0,1)]]
@@ -70,9 +55,80 @@ ConstantBuffer<MaterialUBO> gMaterial;
 [[vk::binding(1,1)]]
 Sampler2D gAlbedo;
 
-struct PushConstants
+// Tangent-space normal map; unbound materials fall back to a flat (0.5,0.5,1.0) "no perturbation" normal
+[Reflect] [Linear] [Name("Normal")] [Default("flat_normal")]
+[[vk::binding(2,1)]]
+Sampler2D gNormal;
+
+// Unbound falls back to white, the identity multiplier, so the factor alone drives a uniform material.
+// Black would look equally plausible and silently zero the product, making Metallic do nothing
+[Reflect] [Linear] [Name("Metallic Map")]
+[[vk::binding(3,1)]]
+Sampler2D gMetallicMap;
+
+// Roughness map, multiplied by gMaterial.roughness and read from gMaterial.roughnessChannel; unbound falls
+// back to white so the factor alone controls uniformly-rough materials
+[Reflect] [Linear] [Name("Roughness Map")]
+[[vk::binding(4,1)]]
+Sampler2D gRoughnessMap;
+
+// Baked ambient occlusion read from gMaterial.occlusionChannel, glTF's occlusionTexture. Attenuates the ambient term only -
+// occlusion is an approximation of indirect light being blocked, and applying it to direct lighting darkens
+// surfaces a light source can plainly see. Unbound falls back to white (nothing occluded)
+[Reflect] [Linear] [Name("Occlusion Map")]
+[[vk::binding(5,1)]]
+Sampler2D gOcclusionMap;
+
+// Multiplied by emissiveColor * emissiveIntensity; unbound falls back to white so the factors alone drive
+// uniformly-emissive materials
+[Reflect] [Name("Emissive Map")]
+[[vk::binding(6,1)]]
+Sampler2D gEmissiveMap;
+
+// Picks one channel out of a sampled texel. The index is uniform across a draw, so the branch costs nothing
+// beyond the compare - and doing it this way lets a packed texture serve several material slots at once
+float channelOf(float4 value, float index)
+{
+    if (index >= 2.5)
+    {
+        return value.a;
+    }
+    if (index >= 1.5)
+    {
+        return value.b;
+    }
+    if (index >= 0.5)
+    {
+        return value.g;
+    }
+    return value.r;
+}
+
+// One entry per drawn instance, filled by the engine each frame. Mirrors VulkanRenderer::InstanceData
+struct InstanceData
 {
     float4x4 model;
+
+    // Index of this instance's first matrix in gJointMatrices - see resolveSkinning() in vulkan_renderer.cpp
+    uint jointOffset;
+
+    // Three scalars, not a uint3: std430 gives a uint3 16-byte alignment and a 96-byte stride, while the C++
+    // side packs glm::uvec3 at 80. Every instance past the first then reads across the boundary, which looks
+    // like geometry collapsing toward the origin rather than like a layout bug
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
+[[vk::binding(13,0)]]
+StructuredBuffer<InstanceData> gInstances;
+
+struct PushConstants
+{
+    // Where this draw's run starts in gInstances. Instances within a draw are addressed by SV_InstanceID on
+    // top of it, so a run of N proxies sharing a mesh and material is one push and one draw rather than N of
+    // each. The engine sorts proxies so those runs are contiguous - see VulkanRenderer::tick()
+    uint instanceBase;
 };
 
 [[vk::push_constant]]
@@ -114,14 +170,25 @@ struct VSOutput
 
     [[vk::location(4)]]
     float viewSpaceZ : TEXCOORD3;
+
+    [[vk::location(5)]]
+    float3 worldTangent : TANGENT;
+
+    [[vk::location(6)]]
+    float tangentSign : TEXCOORD4;
 };
 
 [shader("vertex")]
-VSOutput vertexMain(VSInput input)
+VSOutput vertexMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
 
-    float4 worldPos = mul(gPush.model, float4(input.position, 1.0));
+    // Draws always pass firstInstance = 0, so instanceID is zero-based within this draw and the run's start
+    // comes from the push constant. That avoids depending on whether SV_InstanceID maps to SPIR-V's
+    // InstanceIndex (which includes firstInstance) or to the base-relative HLSL meaning
+    float4x4 model = gInstances[gPush.instanceBase + instanceID].model;
+
+    float4 worldPos = mul(model, float4(input.position, 1.0));
 
     output.position =
         mul(
@@ -134,8 +201,15 @@ VSOutput vertexMain(VSInput input)
     output.worldNormal =
         normalize(
             mul(
-                (float3x3)gPush.model,
+                (float3x3)model,
                 input.normal));
+
+    output.worldTangent =
+        normalize(
+            mul(
+                (float3x3)model,
+                input.tangent.xyz));
+    output.tangentSign = input.tangent.w;
 
     output.uv =
         input.uv;
@@ -145,180 +219,154 @@ VSOutput vertexMain(VSInput input)
     return output;
 }
 
-static const float kPi = 3.14159265359;
+// No skinned variant here: skinning.slang poses into a vertex buffer once, so a posed instance arrives at
+// vertexMain as an ordinary draw. The identity model matrix is per the glTF spec - a skinned node's own
+// transform is not applied, so posed vertices are already in world space
 
-// Trowbridge-Reitz GGX normal distribution
-float distributionGGX(float3 N, float3 H, float roughness)
+// Shades one fragment, and hands back the geometry buffer's contents through @p outNormalRoughness
+//
+// Everything above the handoff to lighting.slang is texture fetches and TBN reconstruction
+//
+// An inout rather than a returned struct: the write has to land once the shading normal is final and before
+// any debug view returns, and the zero at the top covers the paths that never get there
+float4 shadeSurface(VSOutput input, inout float4 outNormalRoughness, inout float3 outIndirectDiffuse)
 {
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = max(dot(N, H), 0.0);
-    float NdotH2 = NdotH * NdotH;
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = kPi * denom * denom;
-    return a2 / max(denom, 0.0000001);
-}
+    // Zero-length normal = "nothing here", matching the attachment's clear. A fragment that discards or
+    // returns before the normal is known must not leave the previous draw's value in place
+    outNormalRoughness = float4(0.0, 0.0, 0.0, 0.0);
+    outIndirectDiffuse = float3(0.0, 0.0, 0.0);
 
-// Schlick-GGX geometry term, one side
-float geometrySchlickGGX(float NdotV, float roughness)
-{
-    float r = roughness + 1.0;
-    float k = (r * r) / 8.0;
-    float denom = NdotV * (1.0 - k) + k;
-    return NdotV / max(denom, 0.0000001);
-}
+    float4 albedoSample = gAlbedo.Sample(input.uv);
+    float alpha = albedoSample.a * gMaterial.tint.a;
 
-// Smith geometry term, both view and light sides
-float geometrySmith(float3 N, float3 V, float3 L, float roughness)
-{
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float ggxV = geometrySchlickGGX(NdotV, roughness);
-    float ggxL = geometrySchlickGGX(NdotL, roughness);
-    return ggxV * ggxL;
-}
+    // The alpha test lives in fragmentMainCutout, not here: a reachable `discard` forces the whole pipeline
+    // onto late-Z, so in the shared body every material paid for a branch almost none of them take
 
-float3 fresnelSchlick(float cosTheta, float3 F0)
-{
-    return F0 + (float3(1.0, 1.0, 1.0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
+    float3 albedo = albedoSample.rgb * gMaterial.tint.rgb;
+    float metallic = clamp(gMaterial.metallic * channelOf(gMetallicMap.Sample(input.uv), gMaterial.metallicChannel), 0.0, 1.0);
+    float roughness = clamp(gMaterial.roughness * channelOf(gRoughnessMap.Sample(input.uv), gMaterial.roughnessChannel), 0.045, 1.0);
+    float occlusion = lerp(
+        1.0,
+        channelOf(gOcclusionMap.Sample(input.uv), gMaterial.occlusionChannel),
+        clamp(gMaterial.occlusionStrength, 0.0, 1.0)
+    );
 
-// Cook-Torrance specular + Lambertian diffuse, energy-conserving split via Fresnel/metallic
-float3 shadeLight(float3 N, float3 V, float3 L, float3 radiance, float3 albedo, float metallic, float roughness)
-{
-    float NdotL = max(dot(N, L), 0.0);
-    if (NdotL <= 0.0)
+    // Gram-Schmidt re-orthogonalize the interpolated tangent against the interpolated normal, then derive
+    // the bitangent from the vertex-supplied handedness sign - standard TBN reconstruction per-pixel
+    float3 N = normalize(input.worldNormal);
+    float3 T = input.worldTangent - N * dot(N, input.worldTangent);
+    float tangentLength = length(T);
+    float handedness = input.tangentSign;
+
+    // Common, not an edge case - glTF only requires a tangent alongside a normal map. Normalizing the zero
+    // vector gives NaN, which spreads into N even for a flat normal map, so only ambient lands
+    if (tangentLength < 1e-6 || abs(handedness) < 1e-6)
     {
-        return float3(0.0, 0.0, 0.0);
+        float3 reference = abs(N.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+        T = normalize(cross(reference, N));
+        handedness = 1.0;
+    }
+    else
+    {
+        T = T / tangentLength;
     }
 
-    float3 H = normalize(V + L);
-    float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    float3 B = cross(N, T) * handedness;
 
-    float NDF = distributionGGX(N, H, roughness);
-    float G = geometrySmith(N, V, L, roughness);
-    float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+    // Before the normal map perturbs N: a per-texel normal scatters the shadow offset across a flat floor,
+    // which reads as blotchy self-shadowing
+    float3 geometricNormal = N;
 
-    float3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001;
-    float3 specular = numerator / denominator;
+    float3 tangentNormal = gNormal.Sample(input.uv).rgb * 2.0 - 1.0;
+    N = normalize(T * tangentNormal.x + B * tangentNormal.y + N * tangentNormal.z);
 
-    float3 kD = (float3(1.0, 1.0, 1.0) - F) * (1.0 - metallic);
+    // The normal-mapped normal, not the vertex one: a screen-space trace has to leave along the direction
+    // shading actually used, or reflections disagree with the lit image. Roughness rides along because blur
+    // cannot be recovered from depth
+    outNormalRoughness = float4(N, roughness);
 
-    return (kD * albedo / kPi + specular) * radiance * NdotL;
+    float3 V = normalize(gCamera.position - input.worldPosition);
+
+    Surface surface;
+    surface.worldPosition = input.worldPosition;
+    surface.normal = N;
+    surface.geometricNormal = geometricNormal;
+    surface.viewDirection = V;
+    surface.albedo = albedo;
+    surface.metallic = metallic;
+    surface.roughness = roughness;
+    surface.occlusion = occlusion;
+    surface.viewSpaceZ = input.viewSpaceZ;
+    surface.pixel = input.position.xy;
+
+    ShadingResult lit = shadeSurfaceLighting(surface);
+    outIndirectDiffuse = lit.indirectDiffuse;
+
+    // A visualisation, not radiance - emission would be painting light onto a picture of the albedo. The
+    // heatmap now writes the geometry buffer before returning, which is harmless: the term it feeds is zero
+    // in every debug mode
+    if (lit.isDebugView)
+    {
+        return float4(lit.color, 1.0);
+    }
+
+    float3 color = lit.color;
+
+    // Emission is not lighting: it neither casts nor receives, so it lands after shadowing and outside the
+    // albedo/metallic split entirely
+    color += gMaterial.emissiveColor * gMaterial.emissiveIntensity * gEmissiveMap.Sample(input.uv).rgb;
+
+    // Linear HDR out, deliberately unbounded and un-encoded. The scene renders into a float target and
+    // renderer::TonemapPass maps the whole thing to the display once, at the end - doing it here would make
+    // the curve per-material policy, and would blend transparent surfaces against already-tonemapped colour
+    return float4(color, alpha);
 }
 
-// Inverse-square falloff, smoothly windowed to zero at range - avoids the classic hard cutoff pop
-float attenuateRange(float dist, float range)
+// A struct, because Slang assigns `out` parameters by declaration order and ignores an SV_Target index
+// written on one - which swapped the attachments and rendered the whole viewport as the geometry buffer
+struct FragmentOutput
 {
-    float rangeFalloff = clamp(1.0 - pow(dist / max(range, 0.0001), 4.0), 0.0, 1.0);
-    rangeFalloff = rangeFalloff * rangeFalloff;
-    return rangeFalloff / max(dist * dist, 0.0001);
-}
+    float4 color : SV_Target0;
+    float4 normalRoughness : SV_Target1;
+    float4 indirectDiffuse : SV_Target2;
+};
 
-// Cluster light-count -> color ramp for the clustered-lighting debug view (blue = empty, red = hot).
-// kHeatmapMaxLights is the count that reads as fully red; tune to whatever "too many lights in one
-// cluster" means for the scene you're profiling
-float3 clusterHeatmapColor(uint lightCount)
+// Two entry points over one shading body, differing only in whether a discard is reachable
+//
+// A reachable `discard` forces the pipeline onto late-Z, so an occluded fragment pays for every fetch and
+// lookup before being thrown away. A `bool` parameter is not enough - Slang keeps the branch and its OpKill
+// - so the test has to be lexically absent from the fast path. Verify with
+// `slangc mesh.slang -target spirv-assembly -entry fragmentMain -stage fragment | grep OpKill`
+[shader("fragment")]
+FragmentOutput fragmentMain(VSOutput input)
 {
-    const float kHeatmapMaxLights = 8.0;
-    float t = clamp(float(lightCount) / kHeatmapMaxLights, 0.0, 1.0);
+    FragmentOutput output;
+    output.normalRoughness = float4(0.0, 0.0, 0.0, 0.0);
 
-    float3 c0 = float3(0.0, 0.0, 1.0);
-    float3 c1 = float3(0.0, 1.0, 0.0);
-    float3 c2 = float3(1.0, 1.0, 0.0);
-    float3 c3 = float3(1.0, 0.0, 0.0);
-
-    if (t < 0.333) return lerp(c0, c1, t / 0.333);
-    if (t < 0.667) return lerp(c1, c2, (t - 0.333) / 0.334);
-    return lerp(c2, c3, (t - 0.667) / 0.333);
+    float3 indirectDiffuse = float3(0.0, 0.0, 0.0);
+    output.color = shadeSurface(input, output.normalRoughness, indirectDiffuse);
+    output.indirectDiffuse = float4(indirectDiffuse, 1.0);
+    return output;
 }
 
 [shader("fragment")]
-float4 fragmentMain(VSOutput input) : SV_Target0
+FragmentOutput fragmentMainCutout(VSOutput input)
 {
-    // Clustered PointLight/Spotlight lookup, via the interpolated view-space Z (log-slice inverse) and this
-    // fragment's screen-space tile - must match the linearization ClusterLightingPass's compute shaders use
-    // (i + j*dimX + k*dimX*dimY). Computed up front since both the heatmap debug view and normal shading need it
-    float dist = max(-input.viewSpaceZ, gClusterParams.screenSizeNearFar.z);
-    float near = gClusterParams.screenSizeNearFar.z;
-    float far = gClusterParams.screenSizeNearFar.w;
-    uint dimX = gClusterParams.clusterDims.x;
-    uint dimY = gClusterParams.clusterDims.y;
-    uint dimZ = gClusterParams.clusterDims.z;
-
-    uint zSlice = uint(clamp(log(dist / near) * float(dimZ) / log(far / near), 0.0, float(dimZ - 1)));
-
-    float2 tileSize = gClusterParams.screenSizeNearFar.xy / float2(dimX, dimY);
-    uint2 tile = uint2(clamp(input.position.xy / tileSize, float2(0.0, 0.0), float2(dimX - 1, dimY - 1)));
-
-    uint clusterIndex = tile.x + tile.y * dimX + zSlice * dimX * dimY;
-    uint clusterCount = dimX * dimY * dimZ;
-
-    uint lightCountInCluster = 0;
-    if (clusterIndex < clusterCount)
-    {
-        lightCountInCluster = gClusterLightGrid[clusterIndex];
-    }
-
-    // Debug view: skip shading entirely and show the raw per-cluster light count instead
-    if (gCamera.renderModePad.x == 1)
-    {
-        return float4(clusterHeatmapColor(lightCountInCluster), 1.0);
-    }
-
+    // Sampled again here rather than reusing shadeSurface's fetch: the test has to happen before any shading
+    // work for the discard to be worth anything, and the duplicate costs one texture read on the only
+    // materials that opted into cutouts
     float4 albedoSample = gAlbedo.Sample(input.uv);
-    float3 albedo = albedoSample.rgb * gMaterial.tint.rgb;
-    float metallic = gMaterial.metallic;
-    float roughness = clamp(gMaterial.roughness, 0.045, 1.0);
-
-    float3 N = normalize(input.worldNormal);
-    float3 V = normalize(gCamera.position - input.worldPosition);
-
-    float3 color = float3(0.0, 0.0, 0.0);
-
-    // Global (unclustered) lights
-    for (uint di = 0; di < gCamera.directionalLightCountPad.x; ++di)
+    float alpha = albedoSample.a * gMaterial.tint.a;
+    if (gMaterial.alphaCutoff > 0.0 && alpha < gMaterial.alphaCutoff)
     {
-        DirectionalLightGpu light = gCamera.directionalLights[di];
-        float3 L = normalize(-light.direction.xyz);
-        float3 radiance = light.colorIntensity.rgb * light.colorIntensity.a;
-        color += shadeLight(N, V, L, radiance, albedo, metallic, roughness);
+        discard;
     }
 
-    if (clusterIndex < clusterCount)
-    {
-        uint indexBase = clusterIndex * gClusterParams.clusterDims.w;
+    FragmentOutput output;
+    output.normalRoughness = float4(0.0, 0.0, 0.0, 0.0);
 
-        for (uint li = 0; li < lightCountInCluster; ++li)
-        {
-            GpuLight light = gLights[gLightIndexList[indexBase + li]];
-
-            float3 toLight = light.worldPosRange.xyz - input.worldPosition;
-            float lightDist = length(toLight);
-            float3 L = toLight / max(lightDist, 0.0001);
-
-            float atten = attenuateRange(lightDist, light.worldPosRange.w);
-            if (light.viewPosType.w > 0.5)
-            {
-                // Spotlight: cone smoothstep between inner/outer angle on top of the range falloff
-                float cosAngle = dot(-L, normalize(light.directionPad.xyz));
-                atten *= smoothstep(light.coneAngles.x, light.coneAngles.y, cosAngle);
-            }
-
-            float3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * atten;
-            color += shadeLight(N, V, L, radiance, albedo, metallic, roughness);
-        }
-    }
-
-    // Flat ambient term - AmbientLight has no position/direction to shade directionally
-    color += gCamera.ambientColorIntensity.rgb * gCamera.ambientColorIntensity.a * albedo * (1.0 - metallic);
-
-    // No tonemapping existed anywhere in this engine before - raw PBR output clips to white the instant a
-    // light's radiance exceeds 1.0, instead of rolling off. Reinhard compresses HDR into displayable range,
-    // then gamma 2.2 undoes the display's sRGB decode so mid-tones don't look washed out
-    color = color / (color + float3(1.0, 1.0, 1.0));
-    color = pow(color, float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
-
-    return float4(color, gMaterial.tint.a * albedoSample.a);
+    float3 indirectDiffuse = float3(0.0, 0.0, 0.0);
+    output.color = shadeSurface(input, output.normalRoughness, indirectDiffuse);
+    output.indirectDiffuse = float4(indirectDiffuse, 1.0);
+    return output;
 }

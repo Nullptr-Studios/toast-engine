@@ -1,6 +1,6 @@
 /// @file debug_pass.hpp
 /// @author dario
-/// @date 10/06/2026.
+/// @date 10/06/2026
 
 #pragma once
 #include "../render_pass_base.hpp"
@@ -11,28 +11,36 @@
 #include <array>
 #include <glm/glm.hpp>
 #include <toast/world/gizmo_layout.hpp>
+#include <unordered_map>
 #include <vector>
 
 namespace renderer {
 class VulkanCore;
 class ClusterLightingPass;
 
-/**
- * @brief Editor/debug visualization pass: ground grid, immediate-mode debug lines, and axis gizmos
- *
- * Debug lines and gizmo transforms aren't owned by this class - they're queued via the free functions in
- * vulkan_renderer.hpp (debugDrawLine(), debugDrawBox(), debugDrawSphere(), debugDrawAxes()) between
- * beginFrameBuild() and submitFrame(), exactly like MeshInstanceProxy. They flow through the same
- * VulkanRenderer::RenderFrame snapshot
- */
+/// @brief Editor/debug visualization pass: ground grid, immediate-mode debug lines, and axis gizmos
+///
+/// Nothing drawn here is owned here - it is queued through vulkan_renderer.hpp's free functions and arrives
+/// in the same RenderFrame snapshot as a MeshInstanceProxy
 class DebugPass : public IRenderPass {
 public:
+	/// @param cluster_lighting_pass Optional. Only the cluster heatmap view reads it, so a renderer with no
+	///        clustered lighting - a fully ray-traced path, say - can still use the whole debug overlay
+	///        by passing nullptr
 	DebugPass(
 	    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent,
-	    const ClusterLightingPass& cluster_lighting_pass
+	    const ClusterLightingPass* cluster_lighting_pass = nullptr
 	);
 
 	~DebugPass() override;
+
+	/// Editor overlay, not scene content: ImGui and the debug primitives are authored as literal colours, and
+	/// running them through the tone curve would shift every one of them. Still depth-tested against the
+	/// scene - the output scope binds the depth buffer the world scope wrote
+	[[nodiscard]]
+	auto stage() const -> RenderStage override {
+		return RenderStage::overlay;
+	}
 
 	void record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) override;
 
@@ -64,14 +72,23 @@ private:
 	};
 
 	void createResources(const renderer::VulkanCore& core);
-	/// @brief Sets up a Dear ImGui context + the Vulkan backend, sharing this pass's dynamic-rendering scope.
-	/// Input is fed from RenderFrame::imgui_input (resolved main-thread-side, same pattern as the gizmo state)
-	/// since ImGui itself isn't thread-safe and NewFrame()/Render() below both run on the render thread
+
 	void initImGui(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format);
 	void createGizmoGeometry(const renderer::VulkanCore& core);
 	void createTranslateGizmoGeometry(const renderer::VulkanCore& core);
 	void createRotateGizmoGeometry(const renderer::VulkanCore& core);
 	void createScaleGizmoGeometry(const renderer::VulkanCore& core);
+
+	/// @brief Builds the billboard pipeline, its own ShaderLayout and its per-frame frame-UBO sets
+	void createBillboardResources(
+	    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent
+	);
+
+	/// @brief Returns the set-1 descriptor set bound to @p view, allocating it on first use
+	///
+	/// Whatever called debugDrawBillboard() picks the textures, so these are cached by view rather than
+	/// created up front. Debug icons are a fixed handful, so it never grows unbounded
+	auto billboardTextureSet(const renderer::VulkanCore& core, vk::ImageView view) -> vk::DescriptorSet;
 
 	/// @brief Grows @p buffer so it can hold at least @p required_vertex_count DebugVertex entries
 	void ensureLineCapacity(const renderer::VulkanCore& core, DynamicVertexBuffer& buffer, size_t required_vertex_count);
@@ -102,14 +119,26 @@ private:
 	vma::raii::Buffer m_scale_gizmo_vertex_buffer = nullptr;
 	std::array<GizmoHandleRange, 7> m_scale_gizmo_handles;
 
-	// Dear ImGui, for ad-hoc debug UI. Editor-viewport-only (this pass isn't constructed for the SDL/player
-	// window), so it doesn't need a platform backend - input is fed manually from RenderFrame::imgui_input
+	// Camera-facing textured icons, Separate shader/layout from the untextured debug
+	// shapes above, since those have no set 1 and no sampler
+	struct BillboardPushConstants {
+		glm::vec4 center_size;    ///< xyz world-space centre, w world-space edge length
+		glm::vec4 tint {1.0f};
+	};
+
+	VulkanPipeline m_billboard_pipeline;
+	ShaderLayout m_billboard_layout;
+	std::vector<vk::raii::DescriptorSet> m_billboard_frame_sets;
+	vk::raii::Sampler m_billboard_sampler = nullptr;
+	std::unordered_map<VkImageView, vk::raii::DescriptorSet> m_billboard_texture_sets;
+
 	bool m_imgui_ready = false;
 
-	// Non-owning; used to read back cluster light counts for the cluster-heatmap overlay's text labels.
-	// Always valid - engine.cpp constructs ClusterLightingPass before this pass and keeps it alive for the
-	// renderer's lifetime
 	const ClusterLightingPass* m_cluster_lighting_pass = nullptr;
+
+	float m_sky_intensity_ui = -1.0f;
+
+	std::array<char, 256> m_environment_uri_ui {};
 };
 
 }

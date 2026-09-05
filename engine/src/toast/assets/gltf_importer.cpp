@@ -4,17 +4,20 @@
 
 #define GLM_ENABLE_EXPERIMENTAL
 
+#include "animation.hpp"
 #include "asset_manager.hpp"
 #include "mesh.hpp"
 #include "prefab.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <fstream>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <nlohmann/json.hpp>
 #include <span>
@@ -76,20 +79,18 @@ auto percentDecode(std::string_view uri) -> std::string {
 	return out;
 }
 
-/// @brief Sniffs the KTX2 file signature (the fixed 12-byte magic every .ktx2 file starts with, per the
-/// KTX 2.0 spec) directly off the bytes, rather than trusting mimeType/extension - some pipelines already
-/// pack textures as KTX2 inside the glTF (via KHR_texture_basisu or just a raw .ktx2 uri/bufferView with no
-/// declared mimeType), and re-running them through toktx is both wasteful and pointless
+/// @brief Sniffs the KTX2 magic off the bytes rather than trusting mimeType or extension
+///
+/// Exporters ship KTX2 inside a glTF with no declared mimeType, and re-running those through toktx is
+/// wasteful and pointless
 auto isKtx2(std::span<const uint8_t> data) -> bool {
 	static constexpr std::array<uint8_t, 12> k_ktx2_magic {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
 	return data.size() >= k_ktx2_magic.size() && std::equal(k_ktx2_magic.begin(), k_ktx2_magic.end(), data.begin());
 }
 
-/// @brief Resolves an image's raw file bytes (this importer always parses with images_as_is, so these are
-/// undecoded PNG/JPEG bytes, not pixels) from whichever of the three ways glTF can store image data is
-/// actually present: an embedded GLB bufferView, a base64 data: URI, or a URI pointing at an external file
-/// relative to the source .gltf/.glb. Returns an empty vector (and logs) if none of these produced data -
-/// callers must not assume a non-empty result
+/// @brief Undecoded image bytes, from wherever glTF put them: a GLB bufferView, a data: URI, or a file
+///
+/// @returns empty when none of the three produced data, so callers must check
 auto loadImageBytes(const tg3_model& model, const tg3_image& img, const std::filesystem::path& base_dir, size_t index)
     -> std::vector<uint8_t> {
 	if (img.buffer_view != -1) {
@@ -224,16 +225,84 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			mesh_name_counts[base_name] = 1;
 		}
 
+		// A sparse accessor legitimately has buffer_view = -1, so this is not a malformed file. Indexing
+		// buffer_views with it reads out of bounds and hands back a pointer the memcpys below then trust
 		auto accessor_bytes = [&](int acc_idx) -> const uint8_t* {
 			const auto& acc = model.accessors[acc_idx];
+			if (acc.buffer_view < 0) {
+				return nullptr;
+			}
 			const auto& bv = model.buffer_views[acc.buffer_view];
 			const auto& buf = model.buffers[bv.buffer];
 			return buf.data.data + bv.byte_offset + acc.byte_offset;
 		};
 
-		auto get_stride = [&](int acc_idx, size_t tight_size) {
-			const auto& bv = model.buffer_views[model.accessors[acc_idx].buffer_view];
+		auto get_stride = [&](int acc_idx, size_t tight_size) -> size_t {
+			const auto& acc = model.accessors[acc_idx];
+			if (acc.buffer_view < 0) {
+				return tight_size;
+			}
+			const auto& bv = model.buffer_views[acc.buffer_view];
 			return bv.byte_stride != 0 ? bv.byte_stride : tight_size;
+		};
+
+		/**
+		 * @brief Reads a VEC3 accessor into a flat array, honouring sparse storage
+		 *
+		 * Morph targets are why: one moving 300 of 12000 vertices has no buffer view at all, and reading it
+		 * as dense crashed the importer on most models - exporters use sparse by default
+		 */
+		auto read_vec3_accessor = [&](int acc_idx) -> std::vector<glm::vec3> {
+			const auto& acc = model.accessors[acc_idx];
+			std::vector<glm::vec3> values(acc.count, glm::vec3(0.0F));
+
+			// Dense base values, when the accessor has any. A sparse accessor may still have a buffer view -
+			// then the sparse entries are edits layered on top of it, rather than on top of zeros
+			if (const uint8_t* data = accessor_bytes(acc_idx); data != nullptr) {
+				const size_t stride = get_stride(acc_idx, sizeof(glm::vec3));
+				for (uint64_t j = 0; j < acc.count; ++j) {
+					memcpy(&values[j], data + (j * stride), sizeof(glm::vec3));
+				}
+			}
+
+			const bool has_sparse = acc.sparse.is_sparse != 0 && acc.sparse.count > 0 && acc.sparse.indices.buffer_view >= 0 &&
+			                        acc.sparse.values.buffer_view >= 0;
+			if (!has_sparse) {
+				return values;
+			}
+
+			const auto& index_view = model.buffer_views[acc.sparse.indices.buffer_view];
+			const uint8_t* index_data =
+			    model.buffers[index_view.buffer].data.data + index_view.byte_offset + acc.sparse.indices.byte_offset;
+
+			const auto& value_view = model.buffer_views[acc.sparse.values.buffer_view];
+			const uint8_t* value_data =
+			    model.buffers[value_view.buffer].data.data + value_view.byte_offset + acc.sparse.values.byte_offset;
+
+			for (int32_t s = 0; s < acc.sparse.count; ++s) {
+				uint32_t target_index = 0;
+				switch (acc.sparse.indices.component_type) {
+					case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: target_index = index_data[s]; break;
+					case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: {
+						uint16_t narrow = 0;
+						memcpy(&narrow, index_data + (static_cast<size_t>(s) * sizeof(uint16_t)), sizeof(narrow));
+						target_index = narrow;
+						break;
+					}
+					default: {
+						memcpy(&target_index, index_data + (static_cast<size_t>(s) * sizeof(uint32_t)), sizeof(target_index));
+						break;
+					}
+				}
+
+				// An index past the accessor's own count is malformed; skip it rather than writing out of bounds
+				if (target_index >= values.size()) {
+					continue;
+				}
+				memcpy(&values[target_index], value_data + (static_cast<size_t>(s) * sizeof(glm::vec3)), sizeof(glm::vec3));
+			}
+
+			return values;
 		};
 
 		mesh_prim_to_file[i].resize(m.primitives_count);
@@ -263,11 +332,24 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			int uv_idx = find_attr("TEXCOORD_0");
 			int tan_idx = find_attr("TANGENT");
 			int col_idx = find_attr("COLOR_0");
+			int joints_idx = find_attr("JOINTS_0");
+			int weights_idx = find_attr("WEIGHTS_0");
 
 			const uint32_t vertex_count = model.accessors[pos_idx].count;
 			std::vector<renderer::Vertex> vertices(vertex_count);
 
 			const uint8_t* pos_data = accessor_bytes(pos_idx);
+			if (pos_data == nullptr) {
+				// Sparse positions are legal glTF but vanishingly rare, and the rest of this loop assumes a
+				// dense stride. Fail the primitive cleanly instead of reading from nothing
+				TOAST_ERROR(
+				    "AssetManager",
+				    "Mesh primitive {} of mesh {} stores POSITION in a sparse accessor, which is unsupported; aborting import",
+				    pi,
+				    i
+				);
+				return;
+			}
 			const uint8_t* norm_data = norm_idx != -1 ? accessor_bytes(norm_idx) : nullptr;
 			const uint8_t* uv_data = uv_idx != -1 ? accessor_bytes(uv_idx) : nullptr;
 			const uint8_t* tan_data = tan_idx != -1 ? accessor_bytes(tan_idx) : nullptr;
@@ -295,6 +377,67 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				}
 			}
 
+			// Skinning influences, kept in their own stream so static meshes don't carry the extra 24 bytes
+			// per vertex. Both attributes are required together - weights without joints (or the reverse)
+			// can't be applied to anything
+			std::vector<renderer::SkinVertex> skin_vertices;
+			if (joints_idx != -1 && weights_idx != -1) {
+				const auto& joints_acc = model.accessors[joints_idx];
+				const auto& weights_acc = model.accessors[weights_idx];
+
+				// glTF stores joint indices as unsigned byte or short, and weights as float or a normalised
+				// integer. Anything else is out of spec; skip rather than reinterpret the bytes wrongly
+				const bool joints_ok = joints_acc.component_type == TG3_COMPONENT_TYPE_UNSIGNED_BYTE ||
+				                       joints_acc.component_type == TG3_COMPONENT_TYPE_UNSIGNED_SHORT;
+				const bool weights_ok = weights_acc.component_type == TG3_COMPONENT_TYPE_FLOAT;
+
+				if (!joints_ok || !weights_ok) {
+					TOAST_WARN(
+					    "AssetManager",
+					    "Mesh primitive {} of mesh {} has unsupported skinning component types (joints={}, weights={}); importing "
+					    "it as a static mesh",
+					    pi,
+					    i,
+					    joints_acc.component_type,
+					    weights_acc.component_type
+					);
+				} else {
+					const uint8_t* joints_data = accessor_bytes(joints_idx);
+					const uint8_t* weights_data = accessor_bytes(weights_idx);
+					const size_t joint_element = joints_acc.component_type == TG3_COMPONENT_TYPE_UNSIGNED_BYTE ? 1 : 2;
+					const size_t joints_stride = get_stride(joints_idx, joint_element * 4);
+					const size_t weights_stride = get_stride(weights_idx, sizeof(glm::vec4));
+
+					skin_vertices.resize(vertex_count);
+					for (uint32_t j = 0; j < vertex_count; ++j) {
+						const uint8_t* joint_entry = joints_data + (j * joints_stride);
+						for (int k = 0; k < 4; ++k) {
+							if (joint_element == 1) {
+								skin_vertices[j].joints[k] = joint_entry[k];
+							} else {
+								uint16_t joint = 0;
+								memcpy(&joint, joint_entry + (k * 2), sizeof(joint));
+								skin_vertices[j].joints[k] = joint;
+							}
+						}
+
+						glm::vec4 w {};
+						memcpy(&w, weights_data + (j * weights_stride), sizeof(glm::vec4));
+						// Renormalise: exporters routinely emit weights summing to slightly off 1, and the
+						// shader blends without normalising, so the error would show as subtle shrinking
+						const float sum = w.x + w.y + w.z + w.w;
+						skin_vertices[j].weights = sum > 0.0f ? w / sum : glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+					}
+				}
+			} else if (joints_idx != -1 || weights_idx != -1) {
+				TOAST_WARN(
+				    "AssetManager",
+				    "Mesh primitive {} of mesh {} has only one of JOINTS_0/WEIGHTS_0; importing it as a static mesh",
+				    pi,
+				    i
+				);
+			}
+
 			if (prim.indices == -1) {
 				// Non-indexed primitives are technically valid glTF, but this importer doesn't support them
 				// (no triangulation-on-the-fly path) - fail cleanly instead of indexing model.accessors[-1]
@@ -314,12 +457,24 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				}
 			}
 
+			// Needs the index buffer, so it can't happen in the vertex loop above
+			if (tan_data == nullptr) {
+				assets::generateTangents(vertices, indices);
+				TOAST_TRACE("AssetManager", "Mesh primitive {} of mesh {} has no TANGENT attribute; generated tangents from UVs", pi, i);
+			}
+
 			std::string file_name = (m.primitives_count == 1) ? base_name : base_name + "_" + std::to_string(prim_counter);
 
-			mesh_files.push_back(
-			    {.mesh = std::make_unique<Mesh>(std::string_view(file_name), std::move(vertices), std::move(indices)),
-			     .file_name = std::move(file_name)}
-			);
+			std::unique_ptr<Mesh> mesh_asset;
+			if (!skin_vertices.empty()) {
+				mesh_asset = std::make_unique<Mesh>(
+				    std::string_view(file_name), std::move(vertices), std::move(indices), std::move(skin_vertices)
+				);
+			} else {
+				mesh_asset = std::make_unique<Mesh>(std::string_view(file_name), std::move(vertices), std::move(indices));
+			}
+
+			mesh_files.push_back({.mesh = std::move(mesh_asset), .file_name = std::move(file_name)});
 			mesh_prim_to_file[i][pi] = static_cast<int>(mesh_files.size()) - 1;
 			++prim_counter;
 		}
@@ -345,10 +500,9 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	for (size_t i = 0; i < model.textures_count; i++) {
 		const auto& texture = model.textures[i];
 
-		// KHR_texture_basisu (used by exporters that ship pre-compressed KTX2 textures, sometimes marked
-		// extensionsRequired) points at its image through a nested extension object instead of the plain
-		// "source" property - tinygltf3 doesn't parse that extension into a dedicated field, so every such
-		// texture would otherwise read source == -1 and get skipped even though the image is right there
+		// KHR_texture_basisu points at its image through a nested extension object, not "source", and
+		// tinygltf3 gives that no dedicated field - so every such texture reads source == -1 and is skipped
+		// even though the image is right there
 		const int32_t source = texture.source != -1 ? texture.source : findExtensionInt(texture.ext, "KHR_texture_basisu", "source");
 		if (source == -1) {
 			// TOAST_ASSERT is compiled out in Release and isn't guaranteed to halt in Debug either - this
@@ -404,12 +558,9 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	std::vector<toml::table> materials;
 	materials.reserve(model.materials_count);
 
-	// Resolved upfront - this is the single source of truth for a material's on-disk/reference identity,
-	// used both for the .tmat filename below and every MeshNode's "material" reference in walk_node().
-	// Previously walk_node() referenced the raw glTF material name directly, which silently diverged from
-	// the name actually used to save the .tmat file whenever a material had no name (very common from
-	// non-Blender exporters) or two materials shared a name - the scene node's material reference would
-	// then never match any UID during the C# import patch step and end up unset
+	// One source of truth for the .tmat filename and every MeshNode's "material" reference. Referencing the
+	// raw glTF name instead diverges whenever a material is unnamed or two share a name, and the reference
+	// then matches no UID during the C# patch step and ends up unset
 	std::unordered_map<std::string, int> material_name_counts;
 	std::vector<std::string> material_file_names(model.materials_count);
 	for (size_t i = 0; i < model.materials_count; i++) {
@@ -426,11 +577,46 @@ auto generateIntermediates(const std::filesystem::path& path) {
 		material_file_names[i] = name;
 	}
 
+	// UID of the engine-shipped mesh.slang shader (engine/assets/shaders/mesh.slang.meta) - every imported
+	// material renders through it, matching its reflected parameter set (tint/metallic/roughness factors,
+	// gAlbedo/gNormal/gMetallicMap/gRoughnessMap samplers) exactly, see MaterialRuntime::resolveMemberValue()
+	constexpr std::string_view k_mesh_shader_uid = "MdYTGGc3iHc";
+
+	// Matches mesh.slang's per-sampler [Reflect] bindings and what MaterialRuntime::samplerFor() reads.
+	// tex_name is the raw glTF name; the C# patch step swaps it for a UID once the sidecar exists
+	auto insert_texture_slot = [](toml::table& out, std::string_view key, const std::string& tex_name) {
+		toml::table slot;
+		slot.insert("texture", tex_name);
+		slot.insert("repeat_u", "repeat");
+		slot.insert("repeat_v", "repeat");
+		slot.insert("min_filter", "linear");
+		slot.insert("mag_filter", "linear");
+		slot.insert("mipmap_mode", "linear");
+		slot.insert("anisotropy", true);
+		out.insert(key, std::move(slot));
+	};
+
+	size_t opaque_blend_overrides = 0;
+	size_t backface_culled = 0;
+	size_t alpha_cutouts = 0;
+
+	// doubleSided is as unreliable as alphaMode: Bistro sets it on all 132 materials, so it carries no
+	// information and taking it at face value kills back-face culling scene-wide. Only meaningful when it
+	// varies across the file; otherwise fall back to the name, which is where exporters record it
+	// ("Foliage_Leaves.DoubleSided" - a leaf card is one quad and loses half its faces to culling)
+	bool double_sided_is_informative = false;
+	for (size_t i = 1; i < model.materials_count; i++) {
+		if (model.materials[i].double_sided != model.materials[0].double_sided) {
+			double_sided_is_informative = true;
+			break;
+		}
+	}
+
 	for (size_t i = 0; i < model.materials_count; i++) {
 		const auto& mat = model.materials[i];
 		const auto& pbr = mat.pbr_metallic_roughness;
 
-		auto tex_uid = [&](int32_t tex_idx) -> std::string {
+		auto tex_name = [&](int32_t tex_idx) -> std::string {
 			if (tex_idx == -1) {
 				return "";
 			}
@@ -438,50 +624,109 @@ auto generateIntermediates(const std::filesystem::path& path) {
 		};
 
 		toml::table material_table;
-		material_table.insert("uid", "");
 		material_table.insert("name", material_file_names[i]);
-		material_table.insert("vertex", "NOT IMPLEMENTED");      // TODO: Replace with UID of default vertex shader
-		material_table.insert("fragment", "NOT IMPLEMENTED");    // TODO: Replace with UID of default fragment shader
-
-		if (pbr.base_color_texture.index != -1) {
-			material_table.insert("albedo_map", tex_uid(pbr.base_color_texture.index));
-		}
-		if (mat.normal_texture.index != -1) {
-			material_table.insert("normal_map", tex_uid(mat.normal_texture.index));
-		}
+		material_table.insert("shaders", toml::array {std::string(k_mesh_shader_uid)});
 		material_table.insert(
-		    "color",
+		    "tint",
 		    toml::array {pbr.base_color_factor[0], pbr.base_color_factor[1], pbr.base_color_factor[2], pbr.base_color_factor[3]}
 		);
+		material_table.insert("metallic", pbr.metallic_factor);
+		material_table.insert("roughness", pbr.roughness_factor);
 
-		// Extended PBR fields kept in params for future use
-		toml::table params;
-		if (pbr.metallic_roughness_texture.index != -1) {
-			params.insert("metallic_roughness_map", tex_uid(pbr.metallic_roughness_texture.index));
-		}
-		if (mat.normal_texture.index != -1) {
-			params.insert("normal_scale", mat.normal_texture.scale);
-		}
-		if (mat.occlusion_texture.index != -1) {
-			params.insert("occlusion_map", tex_uid(mat.occlusion_texture.index));
-			params.insert("occlusion_strength", mat.occlusion_texture.strength);
-		}
-		if (mat.emissive_texture.index != -1) {
-			params.insert("emissive_map", tex_uid(mat.emissive_texture.index));
-		}
-		params.insert("metallic_factor", pbr.metallic_factor);
-		params.insert("roughness_factor", pbr.roughness_factor);
-		params.insert("emissive_factor", toml::array {mat.emissive_factor[0], mat.emissive_factor[1], mat.emissive_factor[2]});
-		material_table.insert("params", std::move(params));
+		insert_texture_slot(material_table, "gAlbedo", tex_name(pbr.base_color_texture.index));
+		insert_texture_slot(material_table, "gNormal", tex_name(mat.normal_texture.index));
 
-		toml::table render_state;
-		render_state.insert("cull_mode", mat.double_sided != 0 ? "none" : "back");
-		render_state.insert("blend_mode", std::string(mat.alpha_mode.data, mat.alpha_mode.len));
-		render_state.insert("depth_write", true);
-		render_state.insert("alpha_cutoff", mat.alpha_cutoff);
-		material_table.insert("render_state", std::move(render_state));
+		// One texture, G=roughness B=metallic, bound to both slots with a channel selector rather than
+		// re-encoded into two images
+		//
+		// Not a subtle error to get wrong: metallicFactor defaults to 1 *because* the texture supplies the
+		// variation, so dropping the texture and keeping the factor makes everything fully metallic - and a
+		// fully metallic surface has no diffuse response, so it renders black
+		const bool packed_mr = pbr.metallic_roughness_texture.index != -1;
+		insert_texture_slot(material_table, "gMetallicMap", tex_name(pbr.metallic_roughness_texture.index));
+		insert_texture_slot(material_table, "gRoughnessMap", tex_name(pbr.metallic_roughness_texture.index));
+		material_table.insert("metallicChannel", packed_mr ? 2.0 : 0.0);
+		material_table.insert("roughnessChannel", packed_mr ? 1.0 : 0.0);
+
+		// glTF's occlusionTexture is red-channel only and its strength is a plain multiplier, which maps
+		// one-to-one onto mesh.slang's gOcclusionMap/occlusionStrength. Strength only means anything with a
+		// map bound, so it stays at 0 for materials that have none rather than darkening them on import
+		insert_texture_slot(material_table, "gOcclusionMap", tex_name(mat.occlusion_texture.index));
+		material_table.insert("occlusionChannel", 0.0);
+		material_table.insert("occlusionStrength", mat.occlusion_texture.index != -1 ? mat.occlusion_texture.strength : 0.0);
+
+		// glTF has no emissive intensity of its own outside KHR_materials_emissive_strength, so the factor
+		// carries the whole thing and intensity is 1 whenever there's anything to emit
+		const bool emissive = mat.emissive_factor[0] > 0.0 || mat.emissive_factor[1] > 0.0 || mat.emissive_factor[2] > 0.0 ||
+		                      mat.emissive_texture.index != -1;
+		insert_texture_slot(material_table, "gEmissiveMap", tex_name(mat.emissive_texture.index));
+		material_table.insert("emissiveColor", toml::array {mat.emissive_factor[0], mat.emissive_factor[1], mat.emissive_factor[2]});
+		material_table.insert("emissiveIntensity", emissive ? 1.0 : 0.0);
+
+		toml::table settings;
+		const bool double_sided =
+		    double_sided_is_informative ? mat.double_sided != 0 : material_file_names[i].contains("DoubleSided");
+		if (!double_sided) {
+			++backface_culled;
+		}
+		settings.insert("cull_mode", double_sided ? "none" : "back");
+
+		// Exporters over-report alphaMode: Bistro marks all 132 materials BLEND despite every one having an
+		// opaque baseColorFactor. Believing it sets depth_write=false scene-wide, which degenerates into
+		// "whichever pass recorded last wins" - interiors draw over walls, back faces over front
+		//
+		// An opaque BLEND material renders identically to an opaque one, so require actual partial alpha
+		const std::string alpha_mode(mat.alpha_mode.data, mat.alpha_mode.len);
+		const bool blended = alpha_mode == "BLEND" && pbr.base_color_factor[3] < 1.0;
+		if (alpha_mode == "BLEND" && !blended) {
+			++opaque_blend_overrides;
+		}
+
+		settings.insert("blend_mode", blended ? "alpha" : "opaque");
+		settings.insert("depth_test", true);
+		settings.insert("depth_write", !blended);
+		material_table.insert("settings", std::move(settings));
+
+		// Order-independent and still depth-writing, so unlike blending it is safe to enable on suspicion.
+		// MASK says so outright; otherwise fall back to the same naming cull_mode uses, since a card named
+		// double-sided is a leaf card whose shape lives in its albedo alpha. Off by default, and reflected,
+		// so it can be dialled in per material without a reimport
+		const bool name_suggests_cutout = double_sided || material_file_names[i].contains("MASK");
+		const bool cutout = alpha_mode == "MASK" || (!double_sided_is_informative && name_suggests_cutout);
+		if (cutout) {
+			++alpha_cutouts;
+		}
+		// glTF's own default when alphaMode is MASK but alphaCutoff is omitted
+		material_table.insert("alphaCutoff", cutout ? (mat.alpha_cutoff > 0.0 ? mat.alpha_cutoff : 0.5) : 0.0);
 
 		materials.push_back(std::move(material_table));
+	}
+
+	if (opaque_blend_overrides > 0) {
+		TOAST_WARN(
+		    "AssetManager",
+		    "{} of {} materials declared alphaMode=BLEND with a fully opaque baseColorFactor; imported as opaque so they still "
+		    "write depth (see the blend_mode note in gltf_importer.cpp)",
+		    opaque_blend_overrides,
+		    materials.size()
+		);
+	}
+
+	if (alpha_cutouts > 0) {
+		TOAST_WARN(
+		    "AssetManager", "alpha cutout enabled on {} of {} materials (albedo-alpha cut-out cards)", alpha_cutouts, materials.size()
+		);
+	}
+
+	if (!double_sided_is_informative && model.materials_count > 1) {
+		TOAST_WARN(
+		    "AssetManager",
+		    "every material reports doubleSided={}, so the flag was ignored as uninformative; back-face culling enabled on {} of "
+		    "{} materials, the rest opted out via a 'DoubleSided' material name",
+		    model.materials[0].double_sided != 0,
+		    backface_culled,
+		    materials.size()
+		);
 	}
 	TOAST_TRACE("AssetManager", "Imported {} materials", materials.size());
 
@@ -546,16 +791,270 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	}
 	TOAST_TRACE("AssetManager", "Imported {} lights", lights.size());
 
+	// Converted into engine space here rather than at load time, so what lands on disk matches how mesh
+	// vertices and node transforms were already handled above
+	auto node_name_at = [&](int32_t node_idx) -> std::string {
+		if (node_idx < 0 || static_cast<uint32_t>(node_idx) >= model.nodes_count) {
+			return {};
+		}
+		const auto& node = model.nodes[node_idx];
+		std::string name(node.name.data, node.name.len);
+		if (name.empty()) {
+			name = "node_" + std::to_string(node_idx);
+		}
+
+		// applyFields() converts underscores to spaces for display, so the live tree never has one. Track
+		// and joint names have to match *post*-conversion or resolveNode()'s find() never hits, so the same
+		// conversion is mirrored here rather than threaded through applyFields()
+		std::ranges::replace(name, '_', ' ');
+		while (!name.empty() && name.back() == ' ') {
+			name.pop_back();
+		}
+		return name;
+	};
+
+	// Reads an accessor as tightly-packed floats. Animation sampler inputs/outputs are always float in
+	// practice (the spec allows normalised integer outputs, which this rejects rather than mis-decoding)
+	auto read_float_accessor = [&](int32_t acc_idx, size_t components) -> std::vector<float> {
+		if (acc_idx < 0 || static_cast<uint32_t>(acc_idx) >= model.accessors_count) {
+			return {};
+		}
+		const auto& acc = model.accessors[acc_idx];
+		if (acc.component_type != TG3_COMPONENT_TYPE_FLOAT) {
+			TOAST_WARN("AssetManager", "Animation accessor {} is not float-typed; skipping the track", acc_idx);
+			return {};
+		}
+		if (acc.buffer_view < 0) {
+			return {};
+		}
+		const auto& bv = model.buffer_views[acc.buffer_view];
+		const auto& buf = model.buffers[bv.buffer];
+		const uint8_t* base = buf.data.data + bv.byte_offset + acc.byte_offset;
+		const size_t tight = components * sizeof(float);
+		const size_t stride = bv.byte_stride != 0 ? bv.byte_stride : tight;
+
+		std::vector<float> out(static_cast<size_t>(acc.count) * components);
+		for (uint64_t i = 0; i < acc.count; ++i) {
+			std::memcpy(out.data() + (i * components), base + (i * stride), tight);
+		}
+		return out;
+	};
+
+	std::vector<AnimationClip> clips;
+	clips.reserve(model.animations_count);
+
+	for (uint32_t a = 0; a < model.animations_count; ++a) {
+		const auto& anim = model.animations[a];
+
+		AnimationClip clip;
+		clip.name = std::string(anim.name.data, anim.name.len);
+		if (clip.name.empty()) {
+			clip.name = "animation_" + std::to_string(a);
+		}
+
+		for (uint32_t c = 0; c < anim.channels_count; ++c) {
+			const auto& channel = anim.channels[c];
+			if (channel.sampler < 0 || static_cast<uint32_t>(channel.sampler) >= anim.samplers_count) {
+				continue;
+			}
+			const auto& sampler = anim.samplers[channel.sampler];
+			const std::string path(channel.target.path.data, channel.target.path.len);
+
+			AnimationTrack track;
+			track.target_node = node_name_at(channel.target.node);
+			if (track.target_node.empty()) {
+				continue;
+			}
+
+			size_t components = 0;
+			if (path == "translation") {
+				track.target = TrackTarget::translation;
+				components = 3;
+			} else if (path == "rotation") {
+				track.target = TrackTarget::rotation;
+				components = 4;
+			} else if (path == "scale") {
+				track.target = TrackTarget::scale;
+				components = 3;
+			} else if (path == "weights") {
+				// Morph targets are not supported; deformation is skeletal only. Skipped rather than failing
+				// the import, since a rig that also ships blend shapes still animates correctly without them
+				TOAST_WARN(
+				    "AssetManager",
+				    "Animation '{}' channel {} drives morph target weights, which this engine does not support; skipping channel",
+				    clip.name,
+				    c
+				);
+				continue;
+			} else {
+				TOAST_WARN("AssetManager", "Animation '{}' targets unsupported path '{}'; skipping channel", clip.name, path);
+				continue;
+			}
+
+			const std::string interpolation(sampler.interpolation.data, sampler.interpolation.len);
+			if (interpolation == "STEP") {
+				track.interpolation = Interpolation::step;
+			} else if (interpolation == "CUBICSPLINE") {
+				track.interpolation = Interpolation::cubic_spline;
+			} else {
+				track.interpolation = Interpolation::linear;
+			}
+
+			track.times = read_float_accessor(sampler.input, 1);
+			// `components` is the accessor element width: VEC3 for translation/scale, VEC4 for rotation
+			const std::vector<float> values = read_float_accessor(sampler.output, components);
+			if (track.times.empty() || values.empty()) {
+				continue;
+			}
+
+			// CUBICSPLINE stores in-tangent/value/out-tangent per key, so the value array is 3x the times
+			const size_t values_per_key = track.interpolation == Interpolation::cubic_spline ? 3 : 1;
+			const size_t expected = track.times.size() * values_per_key * components;
+			if (values.size() != expected) {
+				TOAST_WARN(
+				    "AssetManager",
+				    "Animation '{}' channel {}: expected {} sampler output floats but found {}; skipping channel",
+				    clip.name,
+				    c,
+				    expected,
+				    values.size()
+				);
+				continue;
+			}
+
+			const size_t entries = values.size() / components;
+			if (track.target == TrackTarget::rotation) {
+				track.quat_values.reserve(entries);
+				for (size_t i = 0; i < entries; ++i) {
+					const float* v = values.data() + (i * 4);
+					// glTF stores quaternions xyzw; glm::quat's constructor takes wxyz
+					const glm::quat gltf_rotation(v[3], v[0], v[1], v[2]);
+					track.quat_values.push_back(glm::quat_cast(to_engine_space_mat4(glm::mat4_cast(gltf_rotation))));
+				}
+			} else {
+				track.vec3_values.reserve(entries);
+				for (size_t i = 0; i < entries; ++i) {
+					const float* v = values.data() + (i * 3);
+					const glm::vec3 value(v[0], v[1], v[2]);
+					// Scale is a magnitude per axis, so it gets the basis swap without the translation part
+					track.vec3_values.push_back(
+					    track.target == TrackTarget::translation ? to_engine_space_vec3(value) : to_engine_space_dir3(value)
+					);
+				}
+			}
+
+			clip.duration = std::max(clip.duration, track.times.empty() ? 0.0f : track.times.back());
+			clip.tracks.push_back(std::move(track));
+		}
+
+		if (!clip.tracks.empty()) {
+			clips.push_back(std::move(clip));
+		}
+	}
+
+	// Skins
+	std::vector<Skin> skins;
+	skins.reserve(model.skins_count);
+
+	for (uint32_t s = 0; s < model.skins_count; ++s) {
+		const auto& gltf_skin = model.skins[s];
+
+		Skin skin;
+		skin.name = std::string(gltf_skin.name.data, gltf_skin.name.len);
+		if (skin.name.empty()) {
+			skin.name = "skin_" + std::to_string(s);
+		}
+		skin.skeleton_root = node_name_at(gltf_skin.skeleton);
+
+		skin.joints.reserve(gltf_skin.joints_count);
+		for (uint32_t j = 0; j < gltf_skin.joints_count; ++j) {
+			skin.joints.push_back(node_name_at(gltf_skin.joints[j]));
+		}
+
+		if (gltf_skin.inverse_bind_matrices != -1) {
+			const auto raw = read_float_accessor(gltf_skin.inverse_bind_matrices, 16);
+			skin.inverse_bind_matrices.reserve(raw.size() / 16);
+			for (size_t i = 0; i + 16 <= raw.size(); i += 16) {
+				glm::mat4 m {};
+				std::memcpy(&m, raw.data() + i, sizeof(glm::mat4));
+				skin.inverse_bind_matrices.push_back(to_engine_space_mat4(m));
+			}
+		}
+
+		skins.push_back(std::move(skin));
+	}
+
+	if (!clips.empty() || !skins.empty()) {
+		size_t track_total = 0;
+		for (const auto& clip : clips) {
+			track_total += clip.tracks.size();
+		}
+		TOAST_TRACE(
+		    "AssetManager", "Imported {} animation clip(s), {} track(s), {} skin(s)", clips.size(), track_total, skins.size()
+		);
+	}
+
+	// One .tanim per clip, not per glTF: six clips in one file is one asset-browser entry, with nothing to
+	// drag per animation. Each carries the skins too - small next to keyframe data, and it keeps every clip
+	// able to pose the skeleton alone
+	//
+	// Named here rather than at save time because the scene JSON references them by bare filename
+	const std::string animation_base = path.stem().string();
+	std::vector<std::string> animation_file_names;
+	animation_file_names.reserve(clips.size());
+	{
+		std::unordered_map<std::string, uint32_t> animation_name_counts;
+		for (size_t i = 0; i < clips.size(); ++i) {
+			// glTF clip names are free text ("Armature|Run Cycle.001"); anything outside this set would either
+			// break the path or split the stem GltfImporter.cs keys its UID map by
+			std::string sanitized;
+			sanitized.reserve(clips[i].name.size());
+			for (const char c : clips[i].name) {
+				const bool keep = std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-';
+				sanitized.push_back(keep ? c : '_');
+			}
+			if (sanitized.empty()) {
+				sanitized = "clip_" + std::to_string(i);
+			}
+
+			std::string file_name = animation_base + "_" + sanitized;
+			if (auto it = animation_name_counts.find(file_name); it != animation_name_counts.end()) {
+				file_name = file_name + "_" + std::to_string(it->second);
+				++it->second;
+			} else {
+				animation_name_counts[file_name] = 1;
+			}
+			// The suffixed name is registered too, so an authored clip literally called "Run_1" can't collide
+			// with the deduped second "Run"
+			animation_name_counts.emplace(file_name, 1);
+			animation_file_names.push_back(std::move(file_name));
+		}
+	}
+
+	// A glTF can define a skeleton with no animation at all, and MeshNode::skin_animation still needs a file
+	// to point at - that case keeps the old single "<gltf>.tanim" holding skins and no clips
+	const std::string skin_file_name = animation_file_names.empty() ? animation_base : animation_file_names.front();
+
 	// Scenes
 	std::vector<nlohmann::json> scenes;
 	scenes.reserve(model.scenes_count);
+
+	// glTF punctual lights carry physical units (candela / lux); anything this large is certainly not the
+	// plain 0-1 multiplier m_intensity expects, and would wash the scene out without being obvious why
+	constexpr double k_physical_intensity_threshold = 100.0;
+	size_t physical_intensity_lights = 0;
 
 	auto node_transform = [&](const tg3_node& node) -> nlohmann::json {
 		nlohmann::json transform;
 		glm::mat4 local_transform = glm::mat4(1.0F);
 
 		if (node.has_matrix) {
-			memcpy(&local_transform, node.matrix, sizeof(glm::mat4));
+			// double[16] into float[16], element by element. A memcpy copies the first 8 doubles' bit patterns
+			// into 16 floats, and only files using a node "matrix" rather than TRS ever hit it. Both are
+			// column-major, so index i maps straight across
+			for (int i = 0; i < 16; ++i) {
+				glm::value_ptr(local_transform)[i] = static_cast<float>(node.matrix[i]);
+			}
 		} else {
 			const glm::vec3 t(node.translation[0], node.translation[1], node.translation[2]);
 			const glm::quat r(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]);
@@ -565,10 +1064,24 @@ auto generateIntermediates(const std::filesystem::path& path) {
 		}
 
 		const glm::mat4 converted = to_engine_space_mat4(local_transform);
-		glm::vec3 t, s, skew;
-		glm::vec4 persp;
-		glm::quat r;
-		glm::decompose(converted, s, r, t, skew, persp);
+		// Initialised to identity rather than left to glm: decompose() returns false on a singular matrix
+		// (a zero scale axis, say) and leaves every out-param untouched, so an unchecked call publishes
+		// whatever was on the stack - which in a debug build is 0xCC filler, i.e. positions around -1e8
+		glm::vec3 t {0.0F};
+		glm::vec3 s {1.0F};
+		glm::vec3 skew {0.0F};
+		glm::vec4 persp {0.0F};
+		glm::quat r {1.0F, 0.0F, 0.0F, 0.0F};
+		if (!glm::decompose(converted, s, r, t, skew, persp)) {
+			TOAST_WARN(
+			    "AssetManager",
+			    "Node '{}' has a non-decomposable transform; importing it with an identity transform",
+			    std::string(node.name.data, node.name.len)
+			);
+			t = glm::vec3(0.0F);
+			s = glm::vec3(1.0F);
+			r = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+		}
 
 		transform["pos"] = {t.x, t.y, t.z};
 		transform["rot"] = {r.x, r.y, r.z, r.w};
@@ -579,12 +1092,29 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	std::function<nlohmann::json(int32_t)> walk_node = [&](int32_t node_idx) -> nlohmann::json {
 		const tg3_node& node = model.nodes[node_idx];
 		nlohmann::json n;
-		n["name"] = std::string(node.name.data, node.name.len);
+		// Must match node_name_at()'s "node_N" fallback exactly - animation tracks target nodes by this
+		// same name (see track.target_node above), and glTF nodes are frequently unnamed. A raw empty name
+		// here would leave AnimationPlayer::resolveNode() with nothing in the instantiated tree to find
+		n["name"] = node_name_at(node_idx);
 		n["transform"] = node_transform(node);
 
 		if (node.mesh != -1) {
 			const auto& gltf_mesh = model.meshes[node.mesh];
 			const auto& prim_files = mesh_prim_to_file[node.mesh];
+
+			// Skin params, shared by both the single- and multi-primitive branches below. glTF attaches the
+			// skin to the node (not the mesh/primitive), so every primitive of a skinned mesh uses the same
+			// skin - node.skin indexes model.skins, which parses 1:1 into `skins` earlier in this function
+			const bool has_skin = node.skin != -1 && node.skin < static_cast<int32_t>(skins.size());
+			const auto apply_skin_params = [&](nlohmann::json& target) {
+				if (!has_skin) {
+					return;
+				}
+				// Bare filename, no extension, matching how "mesh"/"material" reference their targets and what
+				// GltfImporter.cs keys animationUids by. Patched to a UID there
+				target["params"]["skin_animation"] = skin_file_name;
+				target["params"]["skin_name"] = skins[node.skin].name;
+			};
 
 			if (gltf_mesh.primitives_count == 1) {
 				n["type"] = "toast::MeshNode";
@@ -593,6 +1123,7 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				if (prim.material != -1) {    // TODO: Update field names when MeshNode fields are created
 					n["params"]["material"] = material_file_names[prim.material];
 				}
+				apply_skin_params(n);
 			} else {
 				n["type"] = "toast::Node3D";
 				n["children"] = nlohmann::json::array();
@@ -609,23 +1140,29 @@ auto generateIntermediates(const std::filesystem::path& path) {
 					if (prim.material != -1) {    // TODO: Update field names when MeshNode fields are created
 						child["params"]["material"] = material_file_names[prim.material];
 					}
+					apply_skin_params(child);
 					n["children"].push_back(std::move(child));
 				}
 			}
 		} else if (node.camera != -1) {
+			// Param keys below are the engine's reflected field names verbatim - jsonToTnode() emits them
+			// straight into the prefab, and applyFields() silently skips anything NodeInfo doesn't know
 			const auto& cam = cameras[node.camera];
 			n["type"] = "toast::Camera";
-			n["params"]["projection"] = cam.type;    // TODO: change this once the camera has been made
 			if (cam.type == "perspective") {
-				n["params"]["fov"] = cam.yfov;
-				n["params"]["near"] = cam.znear;
-				n["params"]["far"] = cam.zfar;
-				n["params"]["aspect"] = cam.aspect_ratio;
+				// glTF yfov is radians; Camera::fov is degrees (getProjection() applies glm::radians itself)
+				n["params"]["fov"] = glm::degrees(static_cast<float>(cam.yfov));
+				n["params"]["near_plane"] = cam.znear;
+				// zfar is optional in glTF (absent means infinite projection); 0 means it wasn't given
+				if (cam.zfar > 0.0) {
+					n["params"]["far_plane"] = cam.zfar;
+				}
 			} else {
-				n["params"]["xmag"] = cam.xmag;
-				n["params"]["ymag"] = cam.ymag;
-				n["params"]["near"] = cam.znear;
-				n["params"]["far"] = cam.zfar;
+				// Camera only does perspective - no ortho fields exist to write to, so keep its defaults
+				// rather than inventing a mapping
+				TOAST_WARN(
+				    "AssetManager", "Camera '{}' is orthographic; toast::Camera is perspective-only, importing with defaults", cam.name
+				);
 			}
 		} else if (node.light != -1) {
 			const auto& light = lights[node.light];
@@ -635,16 +1172,33 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				n["type"] = "toast::PointLight";
 			} else if (light.type == "spot") {
 				n["type"] = "toast::Spotlight";
+			} else {
+				TOAST_WARN("AssetManager", "Light '{}' has unknown type '{}'; importing as a plain Node3D", light.name, light.type);
+				n["type"] = "toast::Node3D";
 			}
 
-			n["params"]["color"] = {light.color[0], light.color[1], light.color[2]};
-			n["params"]["intensity"] = light.intensity;
-			if (light.range > 0.0) {
-				n["params"]["range"] = light.range;
-			}
-			if (light.type == "spot") {
-				n["params"]["inner_cone_angle"] = light.inner_cone_angle;
-				n["params"]["outer_cone_angle"] = light.outer_cone_angle;
+			if (n["type"] != "toast::Node3D") {
+				n["params"]["m_light_color"] = {light.color[0], light.color[1], light.color[2]};
+				n["params"]["m_intensity"] = light.intensity;
+
+				// glTF intensity is physical - candela for point/spot, lux for directional - while
+				// m_intensity is a plain multiplier defaulting to 1. Imported as-is rather than scaled by
+				// some invented constant, but flagged so the values don't silently blow out the exposure
+				if (light.intensity > k_physical_intensity_threshold) {
+					++physical_intensity_lights;
+				}
+
+				// glTF range 0/absent means "infinite"; the engine has no such concept, so leave
+				// m_attenuation at its own default instead of writing a 0 that would kill the light
+				if (light.type != "directional" && light.range > 0.0) {
+					n["params"]["m_attenuation"] = light.range;
+				}
+
+				if (light.type == "spot") {
+					// glTF cone angles are radians, m_inner_radius/m_outer_radius are Unit("°")
+					n["params"]["m_inner_radius"] = glm::degrees(static_cast<float>(light.inner_cone_angle));
+					n["params"]["m_outer_radius"] = glm::degrees(static_cast<float>(light.outer_cone_angle));
+				}
 			}
 		} else {
 			n["type"] = "toast::Node3D";
@@ -676,9 +1230,32 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			scene_json["children"].push_back(walk_node(scene.nodes[j]));
 		}
 
+		// Has to be an ancestor of every joint, every skinned MeshNode and every animated node at once.
+		// Wrapping the whole scene is the only placement that satisfies all three without knowing in advance
+		// what the glTF targets
+		if (!clips.empty() || !skins.empty()) {
+			scene_json["type"] = "toast::AnimationPlayer";
+			// The first clip's asset, since a player holds one animation at a time; the rest import alongside
+			// it as their own assets for the user to swap in. Bare filename, see skin_animation above
+			scene_json["params"]["animation"] = skin_file_name;
+			if (!clips.empty()) {
+				scene_json["params"]["clip"] = clips.front().name;
+			}
+		}
+
 		scenes.push_back(std::move(scene_json));
 	}
 	TOAST_TRACE("AssetManager", "Imported {} nodes", scenes.size());
+
+	if (physical_intensity_lights > 0) {
+		TOAST_WARN(
+		    "AssetManager",
+		    "{} light(s) have a glTF intensity above {} (physical candela/lux units); imported unscaled into "
+		    "m_intensity, which is a plain multiplier - expect to rescale them",
+		    physical_intensity_lights,
+		    k_physical_intensity_threshold
+		);
+	}
 
 	// Save files in cache://<name_without_extension>/
 	std::string base_name = path.stem().string();
@@ -714,6 +1291,25 @@ auto generateIntermediates(const std::filesystem::path& path) {
 	}
 	TOAST_TRACE("AssetManager", "Saved {} materials", materials.size());
 
+	// Save animations - one .tanim per clip, each with this glTF's skins alongside it (see
+	// animation_file_names above for why)
+	for (size_t i = 0; i < clips.size(); ++i) {
+		const auto binary = Animation::toBinary({clips[i]}, skins);
+		const std::filesystem::path out = cache_dir / (animation_file_names[i] + ".tanim");
+		std::ofstream f(out, std::ios::binary);
+		f.write(reinterpret_cast<const char*>(binary.data()), static_cast<std::streamsize>(binary.size()));
+	}
+	if (clips.empty() && !skins.empty()) {
+		// Skeleton with no animation: still needs a file for MeshNode::skin_animation to resolve against
+		const auto binary = Animation::toBinary({}, skins);
+		const std::filesystem::path out = cache_dir / (skin_file_name + ".tanim");
+		std::ofstream f(out, std::ios::binary);
+		f.write(reinterpret_cast<const char*>(binary.data()), static_cast<std::streamsize>(binary.size()));
+	}
+	if (!clips.empty() || !skins.empty()) {
+		TOAST_TRACE("AssetManager", "Saved {} animation asset(s), {} skin(s) each", std::max<size_t>(clips.size(), 1), skins.size());
+	}
+
 	// Save scenes
 	for (const auto& scene : scenes) {
 		std::string name = scene["name"].get<std::string>();
@@ -743,7 +1339,8 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 		const std::string uid_str = uid.get();
 
 		basic.fields.push_back({"m_uid", toast::FieldType::uid_t, false, uid});
-		basic.fields.push_back({"m_name", toast::FieldType::string_t, false, basic.name});
+		// No m_name field here on purpose - Node's name isn't a reflected field; applyFields() sets it from
+		// BasicNode::name (which basic.name above already carries)
 		basic.fields.push_back({"m_local_enabled", toast::FieldType::bool_t, false, true});
 		if (!parent_uid_str.empty()) {
 			basic.fields.push_back({"m_parent", toast::FieldType::uid_t, false, toast::UID(toast::UID::fromString(parent_uid_str))});
@@ -770,17 +1367,20 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 				s = json_t::array({1.0, 1.0, 1.0});
 			}
 
+			// Must match Node3D's reflected field names exactly: applyFields() looks each up in the reflection
+			// and skips anything missing without a diagnostic. The m_ prefix these once had silently zeroed
+			// every imported node's transform
 			tg.fields.push_back({
-			  "m_position", toast::FieldType::vec3_t, false, glm::vec3 {p[0].get<float>(), p[1].get<float>(), p[2].get<float>()}
+			  "position", toast::FieldType::vec3_t, false, glm::vec3 {p[0].get<float>(), p[1].get<float>(), p[2].get<float>()}
 			});
 			tg.fields.push_back({
-			  "m_rotation",
+			  "rotation",
 			  toast::FieldType::quaternion_t,
 			  false,
 			  glm::quat {r[3].get<float>(), r[0].get<float>(), r[1].get<float>(), r[2].get<float>()}
 			});
 			tg.fields.push_back({
-			  "m_scale", toast::FieldType::vec3_t, false, glm::vec3 {s[0].get<float>(), s[1].get<float>(), s[2].get<float>()}
+			  "scale", toast::FieldType::vec3_t, false, glm::vec3 {s[0].get<float>(), s[1].get<float>(), s[2].get<float>()}
 			});
 			basic.groups.push_back(std::move(tg));
 		}
@@ -806,6 +1406,63 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 					TOAST_WARN(
 					    "AssetManager", "GLTF scene contains non-UID material reference '{}'; skipping m_material assignment", material_uid
 					);
+				}
+			}
+			if (params.contains("skin_animation")) {
+				const auto skin_uid = params["skin_animation"].get<std::string>();
+				if (skin_uid.size() == 11) {
+					basic.fields.push_back(
+					    {"m_skin_animation", toast::FieldType::uid_t, false, toast::UID(toast::UID::fromString(skin_uid))}
+					);
+				} else {
+					TOAST_WARN(
+					    "AssetManager",
+					    "GLTF scene contains non-UID skin_animation reference '{}'; skipping m_skin_animation assignment",
+					    skin_uid
+					);
+				}
+			}
+			if (params.contains("skin_name")) {
+				basic.fields.push_back({"m_skin_name", toast::FieldType::string_t, false, params["skin_name"].get<std::string>()});
+			}
+		}
+
+		// AnimationPlayer: "animation" is the .tanim UID (patched by GltfImporter.cs like mesh/material
+		// above), "clip" is a plain string naming which clip to autoplay
+		else if (basic.type == "toast::AnimationPlayer" && n.contains("params")) {
+			const auto& params = n["params"];
+			if (params.contains("animation")) {
+				const auto animation_uid = params["animation"].get<std::string>();
+				if (animation_uid.size() == 11) {
+					basic.fields.push_back(
+					    {"m_animation", toast::FieldType::uid_t, false, toast::UID(toast::UID::fromString(animation_uid))}
+					);
+				} else {
+					TOAST_WARN(
+					    "AssetManager",
+					    "GLTF scene contains non-UID animation reference '{}'; skipping m_animation assignment",
+					    animation_uid
+					);
+				}
+			}
+			if (params.contains("clip")) {
+				basic.fields.push_back({"m_clip_name", toast::FieldType::string_t, false, params["clip"].get<std::string>()});
+			}
+		}
+
+		// Camera and light params. walk_node() already emits these keyed by the engine's reflected field
+		// names, so they map straight across by type - the JSON value shape is what decides how to read it
+		// (3-element array = vec3, anything else numeric = float)
+		else if (basic.type != "toast::Node3D" && n.contains("params")) {
+			for (const auto& [key, value] : n["params"].items()) {
+				if (value.is_array() && value.size() == 3) {
+					basic.fields.push_back({
+					  key, toast::FieldType::vec3_t, false, glm::vec3 {value[0].get<float>(), value[1].get<float>(), value[2].get<float>()}
+					});
+				} else if (value.is_number()) {
+					basic.fields.push_back({key, toast::FieldType::float_t, false, value.get<float>()});
+				} else {
+					TOAST_WARN("AssetManager", "Unsupported param '{}' on node type '{}'; skipping", key, basic.type);
 				}
 			}
 		}
@@ -870,10 +1527,9 @@ static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem:
 extern "C" {
 
 void gltf_generate_intermediates(const char* path) noexcept {
-	// Both FFI entry points are noexcept, so an uncaught exception anywhere below (json parsing, std::stoi
-	// on a malformed percent-escape, std::any_cast, std::filesystem errors, ...) would otherwise call
-	// std::terminate() - converting it to a logged error instead means a bad/unusual input file fails
-	// loudly and diagnosably rather than crashing the whole editor or silently producing zero output
+	// Both FFI entry points are noexcept, so anything thrown below - json, std::stoi on a bad percent-escape,
+	// filesystem errors - would call std::terminate(). Logged instead, so a bad file fails diagnosably
+	// rather than taking the editor with it
 	try {
 		std::filesystem::path dir {path};
 		assets::generateIntermediates(dir);

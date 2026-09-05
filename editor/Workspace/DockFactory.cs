@@ -22,6 +22,7 @@ public class DockFactory : Factory {
 
 	public HierarchyViewModel? Hierarchy { get; private set; }
 	public InspectorViewModel? Inspector { get; private set; }
+	public RendererSettingsViewModel? RendererSettingsVm { get; private set; }
 	public GenericViewModel? GenericEditorVm { get; private set; }
 	public SchemaViewModel? SchemaEditorVm { get; private set; }
 
@@ -32,9 +33,13 @@ public class DockFactory : Factory {
 		var inspector = new InspectorViewModel { Id = "Inspector", Title = "Inspector" };
 		var generic = new GenericViewModel { Id = "GenericEditor", Title = "Data Editor" };
 		var schema = new SchemaViewModel { Id = "SchemaEditor", Title = "Schema Editor" };
+		var rendererSettings = new RendererSettingsViewModel {
+			Id = "RendererSettings", Title = "Renderer Settings", CanPin = false
+		};
 
 		Hierarchy = hierarchy;
 		Inspector = inspector;
+		RendererSettingsVm = rendererSettings;
 		GenericEditorVm = generic;
 		SchemaEditorVm = schema;
 
@@ -111,13 +116,15 @@ public class DockFactory : Factory {
 			["Hierarchy"] = () => layout,
 			["Inspector"] = () => layout,
 			["GenericEditor"] = () => layout,
-			["SchemaEditor"] = () => layout
+			["SchemaEditor"] = () => layout,
+			["RendererSettings"] = () => layout
 		};
 		DockableLocator = new Dictionary<string, Func<IDockable?>> {
 			["Root"] = () => m_rootDock,
 			["Documents"] = () => m_documentDock,
 			["GenericEditor"] = () => GenericEditorVm,
-			["SchemaEditor"] = () => SchemaEditorVm
+			["SchemaEditor"] = () => SchemaEditorVm,
+			["RendererSettings"] = () => RendererSettingsVm
 		};
 		HostWindowLocator = new Dictionary<string, Func<IHostWindow?>> {
 			[nameof(IDockWindow)] = () => new HostWindow()
@@ -262,6 +269,15 @@ public class DockFactory : Factory {
 
 				ShowRightTool(SchemaEditorVm);
 				return true;
+
+			case "RendererSettings" when RendererSettingsVm is not null:
+				if (IsRightToolVisible(RendererSettingsVm)) {
+					HideRightTool(RendererSettingsVm);
+					return false;
+				}
+
+				ShowRightTool(RendererSettingsVm);
+				return true;
 		}
 
 		return false;
@@ -273,6 +289,7 @@ public class DockFactory : Factory {
 			"Inspector" => IsRightToolVisible(Inspector),
 			"GenericEditor" => IsRightToolVisible(GenericEditorVm),
 			"SchemaEditor" => IsRightToolVisible(SchemaEditorVm),
+			"RendererSettings" => IsRightToolVisible(RendererSettingsVm),
 			_ => false
 		};
 	}

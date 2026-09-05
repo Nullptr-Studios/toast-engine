@@ -16,8 +16,11 @@ namespace editor.Workspace;
 
 public enum GizmoTool { Select, Translate, Rotate, Scale, Ruler }
 
-// Must stay in sync with the SetRenderMode proto (0 Lit, 1 ClusterHeatmap)
-public enum RenderMode { Lit, ClusterHeatmap }
+// Must stay in sync with mesh.slang's renderModePad.x branches (0 Lit, 1 ClusterHeatmap, then the debug views)
+// Ordinal, and the shaders compare against raw numbers - renderer::TracedShadowPass pins 17 and 18 in
+// constants, and mesh.slang switches on the rest. Append only; inserting anywhere above shifts every mode
+// after it, which shows up as the wrong view being drawn rather than as any kind of error
+public enum RenderMode { Lit, ClusterHeatmap, Albedo, Normal, MetallicRoughness, Ambient, SpecularIbl, SpecularIblMip0, Reflection, ReflectionProbes, ProbeCapture, ProbeCubemap, NormalBuffer, RoughnessBuffer, SsrOnly, AmbientOcclusion, IrradianceVolumes, TracedShadowsOnly, TracedShadows, ShadowTerm }
 
 public enum PlayState { Stopped, Playing, PlayingExternal }
 
@@ -361,7 +364,6 @@ public partial class WorkspaceViewModel : Document, IAutosavable {
 		AutosaveService.Delete(RootUid, ".tnode");
 	}
 
-	// creates a new empty workspace of the given node type
 	public static WorkspaceViewModel? CreateNew(ToastEngine engine, string nodeType) {
 		var res = engine.CreateWorkspace(nodeType);
 		if (res.Uid == 0) return null;

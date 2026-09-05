@@ -1,5 +1,6 @@
 #include "workspace.hpp"
 
+#include "animation_player.hpp"
 #include "camera.hpp"
 #include "node.hpp"
 #include "node_3d.hpp"
@@ -91,12 +92,11 @@ struct GizmoHitResult {
 
 constexpr std::array<GizmoHandle, 3> k_axis_handles {GizmoHandle::axis_x, GizmoHandle::axis_y, GizmoHandle::axis_z};
 
-/// @brief Ray-vs-center-handle test shared by Translate and Scale: a camera-facing
-/// plane through the origin, hit accepted within k_center_hit_radius of it
+/// @brief Ray-vs-center-handle test shared by Translate and Scale
 ///
-/// Checked before the axis/plane tests, not merged into their nearest-along-ray comparison:
-/// the center handle is small and sits exactly where every axis line converges, so an axis line passing
-/// right behind it would otherwise win on raw ray-distance even when the cursor is squarely over the cube
+/// Checked before the axis tests rather than merged into their nearest-along-ray comparison: the centre
+/// handle sits exactly where every axis converges, so an axis line behind it wins on raw distance even
+/// with the cursor squarely on the cube
 auto pickCenterHandle(const Ray& ray, const glm::vec3 origin, const float scale) noexcept -> std::optional<GizmoHitResult> {
 	using namespace gizmo_layout;
 
@@ -304,7 +304,6 @@ Workspace::Workspace(UID uid) : m_handle(uid) {
 	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
 
-	// open file
 	auto file = assets::load<assets::Prefab>(uid);
 	if (not file.hasValue()) {
 		TOAST_ERROR("World", "Couldn't open Node file {}", uid);
@@ -1375,9 +1374,31 @@ void Workspace::eventSubscriptions() {
 	});
 }
 
+void Workspace::tickAnimationPreviews(const Node& node) {
+	// reflect_cast, not dynamic_cast - this engine deliberately has no RTTI/vtable-based dispatch for Node
+	if (auto* player = reflect_cast<AnimationPlayer>(const_cast<Node*>(&node))) {
+		player->tick();
+	}
+	for (const auto& child : node.children()) {
+		tickAnimationPreviews(*child);
+	}
+}
+
 void Workspace::tick() {
 	if (!participatesIn(NodeOwnerParticipation::gameplay_tick)) {
 		tickActiveCameraController();
+		if (m_root_node.exists()) {
+			tickAnimationPreviews(*m_root_node);
+		}
+	}
+
+	// Only for the workspace actually being looked through, matching applyActiveCamera()'s gating. The
+	// controller has to be *told*, not just skipped: every workspace owns one and they all subscribe to the
+	// same global input, so an unguarded one accumulates movement from a drag in another viewport
+	const bool camera_active = isActiveWorkspace() && !m_game_camera && !isPlaying();
+	m_editor_camera_controller.setEnabled(camera_active);
+	if (camera_active) {
+		m_editor_camera_controller.tick(static_cast<float>(Time::delta()), m_editor_camera.get());
 	}
 
 	if (m_root_node.exists()) {

@@ -148,7 +148,6 @@ public partial class CompactImportWindowViewModel : ViewModelBase {
 		var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 		foreach (var importer in m_importers) {
-			// Does this importer handle ANY of the provided file paths?
 			if (!m_filePaths.Any(path => importer.CanHandle(path))) continue;
 
 			// Add settings cards for all settings importers supported by this importer

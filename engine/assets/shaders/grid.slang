@@ -164,12 +164,8 @@ float4 fragmentMain(VSOutput input) : SV_Target0
             float3(0.1, 1.0, 0.1),
             yAxis);
 
-    //
-    // Alpha follows how much grid content (lines/axes) is actually at this pixel, not just distance - the
-    // base color above is only a tint for when a line IS present. Without this, the empty space between
-    // lines would inherit the same distance-only fade and stay nearly opaque up close, hiding anything
-    // rendered behind or below the grid plane instead of letting it show through
-    //
+    // Alpha follows how much line is actually at this pixel, not just distance. Without it the empty space
+    // between lines inherits the same fade and stays opaque up close, hiding whatever is behind the plane
     float lineCoverage =
         max(
             max(minorGrid * minorFade, majorGrid * majorFade),

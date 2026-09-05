@@ -157,6 +157,7 @@ public static class AssetDatabase {
 		if (LoadAssetDatabase() is not { } db) return;
 
 		var changed = false;
+		var discardAll = false;
 		foreach (var (type, collectionNode) in db.ToList()) {
 			if (type is "version" or "generated_at") continue;
 			if (collectionNode is not JsonObject collection) continue;
@@ -168,6 +169,14 @@ public static class AssetDatabase {
 				if (File.Exists(realPath)) continue;
 
 				log($"Missing file: {virtualPath}");
+
+				if (discardAll) {
+					TryDelete(realPath + ".meta");
+					changed = true;
+					log($"Discarded {virtualPath}");
+					continue;
+				}
+
 				var result = await ShowRelocateModal(
 					"Missing file",
 					$"File {virtualPath} could not be found, do you wish to relocate?",
@@ -180,6 +189,7 @@ public static class AssetDatabase {
 							changed = true;
 						break;
 					case RelocateDecision.Discard:
+						if (result.AppliedToAll) discardAll = true;
 						TryDelete(realPath + ".meta");
 						changed = true;
 						log($"Discarded {virtualPath}");
@@ -197,6 +207,7 @@ public static class AssetDatabase {
 	public static async Task RelocateMissingArtwork(Action<string> log) {
 		var db = LoadArtworkDatabase();
 		var changed = false;
+		var discardAll = false;
 
 		foreach (var (sourceVirtual, node) in db.ToList()) {
 			if (sourceVirtual is "version" or "type") continue;
@@ -205,6 +216,15 @@ public static class AssetDatabase {
 			if (File.Exists(realPath)) continue;
 
 			log($"Missing artwork: {sourceVirtual}");
+
+			// See RelocateMissingAssets()
+			if (discardAll) {
+				db.Remove(sourceVirtual);
+				changed = true;
+				log($"Removed link {sourceVirtual}");
+				continue;
+			}
+
 			var result = await ShowRelocateModal(
 				"Missing artwork",
 				$"Artwork file {sourceVirtual} could not be found, do you wish to relocate?",
@@ -228,6 +248,7 @@ public static class AssetDatabase {
 					log($"Relocated artwork {sourceVirtual} -> {newVirtual}");
 					break;
 				case RelocateDecision.Discard:
+					if (result.AppliedToAll) discardAll = true;
 					db.Remove(sourceVirtual);
 					changed = true;
 					log($"Removed link {sourceVirtual}");
@@ -407,6 +428,7 @@ public static class AssetDatabase {
 		if (Enum.TryParse<AddressMode>(s.AddressU, true, out var au)) settings.AddressU = au;
 		if (Enum.TryParse<AddressMode>(s.AddressV, true, out var av)) settings.AddressV = av;
 		if (Enum.TryParse<FilterMode>(s.Filter, true, out var f)) settings.Filter = f;
+		if (Enum.TryParse<TextureColorSpace>(s.ColorSpace, true, out var cs)) settings.ColorSpace = cs;
 		return settings;
 	}
 
@@ -428,6 +450,7 @@ public static class AssetDatabase {
 		settings.ImportTextures = s.ImportTextures;
 		settings.ImportCameras = s.ImportCameras;
 		settings.ImportLights = s.ImportLights;
+		settings.ImportAnimations = s.ImportAnimations;
 		settings.GeneratePrefab = s.GeneratePrefab;
 		return settings;
 	}
@@ -523,7 +546,7 @@ public static class AssetDatabase {
 	private static async Task<RelocateResult> ShowRelocateModal(
 		string title, string message, string startVirtualPath, string extension) {
 		while (true) {
-			var choice = await ShowChoice(new ModalConfig(
+			var (choice, appliedToAll) = await ShowChoiceEx(new ModalConfig(
 				title,
 				message,
 				ModalButtons.OkNoCancel,
@@ -533,25 +556,33 @@ public static class AssetDatabase {
 				"Discard",
 				"Skip",
 				LucideIconKind.Folders,
-				LucideIconKind.Shredder));
+				LucideIconKind.Shredder,
+				NoAllLabel: "Discard All",
+				NoAllIcon: LucideIconKind.Trash2));
 
 			switch (choice) {
 				case true:
 					var picked = await PickFile(title, extension, startVirtualPath);
 					if (picked is null) continue; // empty pick -> reopen the popup
-					return new RelocateResult(RelocateDecision.Relocate, picked);
+					return new RelocateResult(RelocateDecision.Relocate, picked, false);
 				case false:
-					return new RelocateResult(RelocateDecision.Discard, null);
+					return new RelocateResult(RelocateDecision.Discard, null, appliedToAll);
 				default:
-					return new RelocateResult(RelocateDecision.Skip, null);
+					return new RelocateResult(RelocateDecision.Skip, null, false);
 			}
 		}
 	}
 
 	private static async Task<bool?> ShowChoice(ModalConfig cfg) {
+		return (await ShowChoiceEx(cfg)).Choice;
+	}
+
+	private static async Task<(bool? Choice, bool AppliedToAll)> ShowChoiceEx(ModalConfig cfg) {
 		var owner = ActiveWindow();
-		if (owner is null) return null;
-		return await new MessageModal(cfg).ShowDialog<bool?>(owner);
+		if (owner is null) return (null, false);
+		var modal = new MessageModal(cfg);
+		var choice = await modal.ShowDialog<bool?>(owner);
+		return (choice, modal.AppliedToAll);
 	}
 
 	private static async Task<string?> PickFile(string title, string extension, string startVirtualPath) {
@@ -591,5 +622,5 @@ public static class AssetDatabase {
 
 	private enum RelocateDecision { Relocate, Discard, Skip }
 
-	private readonly record struct RelocateResult(RelocateDecision Decision, string? PickedPath);
+	private readonly record struct RelocateResult(RelocateDecision Decision, string? PickedPath, bool AppliedToAll);
 }

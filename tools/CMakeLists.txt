@@ -5,6 +5,11 @@ add_subdirectory(log_server)
 add_subdirectory(reflection_generator)
 add_subdirectory(asset_packer)
 
+
+add_dependencies(kenzo log_server)
+add_dependencies(packer kenzo)
+add_dependencies(reflection_generator packer)
+
 if (BUILD_TESTING)
     find_program(CARGO cargo)
     if (CARGO)

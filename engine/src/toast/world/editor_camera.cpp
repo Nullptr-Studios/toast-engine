@@ -7,8 +7,24 @@
 
 namespace toast {
 
+void EditorCameraController::setEnabled(bool enabled) noexcept {
+	if (m_enabled == enabled) {
+		return;
+	}
+	m_enabled = enabled;
+	if (!m_enabled) {
+		// Drop any held state, so a controller that loses focus mid-drag doesn't resume flying in whatever
+		// direction the keys were last seen in when it becomes active again
+		m_active = false;
+		m_move_forward = m_move_back = m_move_left = m_move_right = m_move_up = m_move_down = m_boost = false;
+	}
+}
+
 EditorCameraController::EditorCameraController() {
 	m_listener.subscribe<event::EditorCameraFlyMode>([this](const auto& e) {
+		if (!m_enabled) {
+			return false;
+		}
 		m_active = e.active;
 		if (!m_active) {
 			m_move_forward = m_move_back = m_move_left = m_move_right = m_move_up = m_move_down = m_boost = false;
@@ -17,6 +33,9 @@ EditorCameraController::EditorCameraController() {
 	});
 
 	m_listener.subscribe<event::EditorCameraMoveState>([this](const auto& e) {
+		if (!m_enabled) {
+			return false;
+		}
 		m_move_forward = e.forward;
 		m_move_back = e.back;
 		m_move_left = e.left;
@@ -28,6 +47,9 @@ EditorCameraController::EditorCameraController() {
 	});
 
 	m_listener.subscribe<event::EditorCameraLook>([this](const auto& e) {
+		if (!m_enabled) {
+			return false;
+		}
 		if (!m_active) {
 			return true;
 		}
@@ -37,6 +59,9 @@ EditorCameraController::EditorCameraController() {
 	});
 
 	m_listener.subscribe<event::EditorCameraSpeedScroll>([this](const auto& e) {
+		if (!m_enabled) {
+			return false;
+		}
 		m_speed = std::clamp(m_speed * (1.0f + e.delta * 0.1f), k_min_speed, k_max_speed);
 		return true;
 	});

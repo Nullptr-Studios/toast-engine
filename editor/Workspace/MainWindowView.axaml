@@ -129,6 +129,10 @@
 					<MenuItem Header="_Build project"
 					          InputGesture="F8"
 					          Command="{Binding CompileGameReleaseCommand}" />
+					<Separator />
+					<MenuItem Header="_Clean baked lighting cache"
+					          Command="{Binding CleanBakedLightingCacheCommand}"
+					          ToolTip.Tip="Deletes cached reflection probe and irradiance volume bakes whose node no longer exists in this project" />
 				</MenuItem>
 				<MenuItem Header="_View" />
 				<MenuItem Header="_Tools">
@@ -144,6 +148,9 @@
 					<MenuItem Header="_Schema Editor"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding SchemaEditorVisible, Mode=TwoWay}" />
+					<MenuItem Header="_Renderer Settings"
+					          ToggleType="CheckBox"
+					          IsChecked="{Binding RendererSettingsVisible, Mode=TwoWay}" />
 					<Separator />
 					<MenuItem Header="_Logs"
 					          ToggleType="CheckBox"

@@ -1,6 +1,6 @@
 /// @file shader_reflection.hpp
 /// @author Xein
-/// @date 17/07/2026.
+/// @date 17/07/2026
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include <optional>
 #include <slang.h>
 #include <string>
+#include <toast/export.hpp>
 #include <vector>
 
 namespace renderer {
@@ -35,6 +36,7 @@ enum class ShaderBindingKind : uint8_t {
 	sampled_image,
 	sampler,
 	storage_image,
+	acceleration_structure,
 };
 
 struct ShaderInspectorMeta {
@@ -46,6 +48,11 @@ struct ShaderInspectorMeta {
 	std::string group;
 	std::string subgroup;
 	std::string unit;
+	std::string default_fallback;    ///< "white" (default), "black", or "flat_normal" - Sampler2D fallback when unbound
+	/// [Linear] - the texture carries data (normals, metalness, roughness, occlusion) rather than colour, so it
+	/// must not be sRGB-encoded. Declared rather than inferred: roughness and occlusion are indistinguishable
+	/// from albedo by fallback alone, and decoding them through sRGB corrupts the values silently
+	bool linear_data = false;
 };
 
 struct ShaderBlockMember {
@@ -87,7 +94,7 @@ struct ShaderEntryPoint {
  * @brief Plain-data mirror of a compiled shader's layout, serializable to JSON
  *
  * Holds everything ShaderLayout needs to build pipeline layouts and everything the
- * editor needs to generate material schemas, without keeping any Slang objects alive.
+ * editor needs to generate material schemas, without keeping any Slang objects alive
  */
 struct ShaderReflection {
 	std::vector<ShaderEntryPoint> entry_points;
@@ -95,14 +102,27 @@ struct ShaderReflection {
 	std::vector<ShaderPushConstants> push_constants;
 	std::vector<std::string> layout_order;    ///< global parameter names in declaration order
 
+	// Exported so tests/renderer/02-reflection-round-trip.cpp can exercise the pair directly. That round trip
+	// is the disk shader cache's correctness boundary: a kind that does not survive it produces a descriptor
+	// set layout with the wrong type, which nothing in the engine reports and the driver rejects much later
 	[[nodiscard]]
-	auto toJson() const -> nlohmann::json;
+	auto TOAST_API toJson() const -> nlohmann::json;
 
-	static auto fromJson(const nlohmann::json& json) -> std::optional<ShaderReflection>;
+	static auto TOAST_API fromJson(const nlohmann::json& json) -> std::optional<ShaderReflection>;
 };
 
 /// Walks a Slang program layout into a plain ShaderReflection
 auto extractReflection(slang::ProgramLayout* layout) -> ShaderReflection;
+
+/**
+ * @brief Fills @p reflection's entry_points from the entry points a module actually defines
+ *
+ * Has to come from the IModule rather than the ProgramLayout: per Slang's docs an entry point declared with
+ * [shader("...")] is not part of a module's linkage, so ProgramLayout::getEntryPointCount() on a module-only
+ * composite always reports 0 - which silently left entry_points empty even though the emitted SPIR-V carried
+ * every entry point. Anything selecting a pipeline variant by entry-point name depends on this
+ */
+void extractModuleEntryPoints(slang::IModule* module, ShaderReflection& reflection);
 
 auto toString(ShaderMemberType type) -> std::string_view;
 auto toString(ShaderBindingKind kind) -> std::string_view;

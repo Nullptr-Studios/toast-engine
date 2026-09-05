@@ -49,7 +49,17 @@ public partial class ViewportControl : UserControl {
 
 	private int m_surfaceW;
 	private double m_lastScale;
-	private DispatcherTimer? m_timer;
+	/// <summary>
+	/// Whether the per-frame callback should keep rescheduling itself
+	/// </summary>
+	/// <remarks>
+	/// RequestAnimationFrame, not a <c>DispatcherTimer</c>. A timer made the viewport a third unsynchronized
+	/// clock against the renderer and the compositor, and three rates that never divide evenly beat against
+	/// each other - a frame reaching the screen after two composites, then three, then two. Capping the
+	/// renderer made it worse, because a regular beat is more visible than an irregular one
+	/// </remarks>
+	private bool m_frameLoopActive;
+
 	private TopLevel? m_topLevel;
 	private bool m_wasVisible;
 
@@ -146,9 +156,25 @@ public partial class ViewportControl : UserControl {
 		m_topLevel = TopLevel.GetTopLevel(this);
 		m_topLevel?.AddHandler(PointerMovedEvent, OnTopLevelPointerMoved, RoutingStrategies.Tunnel, true);
 
-		m_timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-		m_timer.Tick += OnTick;
-		m_timer.Start();
+		m_frameLoopActive = true;
+		ScheduleFrame();
+	}
+
+	/// <summary>Queues the next per-composite frame pickup; re-arms itself until detached.</summary>
+	private void ScheduleFrame() {
+		if (!m_frameLoopActive || m_topLevel is null)
+			return;
+
+		m_topLevel.RequestAnimationFrame(_ => {
+			if (!m_frameLoopActive)
+				return;
+
+			OnTick(this, EventArgs.Empty);
+
+			// Re-armed from inside the callback rather than kept running by a timer: if compositing stalls,
+			// the viewport stops asking for frames instead of queueing up work nobody will display
+			ScheduleFrame();
+		});
 	}
 
 	private void OnDetached(object? sender, VisualTreeAttachmentEventArgs e) {
@@ -157,10 +183,8 @@ public partial class ViewportControl : UserControl {
 		m_topLevel?.RemoveHandler(PointerMovedEvent, OnTopLevelPointerMoved);
 		m_topLevel = null;
 
-		if (m_timer is null) return;
-		m_timer.Stop();
-		m_timer.Tick -= OnTick;
-		m_timer = null;
+		// Stops the callback re-arming; any already-queued one returns immediately
+		m_frameLoopActive = false;
 	}
 
 	private void OnTopLevelPointerMoved(object? sender, PointerEventArgs e) {

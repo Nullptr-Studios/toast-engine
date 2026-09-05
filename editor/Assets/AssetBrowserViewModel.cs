@@ -440,21 +440,29 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 		AssetDatabase.RebuildAssetDatabase();
 	}
 
+	/// <summary>
+	/// Asset paths for the clipboard, from tracked assets only
+	/// </summary>
+	private static List<string> ClipboardPathsOf(IEnumerable<object> items) {
+		return items.OfType<AssetFile>().Where(IsEditable).Select(f => f.Filepath[..^5]).ToList();
+	}
+
 	private void Copy(object? param) {
-		var items = GetTargets(param);
-		m_clipPaths = items.OfType<AssetFile>().Select(f => f.Filepath[..^5]).ToList();
+		m_clipPaths = ClipboardPathsOf(GetTargets(param));
 		m_clipMode = ClipMode.Copy;
 	}
 
 	private void Cut(object? param) {
-		var items = GetTargets(param);
-		m_clipPaths = items.OfType<AssetFile>().Select(f => f.Filepath[..^5]).ToList();
+		m_clipPaths = ClipboardPathsOf(GetTargets(param));
 		m_clipMode = ClipMode.Cut;
 	}
 
 	private void Paste() {
 		if (m_clipMode == ClipMode.None || m_clipPaths.Count == 0) return;
 		var dest = m_selectedFolder?.Filepath ?? ProjectContext.AssetsPath;
+
+		// Nothing is written into cache:// or core://
+		if (!ProjectContext.IsUnderContentDatabase(dest) && !ProjectContext.IsDatabaseRoot(dest)) return;
 
 		foreach (var src in m_clipPaths) {
 			if (!File.Exists(src)) continue;
@@ -720,6 +728,13 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged {
 			var coreFolder = new AssetFolder(ProjectContext.CorePath) { Name = "core://" };
 			Folders.Add(coreFolder);
 			SetOwnerRecursive(coreFolder);
+
+			// cache:// - everything the engine generates rather than the project authors
+			if (Directory.Exists(ProjectContext.CachePath)) {
+				var cacheFolder = new AssetFolder(ProjectContext.CachePath, listRawFiles: true) { Name = "cache://" };
+				Folders.Add(cacheFolder);
+				SetOwnerRecursive(cacheFolder);
+			}
 		} else {
 			// show a minimal placeholder
 			var fallbackFolder = new AssetFolder(@"C:\Users\Xein\Desktop\unnamed_project\assets") {

@@ -1,15 +1,21 @@
 /// @file debug_pass.cpp
 /// @author dario
-/// @date 10/06/2026.
+/// @date 10/06/2026
 
 #include "debug_pass.hpp"
 
 #include "../clustered_lighting_constants.hpp"
+#include "../ray_tracing_scene.hpp"
 #include "../shader_cache.hpp"
+#include "../skinned_blas_pool.hpp"
 #include "../vulkan_core.hpp"
 #include "../vulkan_debug.hpp"
 #include "../vulkan_renderer.hpp"
+#include "../vulkan_texture.hpp"
 #include "cluster_lighting_pass.hpp"
+#include "environment_pass.hpp"
+#include "shadow_pass.hpp"
+#include "skinning_pass.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,6 +34,16 @@
 namespace renderer {
 
 namespace {
+
+constexpr std::array<toast::GizmoHandle, 3> k_axis_handles {
+  toast::GizmoHandle::axis_x, toast::GizmoHandle::axis_y, toast::GizmoHandle::axis_z
+};
+
+constexpr std::array<glm::vec4, 3> k_axis_colors {
+  glm::vec4 { 1.0f, 0.15f, 0.15f, 1.0f}, // X
+  glm::vec4 {0.15f,  1.0f, 0.15f, 1.0f}, // Y
+  glm::vec4 {0.15f, 0.15f,  1.0f, 1.0f}  // Z
+};
 
 using DebugVertex = VulkanRenderer::DebugVertex;
 
@@ -181,9 +197,9 @@ auto acquireShader(std::string_view uri) -> std::shared_ptr<const ShaderCache::E
 
 DebugPass::DebugPass(
     const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent,
-    const ClusterLightingPass& cluster_lighting_pass
+    const ClusterLightingPass* cluster_lighting_pass
 )
-    : m_cluster_lighting_pass(&cluster_lighting_pass) {
+    : m_cluster_lighting_pass(cluster_lighting_pass) {
 	const auto shape_shader = acquireShader("core://shaders/debug_shape.slang");
 	if (!shape_shader) {
 		TOAST_ERROR("Render", "DebugPass has no usable shaders, the pass will draw nothing");
@@ -207,7 +223,7 @@ DebugPass::DebugPass(
 		config.extent = extent;
 		config.shader_spirv = shape_shader->spirv;
 		config.pipeline_layout = *m_shader_layout.getPipelineLayout();
-		config.vertex_binding = debug_vertex_binding;
+		config.vertex_bindings = {debug_vertex_binding};
 		config.vertex_attributes = debug_vertex_attributes;
 		config.topology = vk::PrimitiveTopology::eLineList;
 		config.cull_mode = vk::CullModeFlagBits::eNone;
@@ -227,7 +243,7 @@ DebugPass::DebugPass(
 		config.extent = extent;
 		config.shader_spirv = shape_shader->spirv;
 		config.pipeline_layout = *m_shader_layout.getPipelineLayout();
-		config.vertex_binding = debug_vertex_binding;
+		config.vertex_bindings = {debug_vertex_binding};
 		config.vertex_attributes = debug_vertex_attributes;
 		config.topology = vk::PrimitiveTopology::eTriangleList;
 		config.cull_mode = vk::CullModeFlagBits::eNone;
@@ -238,6 +254,7 @@ DebugPass::DebugPass(
 	}
 
 	createResources(core);
+	createBillboardResources(core, color_format, depth_format, extent);
 	initImGui(core, color_format, depth_format);
 }
 
@@ -316,7 +333,7 @@ auto clusterHeatmapColorImGui(uint32_t light_count) -> ImVec4 {
 	const ImVec4 c3(1.0f, 0.0f, 0.0f, 1.0f);
 
 	auto lerp = [](const ImVec4& a, const ImVec4& b, float u) {
-		return ImVec4(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u, 1.0f);
+		return ImVec4(a.x + ((b.x - a.x) * u), a.y + ((b.y - a.y) * u), a.z + ((b.z - a.z) * u), 1.0f);
 	};
 
 	if (t < 0.333f) {
@@ -367,8 +384,217 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 
 		if (ImGui::Begin("Toast Debug")) {
 			ImGui::Text("Frame time: %.3f ms (%.1f FPS)", dt * 1000.0f, dt > 0.0f ? 1.0f / dt : 0.0f);
-			ImGui::Text("Mesh instances: %zu", frame->mesh_instances.size());
+			ImGui::Text(
+			    "Mesh instances: %u/%zu drawn", VulkanRenderer::instance->getVisibleInstanceCount(), frame->mesh_instances.size()
+			);
 			ImGui::Text("Lights: %zu", frame->lights.size());
+
+			{
+				const uint32_t dropped = VulkanRenderer::instance->getDroppedFrameCount();
+				const uint32_t out_of_order = VulkanRenderer::instance->getOutOfOrderFrameCount();
+				if (out_of_order > 0) {
+					ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Frames out of order: %u", out_of_order);
+				}
+				// Dropped frames are the usual explanation for motion that looks wrong: the main thread built
+				// them, the render thread never got to them, and the movement in between was never drawn
+				ImGui::TextDisabled("Frames dropped: %u", dropped);
+
+				// The counter that catches judder the other two cannot - simulation advanced, nothing was
+				// rendered from it, and the motion was sampled unevenly as a result
+				const uint32_t skipped = VulkanRenderer::instance->getSkippedBuildCount();
+				if (skipped > 0) {
+					ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Ticks with no frame built: %u", skipped);
+				} else {
+					ImGui::TextDisabled("Ticks with no frame built: 0");
+				}
+
+				// The spread, not the average
+				float avg_ms = 0.0f;
+				float min_ms = 0.0f;
+				float max_ms = 0.0f;
+				VulkanRenderer::instance->getFrameTimeStats(avg_ms, min_ms, max_ms);
+				const float spread = max_ms - min_ms;
+				if (spread > 8.0f) {
+					ImGui::TextColored(
+					    ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Frame time: %.1f ms (%.1f-%.1f, spread %.1f)", avg_ms, min_ms, max_ms, spread
+					);
+				} else {
+					ImGui::TextDisabled("Frame time: %.1f ms (%.1f-%.1f)", avg_ms, min_ms, max_ms);
+				}
+
+				// CAP
+				float cap = static_cast<float>(VulkanRenderer::instance->frameRateLimit());
+				if (ImGui::SliderFloat("FPS cap", &cap, 0.0f, 144.0f, cap <= 0.0f ? "uncapped" : "%.0f")) {
+					VulkanRenderer::instance->setFrameRateLimit(static_cast<double>(cap));
+				}
+			}
+
+			ImGui::TextDisabled("Depth prepass: %u instances", VulkanRenderer::instance->getPrepassDrawnCount());
+
+			// Both numbers used to be much larger: one draw per caster per view, and one render pass per atlas
+			// layer whether a light occupied it or not. Instancing, multiview and the idle-layer skip only show
+			// up here - the image is meant to be identical
+			if (const auto* shadows = VulkanRenderer::instance->getShadowPass(); shadows != nullptr) {
+				ImGui::TextDisabled("Shadow pass: %u draws, %u scopes", shadows->getDrawCount(), shadows->getPassCount());
+			}
+
+			if (const auto* skinning = VulkanRenderer::instance->getSkinningPass(); skinning != nullptr) {
+				const auto* pool = VulkanRenderer::instance->getSkinnedBlasPool();
+				ImGui::TextDisabled(
+				    "Skinning: %u posed, %u skinned BLAS refit",
+				    skinning->getPosedInstanceCount(),
+				    pool != nullptr ? pool->getRecordedCount() : 0u
+				);
+			}
+
+			// Says whether there is anything to trace at all. A traced view that looks identical to the raster
+			// one is ambiguous - it could mean the shadows agree, or that the TLAS is empty and every ray
+			// misses. This distinguishes them
+			if (auto* rt = VulkanRenderer::instance->getRayTracingScene(); rt != nullptr) {
+				const uint32_t traced = rt->getInstanceCount();
+				if (traced == 0) {
+					ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "TLAS: empty - nothing to trace against");
+				} else {
+					ImGui::TextDisabled("TLAS: %u instances", traced);
+				}
+
+				// The real integration, as opposed to the two traced debug views: with this on, mesh.slang traces
+				// every light's shadow instead of sampling a map. It is the only way a point or spot light gets a
+				// shadow beyond the handful the atlas has slots for
+				bool trace_all_lights = VulkanRenderer::instance->tracedShadowsEnabled();
+				if (ImGui::Checkbox("Traced shadows (all lights)", &trace_all_lights)) {
+					VulkanRenderer::instance->setTracedShadowsEnabled(trace_all_lights);
+				}
+			} else {
+				ImGui::TextDisabled("TLAS: ray query unsupported");
+			}
+
+			{
+				bool cull_debug = VulkanRenderer::instance->getCullDebugDraw();
+				if (ImGui::Checkbox("Show culling volumes", &cull_debug)) {
+					VulkanRenderer::instance->setCullDebugDraw(cull_debug);
+				}
+
+				bool cull_freeze = VulkanRenderer::instance->getCullFreeze();
+				if (ImGui::Checkbox("Freeze cull frustum", &cull_freeze)) {
+					VulkanRenderer::instance->setCullFreeze(cull_freeze);
+				}
+			}
+
+			ImGui::Separator();
+
+			// The generated sky is the scene's only light until something else is added, and its brightness is
+			// the difference between an environment that lights a scene and one that merely tints it. Editing
+			// it here re-runs the precompute, so the skybox and both convolutions move together
+			if (auto* environment = VulkanRenderer::instance->getEnvironmentPassMutable(); environment != nullptr) {
+				if (m_sky_intensity_ui < 0.0f) {
+					m_sky_intensity_ui = environment->getSkyIntensity();
+				}
+				// A URI rather than a file picker: ImGui has no browser and the editor's renderer-settings
+				// window does not exist yet. Typing "project://sky.hdr" is enough to prove the path end to end
+				ImGui::InputText("Environment HDR", m_environment_uri_ui.data(), m_environment_uri_ui.size());
+				ImGui::SameLine();
+				if (ImGui::Button("Load")) {
+					environment->setEnvironmentMap(std::string_view(m_environment_uri_ui.data()));
+				}
+				if (!environment->getEnvironmentMapUri().empty()) {
+					ImGui::SameLine();
+					if (ImGui::Button("Clear")) {
+						environment->setEnvironmentMap("");
+					}
+				}
+
+				ImGui::SliderFloat("Sky intensity", &m_sky_intensity_ui, 0.0f, 20.0f, "%.2f");
+				// Committed on release, not per frame: a rebuild reconvolves the whole environment, and doing
+				// that on every frame of a drag would stutter for as long as the slider is held
+				if (ImGui::IsItemDeactivatedAfterEdit()) {
+					environment->setSkyIntensity(m_sky_intensity_ui);
+				}
+			}
+
+			// What the shader actually received, not what the node holds. A probe that contributes nothing is
+			// indistinguishable from no probe from the viewport, and the usual cause is extents authored in the
+			// wrong units - so the numbers being fed in are the thing worth showing
+			{
+				const uint32_t probe_count = frame->frame_data.reflection_probe_count_pad.x;
+				ImGui::Text("Reflection probes: %u", probe_count);
+				for (uint32_t i = 0; i < probe_count && i < 4; ++i) {
+					const auto& probe = frame->frame_data.reflection_probes[i];
+					const glm::vec3 position(probe.position_radius);
+					const glm::vec3 extents(probe.box_extents_intensity);
+					if (extents.x > 0.0f || extents.y > 0.0f || extents.z > 0.0f) {
+						ImGui::BulletText(
+						    "cube %d box +/-(%.0f, %.0f, %.0f) at (%.0f, %.0f, %.0f)",
+						    static_cast<int>(probe.params.x),
+						    extents.x,
+						    extents.y,
+						    extents.z,
+						    position.x,
+						    position.y,
+						    position.z
+						);
+					} else {
+						ImGui::BulletText(
+						    "cube %d sphere r=%.0f at (%.0f, %.0f, %.0f)",
+						    static_cast<int>(probe.params.x),
+						    probe.position_radius.w,
+						    position.x,
+						    position.y,
+						    position.z
+						);
+					}
+				}
+				ImGui::Text(
+				    "Camera: (%.0f, %.0f, %.0f)",
+				    frame->frame_data.camera_position.x,
+				    frame->frame_data.camera_position.y,
+				    frame->frame_data.camera_position.z
+				);
+			}
+
+			if (ImGui::Button("Bake reflection probes")) {
+				VulkanRenderer::instance->requestReflectionProbeBake();
+			}
+			ImGui::SameLine();
+			if (const uint32_t stale = VulkanRenderer::instance->getStaleReflectionProbeCount(); stale > 0) {
+				ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "%u stale", stale);
+			} else {
+				ImGui::TextDisabled("(6 frames per probe)");
+			}
+
+			// Read-only: these come from whichever PostProcessVolume the camera is inside, blended fresh every
+			// tick, so a value poked in here would be overwritten before the next frame. Shown because SSR's
+			// coverage is entirely a function of these four numbers - a correct-but-sparse result and a
+			// threshold set too tight look identical without them. Edit them on the volume
+			if (ImGui::CollapsingHeader("Screen-space reflections")) {
+				const auto& ssr = frame->post_process.ssr;
+				ImGui::TextDisabled("intensity %.2f, max roughness %.2f", ssr.intensity, ssr.max_roughness);
+				ImGui::TextDisabled("stride %.3f m x %u steps", ssr.stride, ssr.max_steps);
+				ImGui::TextDisabled("thickness %.2f m", ssr.thickness);
+				ImGui::TextDisabled("Ray reach: %.1f m", ssr.stride * static_cast<float>(ssr.max_steps));
+			}
+
+			// Kept next to the reflection bake because they share the staging cube and are sequenced against
+			// each other - starting one while the other runs simply queues it, it does not interleave
+			if (const uint32_t irradiance_probes = VulkanRenderer::instance->getIrradianceProbeCount(); irradiance_probes > 0) {
+				if (ImGui::Button("Bake irradiance volumes")) {
+					VulkanRenderer::instance->requestIrradianceBake();
+				}
+				ImGui::SameLine();
+				if (const uint32_t stale = VulkanRenderer::instance->getStaleIrradianceVolumeCount(); stale > 0) {
+					ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "%u stale (%u probes)", stale, irradiance_probes);
+				} else {
+					ImGui::TextDisabled("(%u probes, %u frames)", irradiance_probes, irradiance_probes * 6);
+				}
+			}
+
+			// Read-only for the same reason as the SSR block above - edit these on the PostProcessVolume
+			if (ImGui::CollapsingHeader("Ambient occlusion")) {
+				const auto& ssao = frame->post_process.ssao;
+				ImGui::TextDisabled("radius %.2f m, strength %.2f", ssao.radius, ssao.strength);
+				ImGui::TextDisabled("range cutoff %.2f m, %u samples", ssao.range_cutoff, ssao.sample_count);
+			}
+
 			ImGui::Separator();
 			ImGui::Text("Render mode: %s", frame->render_mode == 1 ? "Cluster Heatmap (toolbar Mode button)" : "Lit");
 			if (frame->render_mode == 1) {
@@ -378,10 +604,9 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 		}
 		ImGui::End();
 
-		// Cluster-heatmap overlay: divides the viewport into the 16x9 XY tile grid (matching
-		// clustered_lighting_constants.hpp), fills each cell by its worst-case light count across all Z
-		// slices, and labels it with the exact number - the shader heatmap already color-codes per-pixel
-		// using the correct depth-derived Z slice, this adds the screen-space grid + exact counts on top
+		// Cluster-heatmap overlay, the 16x9 XY tile grid from clustered_lighting_constants.hpp, each cell
+		// filled by its worst-case light count across all Z slices and labelled with the number. The shader
+		// heatmap already colour-codes per pixel; this adds the grid and exact counts on top
 		if (frame->render_mode == 1 && m_cluster_lighting_pass != nullptr) {
 			const auto counts = m_cluster_lighting_pass->getClusterLightGridCounts(frame_index);
 			if (!counts.empty()) {
@@ -395,10 +620,8 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 					for (uint32_t tx = 0; tx < k_cluster_dim_x; ++tx) {
 						uint32_t max_count = 0;
 						for (uint32_t tz = 0; tz < k_cluster_dim_z; ++tz) {
-							const uint32_t idx = tx + ty * k_cluster_dim_x + tz * k_cluster_dim_x * k_cluster_dim_y;
-							if (counts[idx] > max_count) {
-								max_count = counts[idx];
-							}
+							const uint32_t idx = tx + (ty * k_cluster_dim_x) + (tz * k_cluster_dim_x * k_cluster_dim_y);
+							max_count = std::max(max_count, counts[idx]);
 						}
 
 						const ImVec2 cell_min(static_cast<float>(tx) * cell_w, static_cast<float>(ty) * cell_h);
@@ -410,7 +633,7 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 
 						const std::string label = std::format("{}", max_count);
 						const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
-						const ImVec2 text_pos(cell_min.x + (cell_w - text_size.x) * 0.5f, cell_min.y + (cell_h - text_size.y) * 0.5f);
+						const ImVec2 text_pos(cell_min.x + ((cell_w - text_size.x) * 0.5f), cell_min.y + ((cell_h - text_size.y) * 0.5f));
 						draw_list->AddText(ImVec2(text_pos.x + 1, text_pos.y + 1), IM_COL32(0, 0, 0, 200), label.c_str());
 						draw_list->AddText(text_pos, IM_COL32(255, 255, 255, 255), label.c_str());
 					}
@@ -445,6 +668,12 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 
 	const auto* frame = VulkanRenderer::instance->renderingFrame();
 	if (frame == nullptr) {
+		return;
+	}
+
+	// Nothing here belongs in a reflection probe. Light icons, gizmos and the probe volumes themselves are
+	// editor furniture, and a probe that captured them would light the scene with its own wireframe
+	if (frame->probe_capture_index >= 0) {
 		return;
 	}
 
@@ -551,11 +780,58 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 				}
 
 				pc.tint = highlighted ? k_highlight : range.base_color;
+				// Stage flags must cover every stage the layout's overlapping range declares, not just the
+				// stages that happen to read the data - ShaderLayout reflects this range as vertex|fragment
 				cmd.pushConstants(
-				    *m_shader_layout.getPipelineLayout(), vk::ShaderStageFlagBits::eVertex, 0, sizeof(DrawPushConstants), &pc
+				    *m_shader_layout.getPipelineLayout(),
+				    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+				    0,
+				    sizeof(DrawPushConstants),
+				    &pc
 				);
 				cmd.draw(range.vertex_count, 1, range.first_vertex, 0);
 			}
+		}
+	}
+
+	// Camera-facing textured icons
+	if (!frame->debug_billboards.empty() && m_billboard_pipeline.isReady() && frame_index < m_billboard_frame_sets.size()) {
+		const auto& core = VulkanRenderer::instance->getCore();
+		const vk::PipelineLayout layout = *m_billboard_layout.getPipelineLayout();
+
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_billboard_pipeline.getPipeline());
+		cmd.bindDescriptorSets(
+		    vk::PipelineBindPoint::eGraphics, layout, 0, std::array<vk::DescriptorSet, 1> {*m_billboard_frame_sets[frame_index]}, {}
+		);
+
+		vk::DescriptorSet bound_texture_set {};
+		for (const auto& billboard : frame->debug_billboards) {
+			if (!billboard.texture.hasValue()) {
+				continue;
+			}
+			const auto& gpu_texture = billboard.texture->gpuTexture();
+			if (!gpu_texture.isReady() || !gpu_texture.getView()) {
+				continue;    // still uploading; it'll show up on a later frame
+			}
+
+			const vk::DescriptorSet texture_set = billboardTextureSet(core, gpu_texture.getView());
+			if (!texture_set) {
+				continue;
+			}
+			if (texture_set != bound_texture_set) {
+				cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 1, std::array {texture_set}, {});
+				bound_texture_set = texture_set;
+			}
+
+			BillboardPushConstants pc {};
+			pc.center_size = glm::vec4(billboard.position, billboard.size);
+			pc.tint = billboard.tint;
+			cmd.pushConstants(
+			    layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(BillboardPushConstants), &pc
+			);
+
+			// Six vertices, no vertex buffer - debug_billboard.slang builds the quad from SV_VertexID
+			cmd.draw(6, 1, 0, 0);
 		}
 	}
 
@@ -613,6 +889,99 @@ void DebugPass::createResources(const renderer::VulkanCore& core) {
 	createScaleGizmoGeometry(core);
 }
 
+void DebugPass::createBillboardResources(
+    const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent
+) {
+	const auto shader = acquireShader("core://shaders/debug_billboard.slang");
+	if (!shader) {
+		TOAST_ERROR("Render", "DebugPass billboard shader unavailable, debug billboards will not draw");
+		return;
+	}
+
+	m_billboard_layout.rebuild(core, shader->reflection, "DebugPass Billboard");
+
+	VulkanPipeline::Config config;
+	config.pipeline_type = VulkanPipeline::PipelineType::graphics;
+	config.debug_name = "DebugPass Billboard";
+	config.color_format = color_format;
+	config.depth_format = depth_format;
+	config.extent = extent;
+	config.shader_spirv = shader->spirv;
+	config.pipeline_layout = *m_billboard_layout.getPipelineLayout();
+	// The shader generates its own quad from SV_VertexID, so there's deliberately no vertex binding here -
+	// VulkanPipeline treats an empty attribute list as "no vertex input"
+	config.topology = vk::PrimitiveTopology::eTriangleList;
+	config.cull_mode = vk::CullModeFlagBits::eNone;
+	// Depth-tested so icons sit correctly in the scene and get hidden behind geometry, but not depth-writing:
+	// they're screen-aligned overlays, and letting them occlude real geometry would be worse than the
+	// blend-order imprecision of leaving depth alone
+	config.depth_test = true;
+	config.depth_write = false;
+	config.blend_preset = VulkanPipeline::BlendPreset::alpha;
+	m_billboard_pipeline.rebuild(core, config);
+
+	const auto& device = core.getDevice();
+
+	const auto sampler_ci = linearClampMippedSamplerInfo(VK_LOD_CLAMP_NONE);
+	m_billboard_sampler = vk::raii::Sampler(device, sampler_ci);
+	setDebugName(core, *m_billboard_sampler, "DebugPass BillboardSampler");
+
+	const auto& layouts = m_billboard_layout.getDescriptorSetLayouts();
+	if (layouts.empty()) {
+		TOAST_ERROR("Render", "DebugPass billboard layout has no descriptor sets");
+		return;
+	}
+
+	const vk::DescriptorPool pool = VulkanRenderer::instance->getDescriptorPoolHandle();
+	const vk::DescriptorSetLayout frame_set_layout = *layouts[0];
+
+	m_billboard_frame_sets.clear();
+	m_billboard_frame_sets.reserve(VulkanRenderer::k_frames_in_flight);
+	for (uint32_t i = 0; i < VulkanRenderer::k_frames_in_flight; ++i) {
+		const vk::DescriptorSetAllocateInfo alloc_info(pool, 1, &frame_set_layout);
+		auto allocated = device.allocateDescriptorSets(alloc_info);
+		m_billboard_frame_sets.push_back(std::move(allocated[0]));
+		setDebugName(core, *m_billboard_frame_sets[i], std::format("DebugPass BillboardFrameSet[{}]", i));
+
+		const auto* frame_res = VulkanRenderer::instance->getFrameUBORes(i);
+		if (!frame_res->gpu_buffer.has_value()) {
+			continue;
+		}
+		const vk::DescriptorBufferInfo buffer_info(**frame_res->gpu_buffer, 0, sizeof(VulkanRenderer::FrameUBO));
+		const vk::WriteDescriptorSet write(
+		    *m_billboard_frame_sets[i], 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &buffer_info
+		);
+		device.updateDescriptorSets(write, {});
+	}
+}
+
+auto DebugPass::billboardTextureSet(const renderer::VulkanCore& core, vk::ImageView view) -> vk::DescriptorSet {
+	if (const auto it = m_billboard_texture_sets.find(view); it != m_billboard_texture_sets.end()) {
+		return *it->second;
+	}
+
+	const auto& layouts = m_billboard_layout.getDescriptorSetLayouts();
+	if (layouts.size() < 2) {
+		return nullptr;
+	}
+
+	const auto& device = core.getDevice();
+	const vk::DescriptorSetLayout texture_set_layout = *layouts[1];
+	const vk::DescriptorSetAllocateInfo alloc_info(VulkanRenderer::instance->getDescriptorPoolHandle(), 1, &texture_set_layout);
+	auto allocated = device.allocateDescriptorSets(alloc_info);
+
+	vk::DescriptorImageInfo image_info {};
+	image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+	image_info.imageView = view;
+	image_info.sampler = *m_billboard_sampler;
+
+	const vk::WriteDescriptorSet write(*allocated[0], 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &image_info);
+	device.updateDescriptorSets(write, {});
+
+	auto [it, _] = m_billboard_texture_sets.emplace(view, std::move(allocated[0]));
+	return *it->second;
+}
+
 void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format) {
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -626,14 +995,13 @@ void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_for
 	io.SetClipboardTextFn = nullptr;
 	io.GetClipboardTextFn = nullptr;
 
-	static const vk::Format color_formats[1] {color_format};
+	const std::array<vk::Format, 1> color_formats {color_format};
 	vk::PipelineRenderingCreateInfo rendering_ci {};
 	rendering_ci.colorAttachmentCount = 1;
-	rendering_ci.pColorAttachmentFormats = color_formats;
-	// Must match the actual depth attachment bound when this pass's dynamic-rendering scope is begun (this
-	// pass shares that scope with the material passes' draws), even though ImGui itself never reads/writes depth -
-	// vkCmdBeginRendering with a depth attachment present requires every pipeline drawn within it to declare
-	// a matching depthAttachmentFormat, or validation flags every single draw call
+	rendering_ci.pColorAttachmentFormats = color_formats.data();
+	// Must match the depth attachment of the scope this pass shares with the material draws, even though
+	// ImGui never touches depth: every pipeline inside a scope with a depth attachment has to declare a
+	// matching depthAttachmentFormat, or validation flags every draw
 	rendering_ci.depthAttachmentFormat = depth_format;
 
 	ImGui_ImplVulkan_InitInfo init_info {};
@@ -709,21 +1077,12 @@ void DebugPass::createTranslateGizmoGeometry(const renderer::VulkanCore& core) {
 	};
 
 	// Axis arrows colored red, green, blue
-	constexpr std::array<toast::GizmoHandle, 3> axis_handles {
-	  toast::GizmoHandle::axis_x, toast::GizmoHandle::axis_y, toast::GizmoHandle::axis_z
-	};
-
-	constexpr std::array<glm::vec4, 3> axis_colors {
-	  glm::vec4 { 1.0f, 0.15f, 0.15f, 1.0f},
-     glm::vec4 {0.15f,  1.0f, 0.15f, 1.0f},
-     glm::vec4 {0.15f, 0.15f,  1.0f, 1.0f}
-	};
 
 	for (int axis = 0; axis < 3; ++axis) {
 		const size_t start = vertices.size();
 		appendShaftAlongAxis(vertices, axis, k_shaft_length, k_shaft_half_size, k_white);
 		appendPyramidAlongAxis(vertices, axis, k_shaft_length, k_shaft_length + k_head_length, k_head_half_size, k_white);
-		record_handle(axis_handles[axis], start, axis_colors[axis]);
+		record_handle(k_axis_handles[axis], start, k_axis_colors[axis]);
 	}
 
 	// Plane handles: XY/YZ/XZ, offset from the origin along their own two axes
@@ -771,21 +1130,11 @@ void DebugPass::createRotateGizmoGeometry(const renderer::VulkanCore& core) {
 
 	std::vector<DebugVertex> vertices;
 
-	constexpr std::array<toast::GizmoHandle, 3> axis_handles {
-	  toast::GizmoHandle::axis_x, toast::GizmoHandle::axis_y, toast::GizmoHandle::axis_z
-	};
-
-	constexpr std::array<glm::vec4, 3> axis_colors {
-	  glm::vec4 { 1.0f, 0.15f, 0.15f, 1.0f},
-     glm::vec4 {0.15f,  1.0f, 0.15f, 1.0f},
-     glm::vec4 {0.15f, 0.15f,  1.0f, 1.0f}
-	};
-
 	for (int axis = 0; axis < 3; ++axis) {
 		const size_t start = vertices.size();
 		appendRing(vertices, axis, k_ring_radius, k_ring_thickness, k_ring_segments, k_white);
-		m_rotate_gizmo_handles[static_cast<size_t>(axis_handles[axis])] = {
-		  static_cast<uint32_t>(start), static_cast<uint32_t>(vertices.size() - start), axis_colors[axis]
+		m_rotate_gizmo_handles[static_cast<size_t>(k_axis_handles[axis])] = {
+		  static_cast<uint32_t>(start), static_cast<uint32_t>(vertices.size() - start), k_axis_colors[axis]
 		};
 	}
 
@@ -811,16 +1160,6 @@ void DebugPass::createScaleGizmoGeometry(const renderer::VulkanCore& core) {
 
 	std::vector<DebugVertex> vertices;
 
-	constexpr std::array<toast::GizmoHandle, 3> axis_handles {
-	  toast::GizmoHandle::axis_x, toast::GizmoHandle::axis_y, toast::GizmoHandle::axis_z
-	};
-
-	constexpr std::array<glm::vec4, 3> axis_colors {
-	  glm::vec4 { 1.0f, 0.15f, 0.15f, 1.0f},
-     glm::vec4 {0.15f,  1.0f, 0.15f, 1.0f},
-     glm::vec4 {0.15f, 0.15f,  1.0f, 1.0f}
-	};
-
 	for (int axis = 0; axis < 3; ++axis) {
 		const size_t start = vertices.size();
 		appendShaftAlongAxis(vertices, axis, k_shaft_length, k_shaft_half_size, k_white);
@@ -832,8 +1171,8 @@ void DebugPass::createScaleGizmoGeometry(const renderer::VulkanCore& core) {
 		max[axis] = k_shaft_length + (2.0f * k_scale_head_half_size);
 		appendBox(vertices, min, max, k_white);
 
-		m_scale_gizmo_handles[static_cast<size_t>(axis_handles[axis])] = {
-		  static_cast<uint32_t>(start), static_cast<uint32_t>(vertices.size() - start), axis_colors[axis]
+		m_scale_gizmo_handles[static_cast<size_t>(k_axis_handles[axis])] = {
+		  static_cast<uint32_t>(start), static_cast<uint32_t>(vertices.size() - start), k_axis_colors[axis]
 		};
 	}
 

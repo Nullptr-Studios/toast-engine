@@ -1,6 +1,6 @@
 /// @file vulkan_texture.hpp
 /// @author dario
-/// @date 6/28/2026.
+/// @date 6/28/2026
 
 #pragma once
 #include "ktx.h"
@@ -37,13 +37,19 @@ public:
 		return *m_image_view;
 	}
 
+	/// @returns the VkFormat the KTX2 carried, which is what decides whether the GPU applies an sRGB decode
+	/// on sample - see MaterialPass's colour-space check
+	[[nodiscard]]
+	auto getFormat() const -> vk::Format {
+		return m_params.format;
+	}
+
 private:
 	std::optional<vma::raii::Image> m_image;
 	vk::raii::ImageView m_image_view = nullptr;
 	Params m_params;
 };
 
-// Upload Resource
 class TextureUpload : public PendingResourceUpload {
 public:
 	TextureUpload(VulkanTexture& texture, const std::vector<uint8_t>& data, std::string_view debug_name = {})

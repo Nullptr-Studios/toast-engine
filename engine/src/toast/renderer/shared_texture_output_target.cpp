@@ -1,6 +1,6 @@
 /// @file SharedTextureOutputTarget.cpp
 /// @author dario
-/// @date 16/05/2026.
+/// @date 16/05/2026
 
 #include "shared_texture_output_target.hpp"
 
@@ -10,16 +10,11 @@
 #include <cstring>
 #include <format>
 #include <toast/log.hpp>
+#include <utility>
 
 namespace renderer {
 
-namespace {
-
-auto colorSubresourceRange() -> vk::ImageSubresourceRange {
-	return {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-}
-
-}
+namespace { }
 
 SharedTextureOutputTarget::SharedTextureOutputTarget(const VulkanCore& core, vk::Extent2D preferred_extent, uint32_t image_count)
     : m_core(&core),
@@ -101,8 +96,24 @@ auto SharedTextureOutputTarget::getColorAttachment(uint32_t index) const -> cons
 }
 
 auto SharedTextureOutputTarget::acquireNextImage(uint64_t, vk::Semaphore, vk::Fence) -> vk::ResultValue<uint32_t> {
+	// Never hand back the image copyLatestFrame() publishes to the consumer. There are as many images as
+	// frames in flight, so a plain round-robin lands every frame slot on the index it just published one
+	// step earlier - and the consumer reads that staging buffer straight out of mapped memory, on its own
+	// thread, with only the fence for the *previous* use of that image to order against. The GPU's
+	// copyImageToBuffer then overwrites the buffer mid-read, and because it lands in tiles the result is
+	// rectangular blocks of the new frame over whatever was there before. Skipping the published index
+	// leaves the consumer a stable buffer for a full rotation
+	const std::scoped_lock lock(m_frame_mutex);
+
+	const uint32_t count = getImageCount();
+	const int32_t published = m_latest_ready.load(std::memory_order_acquire);
+
 	uint32_t image_index = m_next_acquire_index;
-	m_next_acquire_index = (m_next_acquire_index + 1) % getImageCount();
+	if (count > 1 && std::cmp_equal(image_index, published)) {
+		image_index = (image_index + 1) % count;
+	}
+	m_next_acquire_index = (image_index + 1) % count;
+
 	return {vk::Result::eSuccess, image_index};
 }
 
@@ -160,6 +171,11 @@ void SharedTextureOutputTarget::onImageRenderComplete(uint32_t image_index) {
 	}
 	// The GPU copy into this staging buffer is complete
 	// invalidate caches and publish it
+	//
+	// Under the same lock copyLatestFrame() holds, so the index and the counter it reads always describe the
+	// same frame, and so a publish can never land in the middle of a consumer's copy
+	const std::scoped_lock lock(m_frame_mutex);
+
 	auto& shared = m_images[image_index];
 	if (shared.staging.has_value()) {
 		shared.staging->getAllocation().invalidate(0, imageByteSize());

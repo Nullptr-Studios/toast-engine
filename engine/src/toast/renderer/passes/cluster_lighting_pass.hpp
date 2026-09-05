@@ -1,6 +1,6 @@
 /// @file cluster_lighting_pass.hpp
 /// @author dario
-/// @date 18/07/2026.
+/// @date 18/07/2026
 
 #pragma once
 #include "../clustered_lighting_constants.hpp"
@@ -19,14 +19,9 @@ class VulkanCore;
 /**
  * @brief Builds a view-space cluster grid and culls PointLight/Spotlight sources into it every frame
  *
- * Two back-to-back compute dispatches sharing one pipeline layout/descriptor set: clusterBuildMain
- * (writes per-cluster view-space AABBs) then lightCullMain (sphere-vs-AABB tests each cluster against
- * every light, writes a fixed-stride-per-cluster light index list). Owns kFramesInFlight independent
- * instances of every buffer - frame N+1's dispatch can legitimately start before frame N's fragment
- * shader has finished reading, so a single shared instance would be a cross-queue write/read race
- *
- * MeshPass reads the results back (ClusterParams/Lights/ClusterLightGrid/LightIndexList, everything
- * except the compute-internal ClusterAABB) via the getters below - inert until Stage 4 wires that up
+ * Two back-to-back dispatches sharing one layout: clusterBuildMain writes per-cluster AABBs, lightCullMain
+ * sphere-tests each against every light. One buffer set per frame in flight, because frame N+1's dispatch
+ * can start before frame N's fragment shader has finished reading, thats BAD
  */
 class ClusterLightingPass : public IComputePass {
 public:

@@ -1,9 +1,11 @@
 /// @file shader_reflection.cpp
 /// @author Xein
-/// @date 17/07/2026.
+/// @date 17/07/2026
 
 #include "shader_reflection.hpp"
 
+#include <algorithm>
+#include <slang-com-ptr.h>
 #include <toast/log.hpp>
 
 namespace renderer {
@@ -110,6 +112,10 @@ auto extractInspector(slang::VariableReflection* var) -> ShaderInspectorMeta {
 			meta.subgroup = read_string(attribute);
 		} else if (name == "Unit") {
 			meta.unit = read_string(attribute);
+		} else if (name == "Default") {
+			meta.default_fallback = read_string(attribute);
+		} else if (name == "Linear") {
+			meta.linear_data = true;
 		}
 	}
 
@@ -151,7 +157,16 @@ auto extractBlockMembers(slang::TypeLayoutReflection* struct_layout) -> std::vec
 		if (member.name == "model" && member.type == ShaderMemberType::mat4) {
 			member.engine_semantic = "model_matrix";
 		}
-
+		// Index into the per-frame joint matrix buffer where a skinned instance's matrices start - the
+		// engine patches this per-draw, same as model_matrix above
+		if (member.name == "jointOffset" && member.type == ShaderMemberType::uint_t) {
+			member.engine_semantic = "joint_offset";
+		}
+		// Where this draw's run begins in the per-frame instance buffer. Instanced draws index it by
+		// SV_InstanceID, so one push per *run* replaces one push per instance - see MaterialPass::record()
+		if (member.name == "instanceBase" && member.type == ShaderMemberType::uint_t) {
+			member.engine_semantic = "instance_base";
+		}
 		members.push_back(std::move(member));
 	}
 	return members;
@@ -160,6 +175,14 @@ auto extractBlockMembers(slang::TypeLayoutReflection* struct_layout) -> std::vec
 auto mapBindingKind(slang::TypeLayoutReflection* type_layout) -> std::optional<ShaderBindingKind> {
 	if (type_layout == nullptr) {
 		return std::nullopt;
+	}
+
+	// An array of resources reflects as Array, with the resource one level down. Without unwrapping it the
+	// switch below falls through to nullopt and the binding is dropped from the reflection entirely - so it is
+	// never added to the descriptor set layout and never written, and the shader samples a binding that does
+	// not exist. That reads as black, indistinguishable from a resource that was bound but empty
+	if (type_layout->getKind() == slang::TypeReflection::Kind::Array) {
+		return mapBindingKind(type_layout->getElementTypeLayout());
 	}
 
 	switch (type_layout->getKind()) {
@@ -188,6 +211,11 @@ auto mapBindingKind(slang::TypeLayoutReflection* type_layout) -> std::optional<S
 			return ShaderBindingKind::sampled_image;
 		case SLANG_STRUCTURED_BUFFER:
 		case SLANG_BYTE_ADDRESS_BUFFER: return ShaderBindingKind::storage_buffer;
+		// A RaytracingAccelerationStructure. Without this case it falls to nullopt and is dropped from the
+		// reflection entirely - exactly the failure the array note above describes, except an unwritten
+		// acceleration-structure descriptor does not read as black, it faults: the layout has no such binding,
+		// so writing one is undefined and the first trace reads a garbage address
+		case SLANG_ACCELERATION_STRUCTURE: return ShaderBindingKind::acceleration_structure;
 		default: return std::nullopt;
 	}
 }
@@ -204,12 +232,44 @@ auto isPushConstant(slang::VariableLayoutReflection* var_layout) -> bool {
 
 }
 
+void extractModuleEntryPoints(slang::IModule* module, ShaderReflection& reflection) {
+	if (module == nullptr) {
+		return;
+	}
+
+	const SlangInt32 defined_count = module->getDefinedEntryPointCount();
+	for (SlangInt32 i = 0; i < defined_count; ++i) {
+		Slang::ComPtr<slang::IEntryPoint> entry_point;
+		if (SLANG_FAILED(module->getDefinedEntryPoint(i, entry_point.writeRef())) || !entry_point) {
+			continue;
+		}
+
+		// An IEntryPoint's own layout is a one-entry-point program, so index 0 is always this entry point
+		auto* entry_layout = entry_point->getLayout();
+		if (entry_layout == nullptr) {
+			continue;
+		}
+		auto* entry = entry_layout->getEntryPointByIndex(0);
+		if (entry == nullptr || entry->getName() == nullptr) {
+			continue;
+		}
+
+		const std::string name = entry->getName();
+		if (std::ranges::any_of(reflection.entry_points, [&](const auto& existing) { return existing.name == name; })) {
+			continue;
+		}
+		reflection.entry_points.push_back(ShaderEntryPoint {.name = name, .stage = std::string(stageToString(entry->getStage()))});
+	}
+}
+
 auto extractReflection(slang::ProgramLayout* layout) -> ShaderReflection {
 	ShaderReflection reflection;
 	if (layout == nullptr) {
 		return reflection;
 	}
 
+	// Always 0 for a module-only composite - see extractModuleEntryPoints(), which is what actually
+	// populates this. Kept for the case where a caller composes explicit entry points into the program
 	const uint32_t entry_point_count = layout->getEntryPointCount();
 	reflection.entry_points.reserve(entry_point_count);
 	for (uint32_t i = 0; i < entry_point_count; ++i) {
@@ -270,6 +330,15 @@ auto extractReflection(slang::ProgramLayout* layout) -> ShaderReflection {
 		binding.binding = static_cast<uint32_t>(var_layout->getOffset(slang::ParameterCategory::DescriptorTableSlot));
 		binding.set = static_cast<uint32_t>(var_layout->getBindingSpace(slang::ParameterCategory::DescriptorTableSlot));
 
+		// An array binding declares descriptorCount entries, not one. Without this the descriptor set layout is
+		// built for a single descriptor while the shader indexes the whole array, so every element past the
+		// first reads out of range - which returns black rather than failing, and looks exactly like a resource
+		// that was never filled in
+		if (type_layout != nullptr && type_layout->getKind() == slang::TypeReflection::Kind::Array) {
+			const auto elements = static_cast<uint32_t>(type_layout->getElementCount());
+			binding.count = elements > 0 ? elements : 1;
+		}
+
 		if (binding.kind == ShaderBindingKind::uniform_buffer) {
 			if (auto* element_layout = type_layout->getElementTypeLayout()) {
 				binding.size = static_cast<uint32_t>(element_layout->getSize(SLANG_PARAMETER_CATEGORY_UNIFORM));
@@ -304,6 +373,10 @@ auto toString(ShaderMemberType type) -> std::string_view {
 	}
 }
 
+/// @warning Every ShaderBindingKind must appear here *and* in bindingKindFromString(). A kind missing from
+/// either round-trips into uniform_buffer with no error anywhere - the layout is simply built with the wrong
+/// type and the driver rejects the first write. It also only fails on a *cache hit*, so the run that
+/// recompiles works and every run after it faults
 auto toString(ShaderBindingKind kind) -> std::string_view {
 	switch (kind) {
 		case ShaderBindingKind::uniform_buffer: return "uniform_buffer";
@@ -312,6 +385,7 @@ auto toString(ShaderBindingKind kind) -> std::string_view {
 		case ShaderBindingKind::sampled_image: return "sampled_image";
 		case ShaderBindingKind::sampler: return "sampler";
 		case ShaderBindingKind::storage_image: return "storage_image";
+		case ShaderBindingKind::acceleration_structure: return "acceleration_structure";
 	}
 	return "uniform_buffer";
 }
@@ -363,6 +437,16 @@ auto bindingKindFromString(std::string_view str) -> ShaderBindingKind {
 	if (str == "storage_image") {
 		return ShaderBindingKind::storage_image;
 	}
+	if (str == "acceleration_structure") {
+		return ShaderBindingKind::acceleration_structure;
+	}
+
+	// Anything else is a kind this build does not know, which means the entry was written by a different
+	// version of the extractor. Silently returning uniform_buffer here is what let the missing
+	// acceleration_structure case reach the driver as a type mismatch instead of as a cache miss
+	if (str != "uniform_buffer") {
+		TOAST_WARN("Render", "Unknown shader binding kind '{}' in cached reflection; treating as uniform_buffer", str);
+	}
 	return ShaderBindingKind::uniform_buffer;
 }
 
@@ -392,6 +476,12 @@ auto inspectorToJson(const ShaderInspectorMeta& meta) -> nlohmann::json {
 	if (!meta.unit.empty()) {
 		json["unit"] = meta.unit;
 	}
+	if (!meta.default_fallback.empty()) {
+		json["default_fallback"] = meta.default_fallback;
+	}
+	if (meta.linear_data) {
+		json["linear_data"] = true;
+	}
 	return json;
 }
 
@@ -412,6 +502,8 @@ auto inspectorFromJson(const nlohmann::json& json) -> ShaderInspectorMeta {
 	meta.group = json.value("group", "");
 	meta.subgroup = json.value("subgroup", "");
 	meta.unit = json.value("unit", "");
+	meta.default_fallback = json.value("default_fallback", "");
+	meta.linear_data = json.value("linear_data", false);
 	return meta;
 }
 

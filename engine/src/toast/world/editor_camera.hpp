@@ -19,9 +19,20 @@ public:
 	/// @param dt Delta time in seconds
 	void tick(float dt, Camera* target);
 
+	/**
+	 * @brief Enables or disables input handling for this controller
+	 *
+	 * Every open Workspace owns a controller and they all subscribe to the same global input events, so
+	 * without this a fly-camera drag in one workspace would silently move and rotate every other
+	 * workspace's camera too - the drift only becoming visible on switching tabs. Only the workspace being
+	 * looked through should consume input
+	 */
+	void setEnabled(bool enabled) noexcept;
+
 private:
 	event::Listener m_listener;
 
+	bool m_enabled = false;
 	bool m_active = false;
 	bool m_move_forward = false;
 	bool m_move_back = false;

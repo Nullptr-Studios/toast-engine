@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "editor_camera.hpp"
 #include "gizmo_layout.hpp"
 #include "node_owner.hpp"
 
@@ -25,7 +26,7 @@ namespace toast {
  * A lightweight alternative to World: owns a node tree through the INodeOwner interface
  * but never ticks nodes, never builds a dependency graph, and never runs lifecycle functions
  * beyond those triggered by instantiation. Use it to display or edit a node tree without
- * running any game logic.
+ * running any game logic
  *
  * @see World, INodeOwner
  */
@@ -104,8 +105,9 @@ protected:
 	SnapSetting m_translate_snap {true, 0.10f};
 	SnapSetting m_rotate_snap {true, 30.0f};
 	SnapSetting m_scale_snap {true, 0.10f};
-	bool m_game_camera = false;    ///< false = editor camera
+	bool m_game_camera = false;                           ///< false = editor camera
 	std::unique_ptr<Camera> m_editor_camera;
+	EditorCameraController m_editor_camera_controller;    ///< drives m_editor_camera; ticked from tick() below
 
 	[[nodiscard]]
 	auto isActiveWorkspace() const noexcept -> bool;
@@ -144,13 +146,19 @@ protected:
 private:
 	double m_inspector_accum = 0.0;
 
+	/**
+	 * @brief Recursively advances every AnimationPlayer under @p node by one frame
+	 *
+	 * A Workspace never runs the tick scheduler, so without this nothing animates outside play mode.
+	 * PlayWorkspace skips it, or a clip would be sampled twice in one frame
+	 */
+	void tickAnimationPreviews(const Node& node);
+
 public:
 	/**
-	 * @brief Streams the focused node's reflected values to the editor at a fixed rate
+	 * @brief Editor-only per-frame work: camera preview, animation preview, inspector streaming
 	 *
-	 * Workspace nodes are never ticked for game logic; this override only throttles and emits
-	 * InspectorContent for the active workspace's focused node. It is a no-op when this workspace
-	 * is not the active one or when no node is focused.
+	 * Not the gameplay tick scheduler - only what the viewport needs to stay live. See PlayWorkspace::tick()
 	 */
 	void tick() override;
 
