@@ -29,6 +29,7 @@ class Signal {
 	struct SigGroup {
 		toast::UID uid;
 		std::string identifier;
+		
 		toast::Box<toast::Node> node;
 		callback_t cb;
 	};

@@ -56,7 +56,6 @@ pub struct Field {
 pub struct Signal {
     pub name: String,
     pub typename: String,
-    pub field_type: FieldType,
     pub arguments: Vec<String>,
     pub attrs_list: Vec<Attribute>,
     #[serde(rename = "attributes")]

@@ -437,7 +437,6 @@ fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
         signals.push(Signal {
             name: source[field_node.byte_range()].to_string(),
             typename: type_name.clone(),
-            field_type: infer_field_type(&type_name),
             arguments: template_args,
             attrs_list: attributes.clone(),
             attrib_json: attrs_to_json(&attributes)
