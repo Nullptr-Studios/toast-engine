@@ -78,16 +78,13 @@ public:
 		target_signal.m.listeners.reserve(data.size());
 		for (const auto& [uid, fn_identifier] : data) {
 			using SigGroupType = typename std::decay_t<decltype(target_signal)>::SigGroup;
-			SigGroupType group;
-			group.uid = uid;
-			group.identifier = fn_identifier;
-			group.node = nullptr;
-			group.cb = [](Args...) { };
-			// TODO: reconstruct group.node (toast::Box<toast::Node>) and group.cb
-			// (callback_t) from node_ptr_val/identifier. These aren't serialized
-			// as live objects, so they need to be rebuilt/rebound here (e.g. by
-			// resolving node_ptr_val back to a real Node and re-subscribing the
-			// appropriate callback for `identifier`) rather than default-constructed.
+			SigGroupType group {
+			  .uid = uid,
+			  .identifier = fn_identifier,
+			  .node = nullptr,
+			  .cb = [](Args...) { },
+			};
+			// TODO: check if node exists and create callback
 			target_signal.m.listeners.push_back(std::move(group));
 		}
 	}
