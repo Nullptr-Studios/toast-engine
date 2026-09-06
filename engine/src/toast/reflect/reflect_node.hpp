@@ -201,6 +201,25 @@ struct TOAST_API NodeInfo {
 	Factory construct = nullptr;
 	Deleter destroy = nullptr;
 
+
+	/**
+	 * @brief Finds a signal by name in this type's signals, then walks base_type if not found
+	 * @param signal_name The reflected signal name to look up
+	 * @return Pointer to the matching SignalInfo, or nullptr if the signal is not reflected anywhere in the hierarchy
+	 */
+	[[nodiscard]]
+	auto getSignal(std::string_view field_name) const -> const SignalInfo* {
+		for (const auto& f : signals) {
+			if (field_name == f.name) {
+				return &f;
+			}
+		}
+		if (base_type) {
+			return base_type->getSignal(field_name);
+		}
+		return nullptr;
+	}
+
 	/**
 	 * @brief Finds a field by name in this type's all_fields, then walks base_type if not found
 	 * @param field_name The reflected field name to look up
