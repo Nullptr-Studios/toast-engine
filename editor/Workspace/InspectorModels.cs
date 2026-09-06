@@ -541,7 +541,10 @@ public partial class FieldVM : ObservableObject {
 	}
 
 	internal string JoinArrayValues(IEnumerable<string> values) {
-		return string.Join(ArrayElementKind == WidgetKind.String ? "\x1f" : " ", values);
+		// terminator, not separator
+		return ArrayElementKind == WidgetKind.String
+			? string.Concat(values.Select(v => v + "\x1f"))
+			: string.Join(' ', values);
 	}
 
 	internal bool TryEnumEngineValue(string label, out string value) {
@@ -599,9 +602,7 @@ public partial class FieldVM : ObservableObject {
 			WidgetKind.Vec4 or WidgetKind.Color4 =>
 				$"{InspectorFormat.Float(X)} {InspectorFormat.Float(Y)} {InspectorFormat.Float(Z)} {InspectorFormat.Float(W)}",
 			WidgetKind.AssetRef or WidgetKind.NodeRef => Ref ?? InspectorFormat.NullUid,
-			WidgetKind.Array => string.Join(
-				ArrayElementKind == WidgetKind.String ? "\x1f" : " ",
-				ArrayItems.Select(c => c.ToEngineString())),
+			WidgetKind.Array => JoinArrayValues(ArrayItems.Select(c => c.ToEngineString())),
 			_ => ReadOnlyText
 		};
 	}
@@ -673,7 +674,7 @@ public partial class FieldVM : ObservableObject {
 
 					var isStr = ArrayElementKind == WidgetKind.String;
 					var tokens = isStr
-						? s.Split('\x1f')
+						? (s.EndsWith('\x1f') ? s.Split('\x1f')[..^1] : s.Split('\x1f'))
 						: s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 					var stride = InspectorFormat.ArrayElementStride(ArrayElementKind);
 					var elementCount = tokens.Length / stride;

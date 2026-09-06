@@ -201,7 +201,6 @@ struct TOAST_API NodeInfo {
 	Factory construct = nullptr;
 	Deleter destroy = nullptr;
 
-
 	/**
 	 * @brief Finds a signal by name in this type's signals, then walks base_type if not found
 	 * @param signal_name The reflected signal name to look up

@@ -683,6 +683,7 @@ auto Prefab::valueFromString(FieldType type, bool is_array, std::string_view val
 		std::string_view remaining = value;
 
 		if (type == FieldType::string_t) {
+			// terminator, not separator
 			std::vector<std::string> result;
 			while (!remaining.empty()) {
 				result.emplace_back(nextValue(remaining, _detail::string_array_separator));
@@ -823,8 +824,12 @@ auto Prefab::stringifyValue(FieldType type, bool is_array, const std::any& value
 		std::string result;
 		for (size_t i = 0; i < vec.size(); ++i) {
 			result += stringify_single(type, vec[i]);
-			if (i < vec.size() - 1) {
-				result += (type == FieldType::string_t) ? std::string(1, _detail::string_array_separator) : " ";
+			if (type == FieldType::string_t) {
+				// terminator, not separator: an empty result then unambiguously means an empty
+				// array, and trailing empty elements survive the round-trip
+				result += _detail::string_array_separator;
+			} else if (i < vec.size() - 1) {
+				result += ' ';
 			}
 		}
 		return result;

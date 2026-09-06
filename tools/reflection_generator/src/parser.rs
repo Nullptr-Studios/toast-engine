@@ -421,9 +421,7 @@ fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
         }
 
         let all_attrs = get_attributes(parent, source);
-        let attributes: Vec<Attribute> = all_attrs
-            .into_iter()
-            .collect();
+        let attributes: Vec<Attribute> = all_attrs.into_iter().collect();
 
         let type_name = parent
             .child_by_field_name("type")
@@ -439,7 +437,7 @@ fn get_signals(node: tree_sitter::Node, source: &str) -> Vec<Signal> {
             typename: type_name.clone(),
             arguments: template_args,
             attrs_list: attributes.clone(),
-            attrib_json: attrs_to_json(&attributes)
+            attrib_json: attrs_to_json(&attributes),
         });
     }
     signals
@@ -499,15 +497,27 @@ pub fn attrs_to_json(attrs: &[Attribute]) -> json_t {
 }
 
 fn infer_field_type(type_name: &str) -> FieldType {
-    let base = type_name
+    let trimmed = type_name.trim();
+
+    // std::vector<T> is classified by its element type T; the is_array flag records the vector-ness.
+    // Without this, "std::vector<std::string>" falls through to the Int fallback and the serializer
+    // any_casts it to std::vector<int>, throwing std::bad_any_cast at save time.
+    let element = if trimmed.contains("vector<") {
+        parse_template_args(trimmed)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    } else {
+        trimmed.to_string()
+    };
+
+    let base = element
         .trim()
         .trim_start_matches("toast::")
         .trim_start_matches("std::")
         .trim_start_matches("glm::");
 
-    // both are held by value in C++ but the reflection boundary only exchanges UIDs;
-    // the accessor resolves/unresolves the handle on get/set
-    if type_name.contains("Handle<") {
+    if element.contains("Handle<") {
         return FieldType::Uid;
     }
     if base.starts_with("Box<") {
