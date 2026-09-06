@@ -12,6 +12,7 @@
  */
 
 #pragma once
+#define NODEFILE
 #include "box.hpp"
 #include "control_box.hpp"
 
@@ -432,5 +433,6 @@ auto reflect_cast(toast::Node* n) -> T* {    // NOLINT
 	return nullptr;
 }
 
+#undef NODEFILE
 #include <node.generated.hpp>
 #include <toast/events/signals.inl>

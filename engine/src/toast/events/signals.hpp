@@ -52,42 +52,13 @@ public:
 	void fire(Args... args);
 
 	template<typename NodeType, auto MemberPtr>
-	static auto get(void* signal) -> std::vector<std::pair<uint64_t, std::string>> {
-		if (!signal) {
-			return {};
-		}
-		auto* node = static_cast<NodeType*>(signal);
-		// Access member via pointer-to-member syntax (node->*MemberPtr)
-		const auto& target_signal = node->*MemberPtr;
-		std::vector<std::pair<uint64_t, std::string>> result;
-		result.reserve(target_signal.m.listeners.size());
-		for (const auto& group : target_signal.m.listeners) {
-			result.emplace_back(reinterpret_cast<uint64_t>(group.uid.data()), group.identifier);
-		}
-		return result;
-	}
+	static auto get(void* signal) -> std::vector<std::pair<toast::UID, std::string>>;
 
 	template<typename NodeType, auto MemberPtr>
-	static void set(void* signal, const std::vector<std::pair<uint64_t, std::string>>& data) {
-		if (!signal) {
-			return;
-		}
-		auto* node = static_cast<NodeType*>(signal);
-		auto& target_signal = node->*MemberPtr;
-		target_signal.m.listeners.clear();
-		target_signal.m.listeners.reserve(data.size());
-		for (const auto& [uid, fn_identifier] : data) {
-			using SigGroupType = typename std::decay_t<decltype(target_signal)>::SigGroup;
-			SigGroupType group {
-			  .uid = uid,
-			  .identifier = fn_identifier,
-			  .node = nullptr,
-			  .cb = [](Args...) { },
-			};
-			// TODO: check if node exists and create callback
-			target_signal.m.listeners.push_back(std::move(group));
-		}
-	}
+	static void set(void* signal, const std::vector<std::pair<toast::UID, std::string>>& data);
 };
 
 }
+#ifndef NODEFILE
+#include <toast/events/signals.inl>
+#endif

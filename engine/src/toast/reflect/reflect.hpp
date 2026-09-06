@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "toast/uid.hpp"
+
 #include <any>
 #include <cassert>
 #include <cstdint>
@@ -45,8 +47,8 @@ enum class FieldType : uint8_t {
 };
 
 struct TOAST_API SignalInfo {
-	using SignalGetterPtr = std::vector<std::pair<uint64_t, std::string>> (*)(void*);
-	using SignalSetterPtr = void (*)(void*, const std::vector<std::pair<uint64_t, std::string>>&);
+	using SignalGetterPtr = std::vector<std::pair<toast::UID, std::string>> (*)(void*);
+	using SignalSetterPtr = void (*)(void*, const std::vector<std::pair<toast::UID, std::string>>&);
 
 	std::string_view name;
 	std::string_view type;
