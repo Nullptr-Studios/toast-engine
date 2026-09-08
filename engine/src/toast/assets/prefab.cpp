@@ -353,7 +353,7 @@ Prefab::Prefab(std::istream& file) {
 			continue;
 		}
 
-		lines.push_back(std::move(continued_line));
+		lines.push_back(continued_line);
 		continuing = false;
 	}
 

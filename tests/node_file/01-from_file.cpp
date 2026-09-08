@@ -94,7 +94,7 @@ TOAST_TEST_NAMED("node_file", "node_file/01-from_file", test_node_file_01_from_f
 	assert(signal_output.contains("activated @signal = \\\n"));
 	assert(signal_output.contains("    1 \"on_a_very_long_signal_function\" \\\n"));
 	const std::vector<uint8_t> signal_binary = wrapped_signals.toBinary();
-	Prefab binary_signals(std::span<const uint8_t>(signal_binary));
+	Prefab binary_signals{std::span<const uint8_t>(signal_binary)};
 	assert(binary_signals.nodes.size() == 1);
 	assert(binary_signals.nodes[0].signals.size() == 1);
 	assert(binary_signals.nodes[0].signals[0].name == "activated");

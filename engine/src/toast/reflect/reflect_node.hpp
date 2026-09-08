@@ -221,7 +221,7 @@ struct TOAST_API NodeInfo {
 
 	[[nodiscard]]
 	auto getSignal(std::string_view declaring_type, std::string_view signal_name) const -> const SignalInfo* {
-		for (auto* info = this; info != nullptr; info = info->base_type) {
+		for (const auto* info = this; info != nullptr; info = info->base_type) {
 			if (info->type != declaring_type) {
 				continue;
 			}
@@ -237,7 +237,7 @@ struct TOAST_API NodeInfo {
 
 	template<typename F>
 	void forEachSignal(F&& callback) const {
-		for (auto* info = this; info != nullptr; info = info->base_type) {
+		for (const auto* info = this; info != nullptr; info = info->base_type) {
 			for (const auto& signal : info->signals) {
 				callback(*info, signal);
 			}
