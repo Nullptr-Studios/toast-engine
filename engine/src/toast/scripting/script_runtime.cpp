@@ -206,7 +206,7 @@ auto scriptInstanceNewindex(lua_State* l) -> int {
 
 }
 
-ScriptInstance::ScriptInstance(lua_State* l, const assets::AssetHandle<assets::Script>& script, NodeProxy proxy)
+ScriptInstance::ScriptInstance(lua_State* l, const assets::Handle<assets::Script>& script, NodeProxy proxy)
     : m_state(l),
       m_proxy(std::move(proxy)),
       m_name(script.path()) {
@@ -311,11 +311,26 @@ void ScriptInstance::extractSchema(std::string_view src) noexcept {
 	};
 
 	for (luabridge::Iterator it(*m_self); !it.isNil(); ++it) {
-		if (!isExportableKey(it.key()) || it.value().isFunction()) {
+		if (!isExportableKey(it.key())) {
 			continue;
 		}
 		const std::string key = it.key().tostring();
 		luabridge::LuaRef val = it.value();
+		if (val.isFunction()) {
+			LuaFunctionDesc function;
+			function.name = key;
+			val.push(l);
+			lua_Debug debug {};
+			if (lua_getinfo(l, ">u", &debug) != 0) {
+				const int parameter_count = std::max(0, static_cast<int>(debug.nparams) - 1);
+				function.is_vararg = debug.isvararg != 0;
+				for (int i = 0; i < parameter_count; ++i) {
+					function.parameters.push_back(std::format("arg{}", i + 1));
+				}
+			}
+			m_schema.functions.push_back(std::move(function));
+			continue;
+		}
 
 		// Leaf or array at the top level
 		if (auto desc = classify(key, "", val)) {
@@ -372,6 +387,7 @@ void ScriptInstance::extractSchema(std::string_view src) noexcept {
 	// recover the order vars are written in the source
 	sortByDeclaration(m_schema.fields, src, 0);
 	sortByDeclaration(m_schema.groups, src, 0);
+	sortByDeclaration(m_schema.functions, src, 0);
 	for (LuaGroup& group : m_schema.groups) {
 		const size_t group_pos = declPos(src, group.name, 0);
 		const size_t from = group_pos == std::string_view::npos ? 0 : group_pos;
@@ -633,7 +649,7 @@ auto ScriptInstance::hasFunction(std::string_view fn_name) const noexcept -> boo
 	return is_fn;
 }
 
-ScriptRuntime::ScriptRuntime(toast::Box<toast::Node> node, const std::vector<assets::AssetHandle<assets::Script>>& scripts) {
+ScriptRuntime::ScriptRuntime(toast::Box<toast::Node> node, const std::vector<assets::Handle<assets::Script>>& scripts) {
 	if (scripts.empty()) {
 		return;
 	}
@@ -746,6 +762,47 @@ void ScriptRuntime::call(std::string_view fn_name) noexcept {
 			inst->call(fn_name);
 		}
 	}
+}
+
+auto ScriptRuntime::hasFunction(std::string_view fn_name) const noexcept -> bool {
+	if (m_instances.empty()) {
+		return false;
+	}
+	LuaState::Lock guard = LuaState::get().lock(m_state_index);
+	if (!guard) {
+		return false;
+	}
+	for (const auto& inst : m_instances) {
+		if (inst && inst->isValid() && inst->hasFunction(fn_name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+auto ScriptRuntime::functions() const noexcept -> std::vector<LuaFunctionDesc> {
+	std::vector<LuaFunctionDesc> result;
+	if (m_instances.empty()) {
+		return result;
+	}
+	LuaState::Lock guard = LuaState::get().lock(m_state_index);
+	if (!guard) {
+		return result;
+	}
+	for (const auto& instance : m_instances) {
+		if (!instance || !instance->isValid()) {
+			continue;
+		}
+		for (const auto& function : instance->schema().functions) {
+			auto existing = std::ranges::find(result, function.name, &LuaFunctionDesc::name);
+			if (existing == result.end()) {
+				result.push_back(function);
+			} else {
+				existing->is_vararg = existing->is_vararg || function.is_vararg;
+			}
+		}
+	}
+	return result;
 }
 
 void ScriptRuntime::callWithLuaStack(std::string_view name, lua_State* l, int args_base, int n_args) noexcept {
