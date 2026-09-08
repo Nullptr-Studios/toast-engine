@@ -24,6 +24,7 @@ public class DockFactory : Factory {
 	public HierarchyViewModel? Hierarchy { get; private set; }
 	public HistoryViewModel? History { get; private set; }
 	public InspectorViewModel? Inspector { get; private set; }
+	public SignalsViewModel? Signals { get; private set; }
 	public GenericViewModel? GenericEditorVm { get; private set; }
 	public SchemaViewModel? SchemaEditorVm { get; private set; }
 
@@ -33,12 +34,14 @@ public class DockFactory : Factory {
 		var hierarchy = new HierarchyViewModel { Id = "Hierarchy", Title = "Hierarchy" };
 		var history = new HistoryViewModel { Id = "History", Title = "History" };
 		var inspector = new InspectorViewModel { Id = "Inspector", Title = "Inspector" };
+		var signals = new SignalsViewModel { Id = "Signals", Title = "Signals" };
 		var generic = new GenericViewModel { Id = "GenericEditor", Title = "Data Editor" };
 		var schema = new SchemaViewModel { Id = "SchemaEditor", Title = "Schema Editor" };
 
 		Hierarchy = hierarchy;
 		History = history;
 		Inspector = inspector;
+		Signals = signals;
 		GenericEditorVm = generic;
 		SchemaEditorVm = schema;
 
@@ -68,7 +71,7 @@ public class DockFactory : Factory {
 		// right panel (inspector)
 		var rightToolDock = new ToolDock {
 			ActiveDockable = inspector,
-			VisibleDockables = CreateList<IDockable>(inspector),
+			VisibleDockables = CreateList<IDockable>(inspector, signals),
 			Alignment = Alignment.Right,
 			GripMode = GripMode.Hidden
 		};
@@ -115,6 +118,7 @@ public class DockFactory : Factory {
 			["Hierarchy"] = () => layout,
 			["History"] = () => layout,
 			["Inspector"] = () => layout,
+			["Signals"] = () => layout,
 			["GenericEditor"] = () => layout,
 			["SchemaEditor"] = () => layout
 		};
@@ -285,6 +289,7 @@ public class DockFactory : Factory {
 			"Hierarchy" => Hierarchy,
 			"History" => History,
 			"Inspector" => Inspector,
+			"Signals" => Signals,
 			"GenericEditor" => GenericEditorVm,
 			"SchemaEditor" => SchemaEditorVm,
 			_ => null
@@ -295,6 +300,7 @@ public class DockFactory : Factory {
 		yield return Hierarchy;
 		yield return History;
 		yield return Inspector;
+		yield return Signals;
 		yield return GenericEditorVm;
 		yield return SchemaEditorVm;
 	}

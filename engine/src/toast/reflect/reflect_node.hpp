@@ -219,6 +219,31 @@ struct TOAST_API NodeInfo {
 		return nullptr;
 	}
 
+	[[nodiscard]]
+	auto getSignal(std::string_view declaring_type, std::string_view signal_name) const -> const SignalInfo* {
+		for (auto* info = this; info != nullptr; info = info->base_type) {
+			if (info->type != declaring_type) {
+				continue;
+			}
+			for (const auto& signal : info->signals) {
+				if (signal.name == signal_name) {
+					return &signal;
+				}
+			}
+			return nullptr;
+		}
+		return nullptr;
+	}
+
+	template<typename F>
+	void forEachSignal(F&& callback) const {
+		for (auto* info = this; info != nullptr; info = info->base_type) {
+			for (const auto& signal : info->signals) {
+				callback(*info, signal);
+			}
+		}
+	}
+
 	/**
 	 * @brief Finds a field by name in this type's all_fields, then walks base_type if not found
 	 * @param field_name The reflected field name to look up

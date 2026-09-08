@@ -15,29 +15,74 @@ inline void Signal<Args...>::subscribe(toast::Node& node, F&& cb) {
 			f();
 		}
 	};
-	m.listeners.push_back({
-	  .node = toast::Box<toast::Node>(node),    //
-	  .identifier = "Unnamed",
-	  .cb = std::move(wrapper)                  //
-	});
+	m.listeners.push_back(
+	    {.uid = node.uid(),
+	     .identifier = "Unnamed",
+	     .source = ConnectionSource::cpp,
+	     .node = toast::Box<toast::Node>(node),
+	     .cb = std::move(wrapper)}
+	);
 }
 
 template<typename... Args>
 inline void Signal<Args...>::subscribe(toast::Node& node, std::string_view identifier) {
-	callback_t wrapper = [iden = std::string(identifier), box = toast::Box<toast::Node>(node)](Args... args) {
-		box->call(iden, args...);
-	};
-	m.listeners.push_back({
-	  .node = toast::Box<toast::Node>(node),    //
-	  .identifier = std::string(identifier),
-	  .cb = std::move(wrapper)                  //
-	});
+	subscribe(node, identifier, ConnectionSource::cpp, true);
+}
+
+template<typename... Args>
+inline void
+    Signal<Args...>::subscribe(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args) {
+	callback_t wrapper;
+	if (forwards_args) {
+		wrapper = [iden = std::string(identifier), box = toast::Box<toast::Node>(node)](Args... args) mutable {
+			box->call(iden, args...);
+		};
+	} else {
+		wrapper = [iden = std::string(identifier), box = toast::Box<toast::Node>(node)](Args...) mutable { box->call(iden); };
+	}
+	m.listeners.push_back(
+	    {.uid = node.uid(),
+	     .identifier = std::string(identifier),
+	     .source = source,
+	     .forwards_args = forwards_args,
+	     .node = toast::Box<toast::Node>(node),
+	     .cb = std::move(wrapper)}
+	);
 }
 
 template<typename... Args>
 inline void Signal<Args...>::unsubscribe(toast::Node& node, std::string_view identifier) {
 	std::erase_if(m.listeners, [&](const SigGroup& listener) {
 		return listener.node == toast::Box<toast::Node>(node) && listener.identifier == identifier;
+	});
+}
+
+template<typename... Args>
+inline void Signal<Args...>::unsubscribe(toast::Node& node, std::string_view identifier, ConnectionSource source) {
+	std::erase_if(m.listeners, [&](const SigGroup& listener) {
+		return listener.node == toast::Box<toast::Node>(node) && listener.identifier == identifier && listener.source == source;
+	});
+}
+
+template<typename... Args>
+inline void Signal<Args...>::clear(ConnectionSource source) {
+	std::erase_if(m.listeners, [source](const SigGroup& listener) { return listener.source == source; });
+}
+
+template<typename... Args>
+inline auto Signal<Args...>::connections() const -> std::vector<ConnectionInfo> {
+	std::vector<ConnectionInfo> result;
+	result.reserve(m.listeners.size());
+	for (const auto& listener : m.listeners) {
+		result.push_back({listener.uid, listener.identifier, listener.source, listener.forwards_args});
+	}
+	return result;
+}
+
+template<typename... Args>
+inline auto Signal<Args...>::has(toast::UID node, std::string_view identifier) const -> bool {
+	return std::ranges::any_of(m.listeners, [&](const SigGroup& listener) {
+		return listener.uid == node && listener.identifier == identifier;
 	});
 }
 
@@ -55,50 +100,45 @@ inline void Signal<Args...>::fire(Args... args) {
 
 template<typename... Args>
 template<typename NodeType, auto MemberPtr>
-inline void Signal<Args...>::set(void* signal, const std::vector<std::pair<toast::UID, std::string>>& data) {
+inline auto Signal<Args...>::get(void* signal) -> std::vector<ConnectionInfo> {
+	if (!signal) {
+		return {};
+	}
+	auto* node = static_cast<NodeType*>(signal);
+	const auto& target_signal = node->*MemberPtr;
+	return target_signal.connections();
+}
+
+template<typename... Args>
+template<typename NodeType, auto MemberPtr>
+inline void Signal<Args...>::connect(void* signal, toast::Node& target, std::string_view identifier, bool forwards_args) {
 	if (!signal) {
 		return;
 	}
-	auto* node = static_cast<NodeType*>(signal);
-	auto& target_signal = node->*MemberPtr;
-	using SigGroupType = typename std::decay_t<decltype(target_signal)>::SigGroup;
-
-	target_signal.m.listeners.clear();
-	target_signal.m.listeners.reserve(data.size());
-	for (const auto& [uid, fn_identifier] : data) {
-		toast::Box<toast::Node> box(node->find(uid));
-		if (not box) {
-			continue;
-		}
-		callback_t wrapper = [iden = std::string(fn_identifier), box](Args... args) {
-			const_cast<toast::Box<toast::Node>&>(box)->call(iden, args...);    //
-		};
-		target_signal.m.listeners.push_back(
-		    SigGroupType {
-		      .uid = uid,
-		      .identifier = fn_identifier,
-		      .node = box,
-		      .cb = std::move(wrapper),
-		    }
-		);
+	auto& target_signal = static_cast<NodeType*>(signal)->*MemberPtr;
+	if (!target_signal.has(target.uid(), identifier)) {
+		target_signal.subscribe(target, identifier, ConnectionSource::editor, forwards_args);
 	}
 }
 
 template<typename... Args>
 template<typename NodeType, auto MemberPtr>
-inline auto Signal<Args...>::get(void* signal) -> std::vector<std::pair<toast::UID, std::string>> {
+inline void Signal<Args...>::disconnect(void* signal, toast::Node& target, std::string_view identifier) {
 	if (!signal) {
-		return {};
+		return;
 	}
-	auto* node = static_cast<NodeType*>(signal);
-	// Access member via pointer-to-member syntax (node->*MemberPtr)
-	const auto& target_signal = node->*MemberPtr;
-	std::vector<std::pair<toast::UID, std::string>> result;
-	result.reserve(target_signal.m.listeners.size());
-	for (const auto& group : target_signal.m.listeners) {
-		result.emplace_back(group.uid, group.identifier);
+	auto& target_signal = static_cast<NodeType*>(signal)->*MemberPtr;
+	target_signal.unsubscribe(target, identifier, ConnectionSource::editor);
+}
+
+template<typename... Args>
+template<typename NodeType, auto MemberPtr>
+inline void Signal<Args...>::clearEditor(void* signal) {
+	if (!signal) {
+		return;
 	}
-	return result;
+	auto& target_signal = static_cast<NodeType*>(signal)->*MemberPtr;
+	target_signal.clear(ConnectionSource::editor);
 }
 
 }
