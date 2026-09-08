@@ -42,9 +42,6 @@ constexpr std::string_view vec3_str = "vec3";
 constexpr std::string_view vec4_str = "vec4";
 constexpr std::string_view quaternion_str = "quat";
 
-constexpr char string_array_separator =
-    31;    ///< ASCII 31 (unit separator), can't appear in normal text content so it's safe as an in-field delimiter
-
 constexpr uint16_t format_version = 3;    ///< current binary layout version
 
 struct TOAST_API NodeFileBinaryHeader {

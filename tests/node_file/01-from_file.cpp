@@ -27,4 +27,12 @@ TOAST_TEST_NAMED("node_file", "node_file/01-from_file", test_node_file_01_from_f
 	auto& DetuneCents = nf.nodes[4].groups[1].subgroups[0].fields[1];
 	assert(DetuneCents.name == "detune_cents");
 	assert(std::any_cast<float>(DetuneCents.value) == 14.25f);
+
+	auto parsed_strings = Prefab::valueFromString(
+	    FieldType::string_t, true, "\"contains spaces\" \"\" \"a \\\"quote\\\" and a \\\\ slash\"");
+	assert(parsed_strings.has_value());
+	const auto& strings = std::any_cast<const std::vector<std::string>&>(*parsed_strings);
+	assert((strings == std::vector<std::string> {"contains spaces", "", "a \"quote\" and a \\ slash"}));
+	assert(Prefab::stringifyValue(FieldType::string_t, true, *parsed_strings)
+	       == "\"contains spaces\" \"\" \"a \\\"quote\\\" and a \\\\ slash\"");
 }
