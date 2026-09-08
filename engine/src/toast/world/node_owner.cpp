@@ -356,7 +356,7 @@ auto INodeOwner::nodeAllocation(std::string_view type) noexcept -> Box<Node> {
 	ZoneScoped;
 
 	const NodeInfo* info = NodeRegistry::reflect(type);
-	
+
 	if (!info) {
 		TOAST_WARN("World", "Reflection information for type {} not found. Falling back to toast::Node", type);
 		info = NodeRegistry::reflect("toast::Node");

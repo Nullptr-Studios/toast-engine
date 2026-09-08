@@ -58,7 +58,7 @@ internal static class KtxWriter {
 	}
 
 	private static string BuildArgs(TextureImporter.Settings s, string destPath, string inputPath) {
-		var sb = new StringBuilder("--t2 ");
+		var sb = new StringBuilder("--t2 --assign_oetf srgb ");
 
 		// Assigns the transfer function without touching the pixels, so the KTX2 carries "linear" and the
 		// engine (which takes VkFormat straight off the file - see TextureUpload::build) ends up with a

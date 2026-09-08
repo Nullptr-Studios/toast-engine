@@ -55,7 +55,10 @@ public class AssetListPickerViewModel : PickerViewModel {
 
 	public AssetListPickerViewModel(string? assetType, string? extraType = null) {
 		foreach (var item in EnumerateAssets(assetType, extraType)) m_all.Add(item);
-		m_all.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+		m_all.Sort((a, b) => {
+			var result = PickerOrdering.CompareNames(a.Name, b.Name);
+			return result != 0 ? result : PickerOrdering.CompareNames(a.Path, b.Path);
+		});
 		foreach (var item in m_all) m_filtered.Add(item);
 	}
 

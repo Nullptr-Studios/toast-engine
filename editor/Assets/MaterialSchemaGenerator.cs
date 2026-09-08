@@ -10,12 +10,13 @@ namespace editor.Assets;
 
 /**
  * <summary>
- * Generates GenericEditor schemas for materials from shader reflection data
- *
- * The engine compiles every shader to cache://shaders/\<uid\>.json
- * This builder turns those reflection files into the same JSON-schema shape
- * ParseSchema consumes. Only parameters tagged [Reflect] in the shader are
- * emitted
+ *    Generates GenericEditor schemas for materials from shader reflection data
+ *    The engine compiles every shader to cache://shaders/\
+ *    <uid\>
+ *       .json
+ *       This builder turns those reflection files into the same JSON-schema shape
+ *       ParseSchema consumes. Only parameters tagged [Reflect] in the shader are
+ *       emitted
  * </summary>
  */
 public static class MaterialSchemaGenerator {
@@ -78,27 +79,6 @@ public static class MaterialSchemaGenerator {
 		return result;
 	}
 
-	/// <summary>Inspector attribute block parsed from a reflection json node</summary>
-	private sealed record InspectorMeta(
-		bool Reflected, double? Min, double? Max, bool Color,
-		string DisplayName, string Group, string Subgroup, string Unit) {
-		public static InspectorMeta From(JsonNode? node) {
-			if (node is not JsonObject o)
-				return new InspectorMeta(false, null, null, false, "", "", "", "");
-			return new InspectorMeta(
-				o["reflected"]?.GetValue<bool>() ?? false,
-				o["min"]?.GetValue<double>(),
-				o["max"]?.GetValue<double>(),
-				o["color"]?.GetValue<bool>() ?? false,
-				o["display_name"]?.GetValue<string>() ?? "",
-				o["group"]?.GetValue<string>() ?? "",
-				o["subgroup"]?.GetValue<string>() ?? "",
-				o["unit"]?.GetValue<string>() ?? "");
-		}
-
-		public string Label(string fallback) => DisplayName.Length > 0 ? DisplayName : fallback;
-	}
-
 	private static string BuildDocument(JsonObject properties, JsonObject definitions) {
 		definitions["MaterialSettings"] = new JsonObject {
 			["properties"] = new JsonObject {
@@ -144,7 +124,7 @@ public static class MaterialSchemaGenerator {
 	}
 
 	/// <summary>
-	/// Appends one schema property per [Reflect] shader parameter
+	///    Appends one schema property per [Reflect] shader parameter
 	/// </summary>
 	private static void AppendShaderParameters(
 		JsonObject properties, JsonObject definitions, IReadOnlyList<string> shaderUids, TomlTable? defaults = null) {
@@ -154,7 +134,9 @@ public static class MaterialSchemaGenerator {
 		var textureByDisplay = new Dictionary<string, string>();
 		var textureLabels = new Dictionary<string, string>();
 
-		var shaderData = new List<(List<string> Order, Dictionary<string, JsonObject> Bindings, Dictionary<string, JsonObject> Pushes)>();
+		var shaderData =
+			new List<(List<string> Order, Dictionary<string, JsonObject> Bindings, Dictionary<string, JsonObject> Pushes
+				)>();
 
 		// Gather reflected texture bindings so [Group]s can resolve to them
 		foreach (var uid in shaderUids) {
@@ -226,6 +208,7 @@ public static class MaterialSchemaGenerator {
 							["x-toast-display-name"] = meta.Group
 						};
 				}
+
 				target = (JsonObject)definitions[defName]!["properties"]!;
 			}
 
@@ -239,26 +222,25 @@ public static class MaterialSchemaGenerator {
 					["x-toast-display-name"] = meta.Subgroup
 				};
 			}
+
 			return ((JsonObject)definitions[subDefName]!["properties"]!, groupKey, meta.Subgroup);
 		}
 
 		// Walk each shader's layout order and emit properties
-		foreach (var (order, bindingsByName, pushByName) in shaderData) {
-			foreach (var paramName in order) {
-				if (bindingsByName.TryGetValue(paramName, out var binding)) {
-					if (!string.IsNullOrEmpty(binding["engine_semantic"]?.GetValue<string>())) continue;
-					var kind = binding["kind"]?.GetValue<string>() ?? "";
+		foreach (var (order, bindingsByName, pushByName) in shaderData)
+		foreach (var paramName in order)
+			if (bindingsByName.TryGetValue(paramName, out var binding)) {
+				if (!string.IsNullOrEmpty(binding["engine_semantic"]?.GetValue<string>())) continue;
+				var kind = binding["kind"]?.GetValue<string>() ?? "";
 
-					if (kind is "combined_image_sampler" or "sampled_image") {
-						if (textureDefs.ContainsKey(paramName)) EmitTexture(paramName);
-					} else if (kind == "uniform_buffer") {
-						AppendBlockMembers(properties, binding["members"] as JsonArray, seen, defaults, ResolveGroupTarget);
-					}
-				} else if (pushByName.TryGetValue(paramName, out var push)) {
-					AppendBlockMembers(properties, push["members"] as JsonArray, seen, defaults, ResolveGroupTarget);
+				if (kind is "combined_image_sampler" or "sampled_image") {
+					if (textureDefs.ContainsKey(paramName)) EmitTexture(paramName);
+				} else if (kind == "uniform_buffer") {
+					AppendBlockMembers(properties, binding["members"] as JsonArray, seen, defaults, ResolveGroupTarget);
 				}
+			} else if (pushByName.TryGetValue(paramName, out var push)) {
+				AppendBlockMembers(properties, push["members"] as JsonArray, seen, defaults, ResolveGroupTarget);
 			}
-		}
 	}
 
 	private static void AppendBlockMembers(
@@ -295,7 +277,8 @@ public static class MaterialSchemaGenerator {
 			} else {
 				var (target, groupKey, subgroup) = resolveGroup(meta);
 				if (target.ContainsKey(name)) continue;
-				if (LookupGroupedDefault(defaults, groupKey, subgroup, name) is { } grouped && TomlValueToJson(grouped) is { } json)
+				if (LookupGroupedDefault(defaults, groupKey, subgroup, name) is { } grouped &&
+				    TomlValueToJson(grouped) is { } json)
 					prop["default"] = json;
 				target[name] = prop;
 			}
@@ -347,6 +330,35 @@ public static class MaterialSchemaGenerator {
 			return root?["reflection"] as JsonObject;
 		} catch {
 			return null;
+		}
+	}
+
+	/// <summary>Inspector attribute block parsed from a reflection json node</summary>
+	private sealed record InspectorMeta(
+		bool Reflected,
+		double? Min,
+		double? Max,
+		bool Color,
+		string DisplayName,
+		string Group,
+		string Subgroup,
+		string Unit) {
+		public static InspectorMeta From(JsonNode? node) {
+			if (node is not JsonObject o)
+				return new InspectorMeta(false, null, null, false, "", "", "", "");
+			return new InspectorMeta(
+				o["reflected"]?.GetValue<bool>() ?? false,
+				o["min"]?.GetValue<double>(),
+				o["max"]?.GetValue<double>(),
+				o["color"]?.GetValue<bool>() ?? false,
+				o["display_name"]?.GetValue<string>() ?? "",
+				o["group"]?.GetValue<string>() ?? "",
+				o["subgroup"]?.GetValue<string>() ?? "",
+				o["unit"]?.GetValue<string>() ?? "");
+		}
+
+		public string Label(string fallback) {
+			return DisplayName.Length > 0 ? DisplayName : fallback;
 		}
 	}
 }

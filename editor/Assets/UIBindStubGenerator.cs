@@ -13,19 +13,22 @@ using System.Threading;
 namespace editor.Assets;
 
 public static class UIBindStubGenerator {
+	private const int DebounceMilliseconds = 250;
+
 	private static readonly HashSet<string> ExpressionKeywords =
 		["true", "false", "and", "or", "not", "it", "it_index", "ev"];
+
 	private static readonly List<FileSystemWatcher> Watchers = [];
 	private static readonly object WatchLock = new();
 	private static Timer? s_debounceTimer;
-	private const int DebounceMilliseconds = 250;
 
 	public static void StartWatching() {
 		lock (WatchLock) {
 			foreach (var watcher in Watchers) watcher.Dispose();
 			Watchers.Clear();
 
-			foreach (var root in ProjectContext.DatabaseRoots.Append(ProjectContext.CorePath).Distinct(StringComparer.OrdinalIgnoreCase)) {
+			foreach (var root in ProjectContext.DatabaseRoots.Append(ProjectContext.CorePath)
+				         .Distinct(StringComparer.OrdinalIgnoreCase)) {
 				if (!Directory.Exists(root)) continue;
 				var watcher = new FileSystemWatcher(root, "*.rml") {
 					IncludeSubdirectories = true,
@@ -41,11 +44,24 @@ public static class UIBindStubGenerator {
 		}
 	}
 
+	public static void StopWatching() {
+		lock (WatchLock) {
+			s_debounceTimer?.Dispose();
+			s_debounceTimer = null;
+			foreach (var watcher in Watchers) watcher.Dispose();
+			Watchers.Clear();
+		}
+	}
+
 	private static void OnRmlChanged(object sender, FileSystemEventArgs e) {
 		lock (WatchLock) {
 			s_debounceTimer?.Dispose();
 			s_debounceTimer = new Timer(_ => {
-				try { Generate(); } catch { /* a partial editor write will trigger another change */ }
+				try {
+					Generate();
+				} catch {
+					/* a partial editor write will trigger another change */
+				}
 			}, null, DebounceMilliseconds, Timeout.Infinite);
 		}
 	}
@@ -56,7 +72,8 @@ public static class UIBindStubGenerator {
 
 		var classes = new List<string>();
 		var documents = EnumerateRmlFiles()
-			.Select(file => new DocumentInfo(file, ProjectContext.ToVirtual(file) ?? Path.GetFullPath(file).Replace('\\', '/'),
+			.Select(file => new DocumentInfo(file,
+				ProjectContext.ToVirtual(file) ?? Path.GetFullPath(file).Replace('\\', '/'),
 				SanitizeStem(Path.GetFileNameWithoutExtension(file))))
 			.OrderBy(d => d.VirtualPath, StringComparer.Ordinal)
 			.ToList();
@@ -107,8 +124,6 @@ public static class UIBindStubGenerator {
 		}
 	}
 
-	private sealed record DocumentInfo(string FilePath, string VirtualPath, string Stem);
-
 	private static IEnumerable<string> EnumerateRmlFiles() {
 		var roots = ProjectContext.DatabaseRoots.Append(ProjectContext.CorePath);
 		foreach (var root in roots) {
@@ -141,7 +156,7 @@ public static class UIBindStubGenerator {
 	}
 
 	private static string StableSuffix(string virtualPath) {
-		uint hash = 2166136261;
+		var hash = 2166136261;
 		foreach (var b in Encoding.UTF8.GetBytes(virtualPath)) hash = (hash ^ b) * 16777619;
 		return hash.ToString("x8");
 	}
@@ -240,7 +255,8 @@ public static class UIBindStubGenerator {
 				if (i < expression.Length && expression[i] == '(') continue; // function call
 				if (!ExpressionKeywords.Contains(word) && !char.IsDigit(word[0]))
 					yield return word;
-				while (i < expression.Length && (char.IsLetterOrDigit(expression[i]) || expression[i] == '_' || expression[i] == '.')) i++;
+				while (i < expression.Length &&
+				       (char.IsLetterOrDigit(expression[i]) || expression[i] == '_' || expression[i] == '.')) i++;
 				continue;
 			}
 
@@ -262,4 +278,6 @@ public static class UIBindStubGenerator {
 	private static bool Match(string s, int i, string token) {
 		return i + token.Length <= s.Length && string.CompareOrdinal(s, i, token, 0, token.Length) == 0;
 	}
+
+	private sealed record DocumentInfo(string FilePath, string VirtualPath, string Stem);
 }

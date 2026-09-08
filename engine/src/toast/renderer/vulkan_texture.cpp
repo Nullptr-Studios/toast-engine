@@ -146,7 +146,6 @@ void TextureUpload::build(const VulkanCore& core) {
 
 	m_staging_buffer = core.getAllocator().createBuffer(staging_ci, alloc_ci);
 
-	
 	host_bytes = total_size + m_data.size() + total_size;
 	if (!m_debug_name.empty()) {
 		setDebugName(core, *m_staging_buffer, m_debug_name + " StagingBuffer");

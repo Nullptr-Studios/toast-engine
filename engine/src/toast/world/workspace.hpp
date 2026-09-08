@@ -13,11 +13,13 @@
 #include "editor_camera.hpp"
 #include "gizmo_layout.hpp"
 #include "node_owner.hpp"
+#include "workspace_history.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <toast/events/listener.hpp>
+#include <utility>
 
 namespace toast {
 /**
@@ -108,6 +110,7 @@ protected:
 	bool m_game_camera = false;                           ///< false = editor camera
 	std::unique_ptr<Camera> m_editor_camera;
 	EditorCameraController m_editor_camera_controller;    ///< drives m_editor_camera; ticked from tick() below
+	std::unique_ptr<WorkspaceHistory> m_history;
 
 	[[nodiscard]]
 	auto isActiveWorkspace() const noexcept -> bool;
@@ -138,6 +141,18 @@ protected:
 	void gizmoEndDrag();
 
 	void eventSubscriptions();
+	void initializeHistory(bool available, bool initially_saved);
+	auto restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool;
+	void destroyOwnedTree(Box<Node>& root);
+
+	template<typename F>
+	void recordHistory(WorkspaceHistory::Context context, F&& mutation) {
+		const bool owned = m_history && m_history->beginAtomic(std::move(context));
+		std::forward<F>(mutation)();
+		if (m_history) {
+			m_history->finishAtomic(owned);
+		}
+	}
 
 	/// instantiates the prefab and sets up the root node
 	void initFromPrefab(const assets::Handle<assets::Prefab>& file);

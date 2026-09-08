@@ -341,8 +341,6 @@ void MaterialPass::updateInstanceDescriptors(InstanceResources& res, uint32_t fr
 			warnIfWrongColorSpace(slot, *gpu_texture);
 		} else if (const vk::ImageView failsafe =
 		               VulkanRenderer::instance->getFailsafeTextureView(slot.texture.uid().data() != 0, gpu_texture)) {
-			
-			
 			view = failsafe;
 			sampler = VulkanRenderer::instance->getFailsafeSampler();
 		}

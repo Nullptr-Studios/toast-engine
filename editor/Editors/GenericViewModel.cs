@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
@@ -23,20 +24,20 @@ using Tomlyn.Model;
 namespace editor.Editors;
 
 public partial class GenericViewModel : Tool, IAutosavable {
+	private readonly Listener m_renderListener = new();
 	[ObservableProperty] private string m_currentPath = "";
 	[ObservableProperty] private string m_currentUid = "";
 	[ObservableProperty] private BaseAsset? m_definition;
 	[ObservableProperty] private string m_displayTitle = "Data Editor";
+	private bool m_dynamicRebuildQueued;
+
+	// Materials and material instances generate their schema from shader reflection
+	private bool m_dynamicSchema;
 	[ObservableProperty] private string m_fileName = "";
 	[ObservableProperty] private bool m_isDirty;
 
 	private bool m_loading;
 	private string m_prevSchemaUid = "";
-
-	// Materials and material instances generate their schema from shader reflection
-	private bool m_dynamicSchema;
-	private bool m_dynamicRebuildQueued;
-	private readonly Listener m_renderListener = new();
 	[ObservableProperty] private string m_schemaLabel = "";
 	[ObservableProperty] private bool m_schemaLocked;
 	[ObservableProperty] private string m_schemaUid = "";
@@ -516,7 +517,7 @@ public partial class GenericViewModel : Tool, IAutosavable {
 		var trigger = Fields.FirstOrDefault(f => f.Name == triggerName);
 		if (trigger is null) return;
 
-		void OnItemChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) {
+		void OnItemChanged(object? sender, PropertyChangedEventArgs e) {
 			if (e.PropertyName == nameof(GenericFieldVM.RefUid)) ScheduleDynamicRebuild();
 		}
 

@@ -11,7 +11,7 @@ public sealed class UIImageAsset : BaseAsset {
 	public override string ChipColor => "Blue";
 	public override LucideIconKind Icon => LucideIconKind.FileImage;
 	public override bool CanBeCreated => false;
-	public override string Category => "";
+	public override string Category => "UI";
 	public override bool HasThumbnail => true;
 	public override bool CanBeEdited => false;
 	public override string EditorTool => "";

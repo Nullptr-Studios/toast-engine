@@ -38,6 +38,7 @@ public partial class ViewportControl : UserControl {
 	private CancellationTokenSource? m_hintCts;
 	private Transitions? m_hintTransitions;
 	private ulong m_lastFrameId;
+	private double m_lastScale;
 
 	// editor fly camera: RMB-drag in edit mode
 	private bool m_editorFlyActive;
@@ -48,7 +49,7 @@ public partial class ViewportControl : UserControl {
 	private int m_surfaceH;
 
 	private int m_surfaceW;
-	private double m_lastScale;
+
 	/// <summary>
 	/// Whether the per-frame callback should keep rescheduling itself
 	/// </summary>

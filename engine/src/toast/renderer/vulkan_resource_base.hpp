@@ -14,8 +14,8 @@ public:
 	enum class UploadState : std::uint8_t {
 		uploading,
 		ready,
-		failed_load, /// The encoded bytes could not be decoded - truncated file, wrong container, failed transcode
-		failed_gpu	/// Decoded fine, but the Vulkan resource behind it could not be created
+		failed_load,    /// The encoded bytes could not be decoded - truncated file, wrong container, failed transcode
+		failed_gpu      /// Decoded fine, but the Vulkan resource behind it could not be created
 	};
 
 	virtual ~IVulkanResource() = default;

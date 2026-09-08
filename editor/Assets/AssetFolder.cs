@@ -1,6 +1,8 @@
+using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 
 namespace editor.Assets;
@@ -19,10 +21,14 @@ public class AssetFolder : INotifyPropertyChanged {
 		Name = dirInfo.Name;
 		Filepath = dirInfo.FullName;
 
-		foreach (var sub in dirInfo.EnumerateDirectories())
+		foreach (var sub in dirInfo.EnumerateDirectories()
+			         .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+			         .ThenBy(d => d.Name, StringComparer.Ordinal))
 			SubFolders.Add(new AssetFolder(sub.FullName, this, listRawFiles));
 
-		foreach (var file in dirInfo.EnumerateFiles()) {
+		foreach (var file in dirInfo.EnumerateFiles()
+			         .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+			         .ThenBy(f => f.Name, StringComparer.Ordinal)) {
 			if (listRawFiles) {
 				if (file.Extension == ".meta")
 				    continue;
@@ -42,6 +48,7 @@ public class AssetFolder : INotifyPropertyChanged {
 
 	public bool CanModify =>
 		ProjectContext.IsInitialized &&
+		!ProjectContext.IsUnderCore(Filepath) &&
 		ProjectContext.IsUnderContentDatabase(Filepath) &&
 		!ProjectContext.IsDatabaseRoot(Filepath);
 
