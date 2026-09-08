@@ -356,20 +356,13 @@ auto INodeOwner::nodeAllocation(std::string_view type) noexcept -> Box<Node> {
 	ZoneScoped;
 
 	const NodeInfo* info = NodeRegistry::reflect(type);
-
-#ifndef NDEBUG
+	
 	if (!info) {
 		TOAST_WARN("World", "Reflection information for type {} not found. Falling back to toast::Node", type);
 		info = NodeRegistry::reflect("toast::Node");
 	}
-#endif
 
-	// Node allocation
-#ifdef NDEBUG
-	Node* raw_node = info->construct();
-#else
 	Node* raw_node = (info && info->construct) ? info->construct() : new Node();
-#endif
 
 	{
 		std::scoped_lock lock(nodes_mutex);
@@ -377,7 +370,7 @@ auto INodeOwner::nodeAllocation(std::string_view type) noexcept -> Box<Node> {
 		TOAST_ASSERT(result, "World", "Node allocation failed");
 	}
 	raw_node->m_info = info;     // attach reflection data
-	raw_node->m_reflect_type_name = info->type;
+	raw_node->m_reflect_type_name = info ? info->type : std::string_view {"toast::Node"};
 	raw_node->m_owner = this;    // attach owner ptr
 
 	return raw_node->box();
@@ -419,12 +412,10 @@ void INodeOwner::applyFields(Node& node, const assets::Prefab::BasicNode& data) 
 				continue;
 			}
 
-#ifndef NDEBUG
 			if (not f.set) {
 				TOAST_WARN("World", "No valid set function found for {}", f.name);
 				continue;
 			}
-#endif
 
 			f.set(&node, f_data->value);
 		}

@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <toast/assets/core_types.hpp>
 
 namespace renderer {
 class VulkanCore;
@@ -150,11 +151,13 @@ private:
 
 class MeshUpload : public PendingResourceUpload {
 public:
-	MeshUpload(VulkanMesh& mesh, VulkanMesh::UploadData data, std::string_view debug_name = {});
+	/// @param source Handle to the asset owning @p data
+	MeshUpload(VulkanMesh& mesh, VulkanMesh::UploadData data, assets::HandleBase source, std::string_view debug_name = {});
 
 	VulkanMesh* mesh;
 
 	VulkanMesh::UploadData data;
+	assets::HandleBase source;
 	std::string debug_name;
 
 	/// One buffer for vertices, indices and skin data - recordUpload() copies out of it at three offsets

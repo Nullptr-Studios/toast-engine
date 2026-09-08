@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -81,10 +82,8 @@ public:
 
 	struct FrameContext {
 		vk::raii::CommandBuffer command_buffer = nullptr;
-		vk::raii::CommandBuffer transfer_command_buffer = nullptr;
 		vk::raii::CommandBuffer compute_command_buffer = nullptr;
 		vk::raii::Semaphore image_available = nullptr;
-		vk::raii::Semaphore transfer_finished = nullptr;
 		vk::raii::Semaphore compute_to_graphics = nullptr;    ///< signaled by the compute submit, waited on by the graphics submit
 		vk::raii::Fence in_flight = nullptr;
 		vk::raii::Fence compute_in_flight = nullptr;          ///< defense in depth, separate from in_flight per the review
@@ -594,6 +593,25 @@ public:
 		return m_default_texture.getView();
 	}
 
+	/// @brief Which failsafe a slot should show, or null when there is nothing to report
+	///
+	/// The three cases are deliberately distinct images rather than one "broken" checkerboard: an artist
+	/// looking at a wrong-looking wall needs to know whether the file is unreadable, the device rejected it,
+	/// or the material points at a UID nothing resolves
+	///
+	/// @param has_reference The slot names a texture (as opposed to being left empty, which is not an error)
+	/// @param texture The resolved GPU texture, or nullptr when the reference did not resolve
+	[[nodiscard]]
+	auto getFailsafeTextureView(bool has_reference, const VulkanTexture* texture) const noexcept -> vk::ImageView;
+
+	/// @brief Nearest-filtered sampler the failsafe textures must be drawn with
+	///
+	/// They carry text and hard edges, so bilinear turns them into mush at any distance
+	[[nodiscard]]
+	auto getFailsafeSampler() const noexcept -> vk::Sampler {
+		return *m_failsafe_sampler;
+	}
+
 	/// 1x1 black fallback - e.g. metallic maps, where "no texture" should mean fully dielectric
 	[[nodiscard]]
 	auto getDefaultBlackTextureView() const noexcept -> vk::ImageView {
@@ -952,6 +970,7 @@ private:
 	void createTransferCommandPool();
 	void createComputeCommandPool();
 	void createFrameContexts();
+
 	void createPerImageSync();
 	void createDepthResources();
 	void createSceneColorResources();
@@ -972,6 +991,12 @@ private:
 	void createPresentResources();
 	void createDescriptorPool();
 	void createDefaultTexture();
+
+	/// @brief Loads the three failsafe images straight off disk, bypassing the asset manifest
+	///
+	/// A failsafe that needs a working manifest to appear is no failsafe - these resolve by virtual path so
+	/// a broken or stale database still shows them
+	void createFailsafeTextures();
 	void createDefaultShadowMap();
 	void createDefaultCubemap();
 
@@ -1008,13 +1033,48 @@ private:
 	);
 
 	// Resource uploading
+	//
+	/// @brief One in-flight upload batch: a command buffer and the fence that says when it is done
+	///
+	/// Deliberately not part of FrameContext. Uploads used to record into the frame slot's transfer command
+	/// buffer, which meant the buffer was reset every k_frames_in_flight frames whether or not its batch had
+	/// finished - at editor frame rates that is a ~3ms window against a transfer that can take far longer,
+	/// and resetting a pending command buffer is invalid usage. Upload rate has no reason to be tied to how
+	/// many frames the renderer keeps in flight
+	struct UploadSlot {
+		vk::raii::CommandBuffer command_buffer = nullptr;
+		vk::raii::Fence fence = nullptr;
+		bool in_flight = false;
+	};
+
+	/// Slots are taken round-robin and reclaimed in the same order, so the next one to take is always the
+	/// oldest. Sized above k_frames_in_flight to keep streaming off the frame cadence, but not by much - a
+	/// slot holds its jobs' staging buffers alive until its fence signals
+	static constexpr uint32_t k_upload_slots = 4;
+
 	struct BatchedUploadGroup {
 		std::vector<std::unique_ptr<PendingResourceUpload>> jobs;
-		vk::raii::Fence completion_fence = nullptr;
+		uint32_t slot = 0;
 	};
+
+	std::vector<UploadSlot> m_upload_slots;
+	uint32_t m_next_upload_slot = 0;
+
+	/// @brief Ceiling on host memory held by uploads that have been built but not yet consumed by the GPU
+	///
+	/// build() allocates a staging copy and, for a texture, the transcode scratch too. Dispatching every
+	/// queued job the moment it arrives meant a scene load could stage its whole texture set at once - this
+	/// project alone carries 728 MiB of ktx2. Jobs past the ceiling wait in m_upload_waiting instead
+	static constexpr vk::DeviceSize k_upload_host_budget = 256ull << 20;
+
+	/// Queued but not yet dispatched to the thread pool; guarded by m_upload_mutex
+	std::deque<std::unique_ptr<PendingResourceUpload>> m_upload_waiting;
+	std::atomic<vk::DeviceSize> m_upload_host_bytes {0};
 
 	std::vector<std::unique_ptr<PendingResourceUpload>> m_upload_staging;
 	std::queue<BatchedUploadGroup> m_pending_uploads;
+	void createUploadRing();
+	void pumpUploadQueue();
 	void processPendingUploads();
 	void flushResourceUploads();
 	std::mutex m_upload_mutex;
@@ -1046,6 +1106,10 @@ private:
 	/// 1x1 white/black/flat-normal textures + shared sampler, every material pass's texture fallback -
 	/// see MaterialRuntime::TextureSlot::default_fallback for which slot picks which one
 	VulkanTexture m_default_texture;
+	VulkanTexture m_fail_load_texture;
+	VulkanTexture m_fail_gpu_texture;
+	VulkanTexture m_missing_texture;
+	vk::raii::Sampler m_failsafe_sampler = nullptr;
 	VulkanTexture m_default_black_texture;
 	VulkanTexture m_default_normal_texture;
 	vk::raii::Sampler m_default_sampler = nullptr;

@@ -16,8 +16,6 @@
 #include <dlfcn.h>
 #endif
 #include <array>
-#include <cctype>
-#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -269,15 +267,21 @@ VulkanCore::VulkanCore(
 		layers.push_back("VK_LAYER_KHRONOS_validation");
 	}
 
+	// Requested whenever the loader offers it, not only alongside validation. Object names are read by
+	// RenderDoc and Nsight without any layer loaded, and captures are taken against Release - gating this on
+	// validation is what left every pipeline unnamed there. Has to be queried first: asking for an absent
+	// instance extension fails vkCreateInstance outright
 	std::vector extensions(required_instance_extensions.begin(), required_instance_extensions.end());
-	if (m_validation_enabled) {
+	m_debug_utils_enabled = checkInstanceExtensionSupport(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	if (m_debug_utils_enabled) {
 		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	}
+	TOAST_INFO("Render", "Debug object names: {}", m_debug_utils_enabled ? "enabled" : "disabled");
 
 	vk::InstanceCreateInfo instance_ci({}, &app_info, layers, extensions);
 	m_instance = vk::raii::Instance(m_context, instance_ci);
 
-	if (m_validation_enabled) {
+	if (m_validation_enabled && m_debug_utils_enabled) {
 		vk::DebugUtilsMessengerCreateInfoEXT debug_ci {};
 		debug_ci.messageSeverity =
 		    vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
@@ -341,16 +345,10 @@ void VulkanCore::initializeNsightActivity() {
 	// RenderDoc above, which is trusted purely by virtue of already being loaded into the process)
 	NGFX_SetLibraryLoadFn(NGFX_LoadLib_NoVerification);
 
-	std::string mode_env;
-	if (const char* env = std::getenv("TOAST_NSIGHT_MODE")) {
-		mode_env = env;
-	}
-	std::ranges::transform(mode_env, mode_env.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	// Graphics Capture, not GPU Trace: once GPU Trace initializes, its interception layer gates *every*
-	// subsequent queue submission on the host being attached - including ordinary uploads, which then block
-	// forever on a fence that never signals. TOAST_NSIGHT_MODE=trace opts in for sessions launched via Nsight
-	const bool want_graphics_capture = mode_env != "trace";
-
+	// Always Graphics Capture, never GPU Trace: once GPU Trace initializes, its interception layer gates
+	// *every* subsequent queue submission on the host being attached - including ordinary uploads, which then
+	// block forever on a fence that never signals. A session that genuinely wants GPU Trace launches from the
+	// Nsight host, and the DifferentActivityInjected path below adapts to whatever it injected
 	std::array<NGFX_InstallationInfo, 8> installations {};
 	uint32_t num_installations = 0;
 	const NGFX_Result enumerate_result =
@@ -376,121 +374,67 @@ void VulkanCore::initializeNsightActivity() {
 	    num_installations
 	);
 
-	if (want_graphics_capture) {
-		NGFX_GraphicsCapture_InjectionSettings settings {};
-		settings.version = NGFX_GraphicsCapture_InjectionSettings_VER;
-		// The SDK's validator rejects several of these at their C++ defaults despite the headers implying 0 is
-		// "unset": frameCount must be in [1,600], and 0 reads as "armed at time zero" rather than unused.
-		// captureDefaultHotkey stays OFF - anything else silently no-ops the StartCapture calls F12 makes
-		settings.frameCount = 1;
-		settings.captureDefaultHotkey = false;
-		settings.captureFrame = 0xFFFFFFFFu;
-		settings.captureCountdownTimer = 0xFFFFFFFFu;
+	NGFX_GraphicsCapture_InjectionSettings settings {};
+	settings.version = NGFX_GraphicsCapture_InjectionSettings_VER;
+	// The SDK's validator rejects several of these at their C++ defaults despite the headers implying 0 is
+	// "unset": frameCount must be in [1,600], and 0 reads as "armed at time zero" rather than unused.
+	// captureDefaultHotkey stays OFF - anything else silently no-ops the StartCapture calls F12 makes
+	settings.frameCount = 1;
+	settings.captureDefaultHotkey = false;
+	settings.captureFrame = 0xFFFFFFFFu;
+	settings.captureCountdownTimer = 0xFFFFFFFFu;
 
-		NGFX_GraphicsCapture_Inject_Vulkan_Params inject_params {NGFX_GraphicsCapture_Inject_Vulkan_Params_VER};
-		inject_params.installationPath = install_path;
-		inject_params.settings = &settings;
+	NGFX_GraphicsCapture_Inject_Vulkan_Params inject_params {NGFX_GraphicsCapture_Inject_Vulkan_Params_VER};
+	inject_params.installationPath = install_path;
+	inject_params.settings = &settings;
 
-		const NGFX_Result inject_result = NGFX_GraphicsCapture_Inject_Vulkan(&inject_params);
+	const NGFX_Result inject_result = NGFX_GraphicsCapture_Inject_Vulkan(&inject_params);
 
-		// DifferentActivityInjected is not a failure: it means something else already injected, which is what
-		// happens when the editor is launched from the Nsight host. Bailing out here left m_nsight_mode unset,
-		// which is what "Nsight does not detect the API" and "F12 captures nothing" both were
-		const bool injected = inject_result == NGFX_Result_Success;
-		const bool already_injected = inject_result == NGFX_Result_DifferentActivityInjected;
+	// DifferentActivityInjected is not a failure: it means something else already injected, which is what
+	// happens when the editor is launched from the Nsight host. Bailing out here left m_nsight_mode unset,
+	// which is what "Nsight does not detect the API" and "F12 captures nothing" both were
+	const bool injected = inject_result == NGFX_Result_Success;
+	const bool already_injected = inject_result == NGFX_Result_DifferentActivityInjected;
 
-		if (!injected && !already_injected) {
-			TOAST_WARN(
-			    "VulkanCore",
-			    "Failed to inject Nsight Graphics Capture activity: {} - launch the editor from Nsight Graphics, or "
-			    "check that the attached host matches the installation logged above",
-			    nsightResultName(inject_result)
-			);
-		} else {
-			if (already_injected) {
-				TOAST_INFO("VulkanCore", "An Nsight activity is already injected (host-launched); using it rather than injecting");
-			}
-
-			NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params init_params {
-			  NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER
-			};
-			const NGFX_Result init_result = NGFX_GraphicsCapture_InitializeActivity_Vulkan(&init_params);
-			if (init_result == NGFX_Result_Success) {
-				m_nsight_mode = NsightMode::graphics_capture;
-				TOAST_INFO("VulkanCore", "Nsight Graphics Capture activity initialized (F12 to capture a frame)");
-			} else if (init_result == NGFX_Result_DifferentActivityInjected) {
-				// Injected, but not Graphics Capture - in practice GPU Trace. This process cannot ask which
-				// activity the user picked, so match what actually got injected rather than trusting the env var
-				NGFX_GPUTrace_InitializeActivity_Vulkan_Params trace_init {NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER};
-				const NGFX_Result trace_result = NGFX_GPUTrace_InitializeActivity_Vulkan(&trace_init);
-				if (trace_result == NGFX_Result_Success) {
-					m_nsight_mode = NsightMode::gpu_trace;
-					TOAST_INFO(
-					    "VulkanCore", "Host injected GPU Trace rather than Graphics Capture; initialized that instead (F12 to trace)"
-					);
-				} else {
-					TOAST_WARN(
-					    "VulkanCore",
-					    "An Nsight activity is injected but neither Graphics Capture ({}) nor GPU Trace ({}) initializes against "
-					    "it - the host is running an activity this engine has no SDK path for. Relaunch Nsight with the Frame "
-					    "Debugger or GPU Trace activity",
-					    nsightResultName(init_result),
-					    nsightResultName(trace_result)
-					);
-				}
-			} else {
-				TOAST_WARN("VulkanCore", "Failed to initialize Nsight Graphics Capture activity: {}", nsightResultName(init_result));
-			}
-		}
+	if (!injected && !already_injected) {
+		TOAST_WARN(
+		    "VulkanCore",
+		    "Failed to inject Nsight Graphics Capture activity: {} - launch the editor from Nsight Graphics, or "
+		    "check that the attached host matches the installation logged above",
+		    nsightResultName(inject_result)
+		);
 	} else {
-		NGFX_GPUTrace_InjectionSettings settings {};
-		settings.version = NGFX_GPUTrace_InjectionSettings_VER;
-		// Triggered by our own F12 handler calling StartTrace/StopTrace directly, not Nsight's built-in
-		// hotkey or a frame/submit/duration counter
-		settings.startEvent = NGFX_GPUTrace_StartEvent_NGFXSDK;
-		settings.stopEvent = NGFX_GPUTrace_StopEvent_NGFXSDK;
-		// maxDurationMs is a hard safety cap enforced regardless of stopEvent (the SDK rejects 0 as invalid
-		// outright) - one minute is far longer than a single F12-bracketed frame ever takes, it's just a
-		// backstop against a trace that never gets stopped
-		settings.maxDurationMs = 60'000;
-		// Per-device GPU event tracking buffers - the SDK rejects 0 here too, these are its own sizing
-		// knobs rather than something this engine has an opinion on, so just pick generous values
-		settings.eventBufferSizeKB = 65536;
-		settings.timestampCount = 65536;
-		// VulkanSC-specific limits, unused by this engine's plain Vulkan renderer, but still rejected as
-		// invalid at 0 - same treatment as the buffer sizes above
-		settings.maxInternalVKSCCommandBuffersPerQueue = 16;
-		settings.maxInternalVKSCCommandBuffersMemoryKB = 1024;
+		if (already_injected) {
+			TOAST_INFO("VulkanCore", "An Nsight activity is already injected (host-launched); using it rather than injecting");
+		}
 
-		NGFX_GPUTrace_Inject_Vulkan_Params inject_params {NGFX_GPUTrace_Inject_Vulkan_Params_VER};
-		inject_params.installationPath = install_path;
-		inject_params.settings = &settings;
-
-		const NGFX_Result inject_result = NGFX_GPUTrace_Inject_Vulkan(&inject_params);
-
-		// Same reasoning as the Graphics Capture path above: an activity injected by the Nsight host is the
-		// one to initialize against, not a reason to give up
-		const bool injected = inject_result == NGFX_Result_Success;
-		const bool already_injected = inject_result == NGFX_Result_DifferentActivityInjected;
-
-		if (!injected && !already_injected) {
-			TOAST_WARN("VulkanCore", "Failed to inject Nsight GPU Trace activity: {}", nsightResultName(inject_result));
-		} else {
-			if (already_injected) {
-				TOAST_INFO("VulkanCore", "An Nsight activity is already injected (host-launched); using it rather than injecting");
-			}
-
-			NGFX_GPUTrace_InitializeActivity_Vulkan_Params init_params {NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER};
-			const NGFX_Result init_result = NGFX_GPUTrace_InitializeActivity_Vulkan(&init_params);
-			if (init_result == NGFX_Result_Success) {
+		NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params init_params {NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER};
+		const NGFX_Result init_result = NGFX_GraphicsCapture_InitializeActivity_Vulkan(&init_params);
+		if (init_result == NGFX_Result_Success) {
+			m_nsight_mode = NsightMode::graphics_capture;
+			TOAST_INFO("VulkanCore", "Nsight Graphics Capture activity initialized (F12 to capture a frame)");
+		} else if (init_result == NGFX_Result_DifferentActivityInjected) {
+			// Injected, but not Graphics Capture - in practice GPU Trace, from a host-launched session. This
+			// process cannot ask which activity the user picked, so match what actually got injected
+			NGFX_GPUTrace_InitializeActivity_Vulkan_Params trace_init {NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER};
+			const NGFX_Result trace_result = NGFX_GPUTrace_InitializeActivity_Vulkan(&trace_init);
+			if (trace_result == NGFX_Result_Success) {
 				m_nsight_mode = NsightMode::gpu_trace;
-				TOAST_INFO("VulkanCore", "Nsight GPU Trace activity initialized (F12 to capture a trace)");
+				TOAST_INFO("VulkanCore", "Host injected GPU Trace rather than Graphics Capture; initialized that instead (F12 to trace)");
 			} else {
-				TOAST_WARN("VulkanCore", "Failed to initialize Nsight GPU Trace activity: {}", nsightResultName(init_result));
+				TOAST_WARN(
+				    "VulkanCore",
+				    "An Nsight activity is injected but neither Graphics Capture ({}) nor GPU Trace ({}) initializes against "
+				    "it - the host is running an activity this engine has no SDK path for. Relaunch Nsight with the Frame "
+				    "Debugger or GPU Trace activity",
+				    nsightResultName(init_result),
+				    nsightResultName(trace_result)
+				);
 			}
+		} else {
+			TOAST_WARN("VulkanCore", "Failed to initialize Nsight Graphics Capture activity: {}", nsightResultName(init_result));
 		}
 	}
-
 	NGFX_FreeInstallations(installations.data(), num_installations);
 }
 
@@ -1117,6 +1061,18 @@ auto VulkanCore::calculateDeviceScore(const vk::PhysicalDevice& device, std::spa
 	score.missing_extensions = required_missing_names;
 
 	return score;
+}
+
+auto VulkanCore::checkInstanceExtensionSupport(std::string_view extension) -> bool {
+	uint32_t count = 0;
+	vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+
+	std::vector<VkExtensionProperties> available(count);
+	vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
+
+	return std::ranges::any_of(available, [extension](const VkExtensionProperties& e) {
+		return extension == static_cast<const char*>(e.extensionName);
+	});
 }
 
 auto VulkanCore::checkValidationLayerSupport() -> bool {

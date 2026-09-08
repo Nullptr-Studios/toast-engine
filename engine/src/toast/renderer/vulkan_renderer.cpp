@@ -29,6 +29,7 @@
 #include <optional>
 #include <stdexcept>
 #include <toast/assets/animation.hpp>
+#include <toast/assets/asset_manager.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/assets/material.hpp>
 #include <toast/log.hpp>
@@ -520,6 +521,7 @@ VulkanRenderer::VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTa
 	createTransferCommandPool();
 	createComputeCommandPool();
 
+	createUploadRing();
 	createFrameContexts();
 	createPerImageSync();
 	createDepthResources();
@@ -647,6 +649,25 @@ auto VulkanRenderer::createComputeCommandPool() -> void {
 	TOAST_TRACE("VulkanRenderer", "Compute command pool created (compute family {})", m_core->getComputeQueueFamilyIndex());
 }
 
+auto VulkanRenderer::createUploadRing() -> void {
+	m_upload_slots.clear();
+	m_upload_slots.resize(k_upload_slots);
+	m_next_upload_slot = 0;
+
+	const vk::CommandBufferAllocateInfo allocate_ci(*m_transfer_command_pool, vk::CommandBufferLevel::ePrimary, k_upload_slots);
+	auto buffers = m_core->getDevice().allocateCommandBuffers(allocate_ci);
+
+	for (uint32_t i = 0; i < k_upload_slots; ++i) {
+		m_upload_slots[i].command_buffer = std::move(buffers[i]);
+		// Unsignaled: in_flight is what says a slot is busy, and a slot starts free
+		m_upload_slots[i].fence = vk::raii::Fence(m_core->getDevice(), vk::FenceCreateInfo {});
+		setDebugName(*m_core, *m_upload_slots[i].command_buffer, std::format("VulkanRenderer Upload[{}] CommandBuffer", i));
+		setDebugName(*m_core, *m_upload_slots[i].fence, std::format("VulkanRenderer Upload[{}] Fence", i));
+	}
+
+	TOAST_TRACE("VulkanRenderer", "Upload command buffer ring created: {} slots", k_upload_slots);
+}
+
 auto VulkanRenderer::createFrameContexts() -> void {
 	m_frames.clear();
 	m_frames.resize(k_frames_in_flight);
@@ -654,22 +675,16 @@ auto VulkanRenderer::createFrameContexts() -> void {
 	const vk::SemaphoreCreateInfo semaphore_ci {};
 	const vk::FenceCreateInfo fence_ci(vk::FenceCreateFlagBits::eSignaled);
 	const vk::CommandBufferAllocateInfo command_buffer_ci(*m_command_pool, vk::CommandBufferLevel::ePrimary, k_frames_in_flight);
-	const vk::CommandBufferAllocateInfo transfer_command_buffer_ci(
-	    *m_transfer_command_pool, vk::CommandBufferLevel::ePrimary, k_frames_in_flight
-	);
 	const vk::CommandBufferAllocateInfo compute_command_buffer_ci(
 	    *m_compute_command_pool, vk::CommandBufferLevel::ePrimary, k_frames_in_flight
 	);
 	auto allocated_command_buffers = m_core->getDevice().allocateCommandBuffers(command_buffer_ci);
-	auto allocated_transfer_command_buffers = m_core->getDevice().allocateCommandBuffers(transfer_command_buffer_ci);
 	auto allocated_compute_command_buffers = m_core->getDevice().allocateCommandBuffers(compute_command_buffer_ci);
 
 	for (uint32_t frame_index = 0; frame_index < k_frames_in_flight; ++frame_index) {
 		m_frames[frame_index].command_buffer = std::move(allocated_command_buffers[frame_index]);
-		m_frames[frame_index].transfer_command_buffer = std::move(allocated_transfer_command_buffers[frame_index]);
 		m_frames[frame_index].compute_command_buffer = std::move(allocated_compute_command_buffers[frame_index]);
 		m_frames[frame_index].image_available = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
-		m_frames[frame_index].transfer_finished = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
 		m_frames[frame_index].compute_to_graphics = vk::raii::Semaphore(m_core->getDevice(), semaphore_ci);
 		m_frames[frame_index].in_flight = vk::raii::Fence(m_core->getDevice(), fence_ci);
 		m_frames[frame_index].compute_in_flight = vk::raii::Fence(m_core->getDevice(), fence_ci);
@@ -679,19 +694,11 @@ auto VulkanRenderer::createFrameContexts() -> void {
 		);
 		setDebugName(
 		    *m_core,
-		    *m_frames[frame_index].transfer_command_buffer,
-		    std::format("VulkanRenderer Frame[{}] TransferCommandBuffer", frame_index)
-		);
-		setDebugName(
-		    *m_core,
 		    *m_frames[frame_index].compute_command_buffer,
 		    std::format("VulkanRenderer Frame[{}] ComputeCommandBuffer", frame_index)
 		);
 		setDebugName(
 		    *m_core, *m_frames[frame_index].image_available, std::format("VulkanRenderer Frame[{}] ImageAvailable", frame_index)
-		);
-		setDebugName(
-		    *m_core, *m_frames[frame_index].transfer_finished, std::format("VulkanRenderer Frame[{}] TransferFinished", frame_index)
 		);
 		setDebugName(
 		    *m_core,
@@ -1727,6 +1734,58 @@ void VulkanRenderer::createDefaultTexture() {
 	sampler_ci.mipmapMode = vk::SamplerMipmapMode::eNearest;
 	m_default_sampler = vk::raii::Sampler(device, sampler_ci);
 	setDebugName(*m_core, *m_default_sampler, "VulkanRenderer DefaultSampler");
+
+	createFailsafeTextures();
+}
+
+void VulkanRenderer::createFailsafeTextures() {
+	// Nearest on every axis
+	vk::SamplerCreateInfo sampler_ci {};
+	sampler_ci.magFilter = vk::Filter::eNearest;
+	sampler_ci.minFilter = vk::Filter::eNearest;
+	sampler_ci.mipmapMode = vk::SamplerMipmapMode::eNearest;
+	sampler_ci.addressModeU = vk::SamplerAddressMode::eRepeat;
+	sampler_ci.addressModeV = vk::SamplerAddressMode::eRepeat;
+	sampler_ci.addressModeW = vk::SamplerAddressMode::eRepeat;
+	sampler_ci.maxLod = VK_LOD_CLAMP_NONE;
+	m_failsafe_sampler = vk::raii::Sampler(m_core->getDevice(), sampler_ci);
+	setDebugName(*m_core, *m_failsafe_sampler, "VulkanRenderer FailsafeSampler");
+
+	// Read by virtual path
+	const auto load = [this](VulkanTexture& target, std::string_view virtual_path, std::string_view debug_name) {
+		auto bytes = assets::AssetManager::get().tryLoadBytes(virtual_path);
+		if (!bytes.has_value()) {
+			TOAST_WARN("Render", "Failsafe texture '{}' is missing; that slot will fall back to flat white", virtual_path);
+			return;
+		}
+		uploadTextureSync(*m_core, target, std::move(*bytes), debug_name);
+	};
+
+	load(m_fail_load_texture, "core://textures/fail_load.ktx2", "VulkanRenderer FailLoadTexture");
+	load(m_fail_gpu_texture, "core://textures/fail_gpu.ktx2", "VulkanRenderer FailGpuTexture");
+	load(m_missing_texture, "core://textures/MissingTexture.ktx2", "VulkanRenderer MissingTexture");
+}
+
+auto VulkanRenderer::getFailsafeTextureView(bool has_reference, const VulkanTexture* texture) const noexcept -> vk::ImageView {
+	// An empty slot is not a failure
+	if (!has_reference) {
+		return nullptr;
+	}
+
+	// Referenced but nothing resolved
+	if (texture == nullptr) {
+		return m_missing_texture.isReady() ? m_missing_texture.getView() : vk::ImageView {};
+	}
+
+	switch (texture->state()) {
+		case IVulkanResource::UploadState::failed_load:
+			return m_fail_load_texture.isReady() ? m_fail_load_texture.getView() : vk::ImageView {};
+		case IVulkanResource::UploadState::failed_gpu:
+			return m_fail_gpu_texture.isReady() ? m_fail_gpu_texture.getView() : vk::ImageView {};
+		default:
+			// Still uploading, or ready - neither is something to shout about
+			return nullptr;
+	}
 }
 
 void VulkanRenderer::createDefaultShadowMap() {
@@ -3718,42 +3777,92 @@ void VulkanRenderer::addComputePass(std::unique_ptr<IComputePass> pass) {
 }
 
 void VulkanRenderer::queueResourceUpload(std::unique_ptr<PendingResourceUpload> upload_job) {
-	// build() can be expensive so its dispatched to the thread pool to avoid blocking the main thread
-	m_pending_upload_builds.fetch_add(1, std::memory_order_relaxed);
-	toast::ThreadPool::push([this, job = std::move(upload_job)]() mutable {
-		job->build(*m_core);
+	{
+		std::lock_guard<std::mutex> lock(m_upload_mutex);
+		m_upload_waiting.push_back(std::move(upload_job));
+	}
+	pumpUploadQueue();
+}
 
+void VulkanRenderer::pumpUploadQueue() {
+	ZoneScoped;
+
+	// A job's real footprint is only known once build() has run, so the budget is checked against work
+	// already staged. Overshoot is bounded by whatever the pool workers are building right now, which is
+	// what makes it safe to gate dispatch rather than the allocation itself
+	while (true) {
+		std::unique_ptr<PendingResourceUpload> job;
 		{
 			std::lock_guard<std::mutex> lock(m_upload_mutex);
-			m_upload_staging.push_back(std::move(job));
+			if (m_upload_waiting.empty()) {
+				return;
+			}
+			// Compared against zero rather than the job's own size: a single resource larger than the whole
+			// budget still has to get through, or it waits forever
+			if (m_upload_host_bytes.load(std::memory_order_acquire) >= k_upload_host_budget) {
+				return;
+			}
+			job = std::move(m_upload_waiting.front());
+			m_upload_waiting.pop_front();
 		}
-		m_pending_upload_builds.fetch_sub(1, std::memory_order_acq_rel);
-	});
+
+		// build() can be expensive so its dispatched to the thread pool to avoid blocking the main thread
+		m_pending_upload_builds.fetch_add(1, std::memory_order_relaxed);
+		toast::ThreadPool::push([this, j = std::move(job)]() mutable {
+			j->build(*m_core);
+			m_upload_host_bytes.fetch_add(j->host_bytes, std::memory_order_acq_rel);
+
+			{
+				std::lock_guard<std::mutex> lock(m_upload_mutex);
+				m_upload_staging.push_back(std::move(j));
+			}
+			m_pending_upload_builds.fetch_sub(1, std::memory_order_acq_rel);
+		});
+	}
 }
 
 void VulkanRenderer::processPendingUploads() {
 	ZoneScoped;
 	const auto& device = m_core->getDevice();
 
+	// Submits go to one queue in slot order, so fences signal in that order too - the front batch is always
+	// the one to check, and stopping at the first unsignaled one keeps slot reclamation in step
 	while (!m_pending_uploads.empty()) {
 		auto& oldest_batch = m_pending_uploads.front();
+		auto& slot = m_upload_slots[oldest_batch.slot];
 
-		const auto status = vkGetFenceStatus(*device, *oldest_batch.completion_fence);
-
-		if (status == VkResult::VK_SUCCESS) {
-			for (auto& job : oldest_batch.jobs) {
-				job->finished();
-			}
-
-			m_pending_uploads.pop();
-		} else {
+		if (vkGetFenceStatus(*device, *slot.fence) != VkResult::VK_SUCCESS) {
 			break;
 		}
+
+		vk::DeviceSize reclaimed = 0;
+		for (auto& job : oldest_batch.jobs) {
+			job->finished();
+			reclaimed += job->host_bytes;
+		}
+		m_upload_host_bytes.fetch_sub(reclaimed, std::memory_order_acq_rel);
+
+		slot.in_flight = false;
+		m_pending_uploads.pop();
 	}
+
+	// Budget just freed up, so whatever was held back can go
+	pumpUploadQueue();
 }
 
 void VulkanRenderer::flushResourceUploads() {
 	ZoneScoped;
+	if (m_upload_slots.empty()) {
+		return;
+	}
+
+	// The slot is claimed before the staging list is touched: with every slot busy the jobs have to stay
+	// queued for a later frame rather than being drained into a command buffer there is nowhere to put
+	UploadSlot& slot = m_upload_slots[m_next_upload_slot];
+	if (slot.in_flight) {
+		return;
+	}
+
 	std::vector<std::unique_ptr<PendingResourceUpload>> jobs_to_flush;
 	{
 		std::lock_guard<std::mutex> lock(m_upload_mutex);
@@ -3766,25 +3875,28 @@ void VulkanRenderer::flushResourceUploads() {
 	}
 
 	const auto& device = m_core->getDevice();
-	auto& transfer_cmd = m_frames[m_current_frame].transfer_command_buffer;
 
-	transfer_cmd.reset();
-	transfer_cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	// Reset here rather than at signal time, so a slot that has been idle for a while still starts clean
+	device.resetFences(*slot.fence);
+	slot.command_buffer.reset();
+	slot.command_buffer.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
 	for (auto& job : jobs_to_flush) {
-		job->record(*transfer_cmd);
+		job->record(*slot.command_buffer);
 	}
 
-	transfer_cmd.end();
+	slot.command_buffer.end();
 
-	// Create a single fence for the entire batch group
 	BatchedUploadGroup batch;
-	batch.completion_fence = vk::raii::Fence(device, vk::FenceCreateInfo {});
+	batch.slot = m_next_upload_slot;
 	batch.jobs = std::move(jobs_to_flush);    // Move local list into the batch tracker
 
-	const vk::CommandBuffer raw_transfer_cmd = *transfer_cmd;
+	const vk::CommandBuffer raw_transfer_cmd = *slot.command_buffer;
 	const vk::SubmitInfo submit_info(0, nullptr, nullptr, 1, &raw_transfer_cmd);
-	m_core->getTransferQueue().submit(submit_info, *batch.completion_fence);
+	m_core->getTransferQueue().submit(submit_info, *slot.fence);
+
+	slot.in_flight = true;
+	m_next_upload_slot = (m_next_upload_slot + 1) % k_upload_slots;
 
 	m_pending_uploads.push(std::move(batch));
 }

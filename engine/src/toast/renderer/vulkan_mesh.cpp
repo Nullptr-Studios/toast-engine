@@ -210,9 +210,10 @@ void VulkanMesh::draw(vk::CommandBuffer cmd, uint32_t instance_count) const {
 
 // MeshUpload
 
-MeshUpload::MeshUpload(VulkanMesh& mesh, VulkanMesh::UploadData data, std::string_view debug_name) {
+MeshUpload::MeshUpload(VulkanMesh& mesh, VulkanMesh::UploadData data, assets::HandleBase source, std::string_view debug_name) {
 	this->mesh = &mesh;
 	this->data = data;
+	this->source = std::move(source);
 	this->debug_name = debug_name;
 }
 
@@ -339,6 +340,7 @@ void MeshUpload::build(const VulkanCore& core) {
 	                 vma::AllocationCreateFlagBits::eHostAccessAllowTransferInstead;
 
 	vertex_staging = core.getAllocator().createBuffer(staging_ci, alloc_ci);
+	host_bytes = total_size;
 	if (!debug_name.empty()) {
 		setDebugName(core, *vertex_staging, std::format("{} StagingBuffer", debug_name));
 	}

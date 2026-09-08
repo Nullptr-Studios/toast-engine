@@ -226,9 +226,13 @@ Mesh::Mesh(const std::vector<uint8_t>& data) : m_gpu_mesh(std::make_unique<rende
 	}
 
 	// create GPU Side mesh
+	// The handle is what keeps this mesh alive until the job build() has read the spans above
 	renderer::VulkanRenderer::instance->queueResourceUpload(
 	    std::make_unique<renderer::MeshUpload>(
-	        *m_gpu_mesh, renderer::VulkanMesh::UploadData {m_vertices, m_indices, m_skin_vertices}, m_name
+	        *m_gpu_mesh,
+	        renderer::VulkanMesh::UploadData {m_vertices, m_indices, m_skin_vertices},
+	        assets::HandleBase {this},
+	        m_name
 	    )
 	);
 }

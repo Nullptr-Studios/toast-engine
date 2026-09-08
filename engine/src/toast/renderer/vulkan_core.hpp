@@ -12,13 +12,12 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace renderer {
 
-/// @brief Which Nsight Graphics SDK activity (if any) got injected/initialized into this process. Only one
-/// activity can be active per process, chosen once at startup via the TOAST_NSIGHT_MODE env var - see
-/// VulkanCore::VulkanCore() for the selection logic
+/// @brief Which Nsight Graphics SDK activity got injected into this process
 enum class NsightMode : uint8_t {
 	none,
 	graphics_capture,
@@ -182,6 +181,12 @@ public:
 		return m_validation_enabled;
 	}
 
+	/// @brief Whether VK_EXT_debug_utils is on the instance, so objects can carry names
+	[[nodiscard]]
+	auto debugUtilsEnabled() const noexcept -> bool {
+		return m_debug_utils_enabled;
+	}
+
 	/// @brief Whether the selected device supports anisotropic filtering
 	[[nodiscard]]
 	auto supportsSamplerAnisotropy() const noexcept -> bool {
@@ -223,13 +228,16 @@ private:
 	[[nodiscard]]
 	auto checkValidationLayerSupport() -> bool;
 
+	[[nodiscard]]
+	static auto checkInstanceExtensionSupport(std::string_view extension) -> bool;
+
 #if defined(_WIN32)
-	/// @brief Detects an Nsight Graphics installation and injects+initializes whichever activity
-	/// TOAST_NSIGHT_MODE selects; sets m_nsight_mode on success. Must run before the VkInstance is created
+	/// @brief Detects an Nsight Graphics installation and injects+initializes the Graphics Capture activity
 	void initializeNsightActivity();
 #endif
 
 	bool m_validation_enabled = false;
+	bool m_debug_utils_enabled = false;
 
 	vk::raii::Context m_context;
 	vk::raii::Instance m_instance = nullptr;

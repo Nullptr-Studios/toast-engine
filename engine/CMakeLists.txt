@@ -239,4 +239,13 @@ if (WIN32)
     )
 endif ()
 
+
+add_custom_command(TARGET toast_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${OUTPUT_ROOT}/$<CONFIG>/log_server/log_server${CMAKE_EXECUTABLE_SUFFIX}"
+        "${TOAST_ENGINE_BIN_DIR}"
+        COMMENT "Copying log server"
+        VERBATIM
+)
+
 install(TARGETS toast_engine RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)

@@ -18,7 +18,7 @@ namespace renderer {
  */
 template<typename VkHandle>
 void setDebugName(const VulkanCore& core, const VkHandle& handle, std::string_view name) {
-	if (!core.validationEnabled() || !handle) {
+	if (!core.debugUtilsEnabled() || !handle) {
 		return;
 	}
 

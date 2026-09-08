@@ -159,12 +159,11 @@ void World::loadNode(std::string_view uri, bool activate_as_root) {
 	// just reroute to the actual loadNode() implementation
 	auto id = assets::resolveURI(uri);
 
-#ifndef NDEBUG
+	// an unresolvable URI leaves the engine dereferencing an empty optional
 	if (not id.has_value()) {
 		TOAST_WARN("World", "Couldn't load Node {}", uri);
 		return;
 	}
-#endif
 
 	loadNode(*id, activate_as_root);
 }

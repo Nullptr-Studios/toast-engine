@@ -13,7 +13,9 @@ class IVulkanResource {
 public:
 	enum class UploadState : std::uint8_t {
 		uploading,
-		ready
+		ready,
+		failed_load, /// The encoded bytes could not be decoded - truncated file, wrong container, failed transcode
+		failed_gpu	/// Decoded fine, but the Vulkan resource behind it could not be created
 	};
 
 	virtual ~IVulkanResource() = default;
@@ -22,9 +24,21 @@ public:
 
 	void markReady() { m_state = UploadState::ready; }
 
+	void markFailed(UploadState reason) { m_state = reason; }
+
 	[[nodiscard]]
 	auto isReady() const -> bool {
 		return m_state == UploadState::ready;
+	}
+
+	[[nodiscard]]
+	auto hasFailed() const -> bool {
+		return m_state == UploadState::failed_load || m_state == UploadState::failed_gpu;
+	}
+
+	[[nodiscard]]
+	auto state() const -> UploadState {
+		return m_state;
 	}
 
 private:
@@ -41,9 +55,15 @@ public:
 
 	virtual void record(vk::CommandBuffer cmd) = 0;
 
-	virtual void finished() { resource()->markReady(); }
+	/// Only promotes a job that actually built
+	virtual void finished() {
+		if (!resource()->hasFailed()) {
+			resource()->markReady();
+		}
+	}
 
-	vk::raii::Fence completion_fence = nullptr;
+	/// @brief Host memory this job holds once built
+	vk::DeviceSize host_bytes = 0;
 };
 
 }

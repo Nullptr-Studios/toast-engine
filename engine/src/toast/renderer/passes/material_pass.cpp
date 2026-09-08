@@ -334,12 +334,17 @@ void MaterialPass::updateInstanceDescriptors(InstanceResources& res, uint32_t fr
 			view = VulkanRenderer::instance->getDefaultTextureView();
 		}
 		vk::Sampler sampler = slot.sampler ? slot.sampler : VulkanRenderer::instance->getDefaultSampler();
-		if (slot.texture.hasValue()) {
-			const auto& gpu_texture = slot.texture->gpuTexture();
-			if (gpu_texture.isReady() && gpu_texture.getView()) {
-				view = gpu_texture.getView();
-				warnIfWrongColorSpace(slot, gpu_texture);
-			}
+
+		const VulkanTexture* gpu_texture = slot.texture.hasValue() ? &slot.texture->gpuTexture() : nullptr;
+		if (gpu_texture != nullptr && gpu_texture->isReady() && gpu_texture->getView()) {
+			view = gpu_texture->getView();
+			warnIfWrongColorSpace(slot, *gpu_texture);
+		} else if (const vk::ImageView failsafe =
+		               VulkanRenderer::instance->getFailsafeTextureView(slot.texture.uid().data() != 0, gpu_texture)) {
+			
+			
+			view = failsafe;
+			sampler = VulkanRenderer::instance->getFailsafeSampler();
 		}
 
 		if (res.bound_views[frame_index][i] == view) {
