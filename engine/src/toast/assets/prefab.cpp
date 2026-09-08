@@ -322,6 +322,8 @@ auto Prefab::operator=(Prefab&& other) noexcept -> Prefab& {
 Prefab::Prefab(std::istream& file) {
 	std::vector<std::string> lines;
 	std::string line;
+	std::string continued_line;
+	bool continuing = false;
 	while (std::getline(file, line)) {
 		// Strip leading/trailing whitespaces and tabs
 		size_t start = line.find_first_not_of(" \t\r\n\v\f");
@@ -335,7 +337,29 @@ Prefab::Prefab(std::istream& file) {
 			continue;
 		}
 
-		lines.push_back(std::move(cleaned));
+		const bool continues = cleaned.ends_with('\\');
+		if (continues) {
+			cleaned.pop_back();
+		}
+
+		if (continuing) {
+			continued_line += cleaned;
+		} else {
+			continued_line = std::move(cleaned);
+		}
+
+		if (continues) {
+			continuing = true;
+			continue;
+		}
+
+		lines.push_back(std::move(continued_line));
+		continuing = false;
+	}
+
+	if (continuing) {
+		TOAST_WARN("ResourceManager", "Prefab line continuation at end of file");
+		lines.push_back(std::move(continued_line));
 	}
 
 	for (size_t i = 0; i < lines.size();) {
@@ -946,7 +970,40 @@ void Prefab::writeField(const Field& field, std::stringstream& ss, std::string o
 		value_str = escapeString(value_str);
 	}
 
-	ss << std::format("{0}{1} @{2} = {3}\n", offset, field.name, writeType(field.type, field.is_array), value_str);
+	std::string prefix = std::format("{0}{1} @{2} = ", offset, field.name, writeType(field.type, field.is_array));
+	if (!field.is_array || value_str.empty()) {
+		ss << prefix << value_str << '\n';
+		return;
+	}
+
+	constexpr size_t wrap_column = 90;
+	if (prefix.size() + value_str.size() < wrap_column) {
+		ss << prefix << value_str << '\n';
+		return;
+	}
+
+	std::vector<std::string_view> tokens;
+	std::string_view remaining = value_str;
+	while (!remaining.empty()) {
+		auto token = nextStringValue(remaining);
+		if (!token) {
+			// stringifyValue always produces valid tokens; keep the value intact if that ever changes.
+			ss << prefix << value_str << '\n';
+			return;
+		}
+		tokens.push_back(*token);
+	}
+
+	const std::string continuation_offset = offset + "    ";
+	ss << prefix << "\\\n";
+	for (size_t i = 0; i < tokens.size(); ++i) {
+		ss << continuation_offset << tokens[i];
+		if (i + 1 < tokens.size()) {
+			ss << " \\\n";
+		} else {
+			ss << '\n';
+		}
+	}
 }
 
 auto Prefab::toBinary() const -> std::vector<uint8_t> {

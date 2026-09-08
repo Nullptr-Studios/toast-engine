@@ -35,4 +35,39 @@ TOAST_TEST_NAMED("node_file", "node_file/01-from_file", test_node_file_01_from_f
 	assert((strings == std::vector<std::string> {"contains spaces", "", "a \"quote\" and a \\ slash"}));
 	assert(Prefab::stringifyValue(FieldType::string_t, true, *parsed_strings)
 	       == "\"contains spaces\" \"\" \"a \\\"quote\\\" and a \\\\ slash\"");
+
+	std::stringstream multiline {
+	    "[root type=toast::Node]\n"
+	    "values @array_string = \"first value\" \\\n"
+	    "    \"second value\" \\\n"
+	    "\t\"third value\"\n"
+	};
+	Prefab multiline_prefab(multiline);
+	const auto& values = std::any_cast<const std::vector<std::string>&>(multiline_prefab.nodes[0].fields[0].value);
+	assert((values == std::vector<std::string> {"first value", "second value", "third value"}));
+
+	Prefab wrapped_prefab;
+	wrapped_prefab.nodes.push_back({
+	    .name = "root",
+	    .type = "toast::Node",
+	    .fields = {{
+	        .name = "values",
+	        .type = FieldType::string_t,
+	        .is_array = true,
+	        .value = std::vector<std::string> {"first value", "second value", "third value", "fourth value", "fifth value"}
+	    }}
+	});
+	const std::string wrapped = wrapped_prefab.toFile();
+	const std::string wrapped_indent = "    ";
+	assert(wrapped.contains("values @array_string = \\\n"));
+	assert(wrapped.contains(wrapped_indent + "\"first value\" \\\n"));
+	assert(wrapped.contains(wrapped_indent + "\"second value\" \\\n"));
+	assert(wrapped.contains(wrapped_indent + "\"third value\" \\\n"));
+	assert(wrapped.contains(wrapped_indent + "\"fourth value\" \\\n"));
+	assert(wrapped.contains(wrapped_indent + "\"fifth value\"\n"));
+	std::stringstream wrapped_stream(wrapped);
+	Prefab reparsed_wrapped(wrapped_stream);
+	const auto& reparsed_values =
+	    std::any_cast<const std::vector<std::string>&>(reparsed_wrapped.nodes[0].fields[0].value);
+	assert((reparsed_values == std::vector<std::string> {"first value", "second value", "third value", "fourth value", "fifth value"}));
 }
