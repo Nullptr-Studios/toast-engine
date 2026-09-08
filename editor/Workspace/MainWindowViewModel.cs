@@ -39,6 +39,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 	[ObservableProperty] private bool m_hierarchyVisible = true;
 	[ObservableProperty] private bool m_historyVisible;
 	[ObservableProperty] private bool m_inspectorVisible = true;
+	[ObservableProperty] private bool m_signalsVisible = true;
 	[ObservableProperty] private bool m_logsVisible = true;
 
 	[ObservableProperty] private IRootDock m_mainLayout;
@@ -73,12 +74,14 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 			if (e.Dockable == m_dockFactory.Hierarchy) m_hierarchyVisible = false;
 			if (e.Dockable == m_dockFactory.History) m_historyVisible = false;
 			if (e.Dockable == m_dockFactory.Inspector) m_inspectorVisible = false;
+			if (e.Dockable == m_dockFactory.Signals) m_signalsVisible = false;
 			if (e.Dockable == m_dockFactory.GenericEditorVm) m_genericEditorVisible = false;
 			if (e.Dockable == m_dockFactory.SchemaEditorVm) m_schemaEditorVisible = false;
 
 			OnPropertyChanged(nameof(HierarchyVisible));
 			OnPropertyChanged(nameof(HistoryVisible));
 			OnPropertyChanged(nameof(InspectorVisible));
+			OnPropertyChanged(nameof(SignalsVisible));
 			OnPropertyChanged(nameof(GenericEditorVisible));
 			OnPropertyChanged(nameof(SchemaEditorVisible));
 
@@ -107,6 +110,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 
 		m_dockFactory.ActiveDockableChanged += (_, _) => {
 			SyncActiveWorkspace();
+			if (m_dockFactory.Signals?.IsActive == true) m_dockFactory.Signals.Refresh();
 			PlayCommand.NotifyCanExecuteChanged();
 			PlayInWindowCommand.NotifyCanExecuteChanged();
 		};
@@ -135,6 +139,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 		foreach (var workspace in m_workspaces.Values) workspace.Dispose();
 		m_dockFactory.Hierarchy?.Dispose();
 		m_dockFactory.Inspector?.Dispose();
+		m_dockFactory.Signals?.Dispose();
 		m_dockFactory.History?.Dispose();
 		m_toastZoneFactory.AssetBrowserVm?.Dispose();
 		m_toastZoneFactory.TableEditorVm?.Dispose();
@@ -198,6 +203,10 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 
 	partial void OnInspectorVisibleChanged(bool value) {
 		ToggleMainTool("Inspector", value);
+	}
+
+	partial void OnSignalsVisibleChanged(bool value) {
+		ToggleMainTool("Signals", value);
 	}
 
 	partial void OnGenericEditorVisibleChanged(bool value) {
@@ -395,6 +404,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 		m_hierarchyVisible = m_dockFactory.IsToolVisible("Hierarchy");
 		m_historyVisible = m_dockFactory.IsToolVisible("History");
 		m_inspectorVisible = m_dockFactory.IsToolVisible("Inspector");
+		m_signalsVisible = m_dockFactory.IsToolVisible("Signals");
 		m_genericEditorVisible = m_dockFactory.IsToolVisible("GenericEditor");
 		m_schemaEditorVisible = m_dockFactory.IsToolVisible("SchemaEditor");
 		m_logsVisible = m_toastZoneFactory.IsToolVisible("Logs");
@@ -405,6 +415,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 		OnPropertyChanged(nameof(HierarchyVisible));
 		OnPropertyChanged(nameof(HistoryVisible));
 		OnPropertyChanged(nameof(InspectorVisible));
+		OnPropertyChanged(nameof(SignalsVisible));
 		OnPropertyChanged(nameof(GenericEditorVisible));
 		OnPropertyChanged(nameof(SchemaEditorVisible));
 		OnPropertyChanged(nameof(LogsVisible));

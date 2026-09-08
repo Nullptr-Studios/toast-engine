@@ -58,7 +58,13 @@ auto stringifyLuaValue(const LuaVarDesc& desc, const std::any& value) -> std::st
 			return join(*v, [](double e) { return std::format("{}", e); });
 		}
 		if (const auto* v = std::any_cast<std::vector<std::string>>(&value)) {
-			return join(*v, [](const std::string& e) { return e; }, '\x1f');
+			// terminator, not separator
+			std::string out;
+			for (const auto& e : *v) {
+				out += e;
+				out += '\x1f';
+			}
+			return out;
 		}
 		if (const auto* v = std::any_cast<std::vector<glm::vec2>>(&value)) {
 			return join(*v, [](const glm::vec2& e) { return std::format("{} {}", e.x, e.y); });
@@ -206,7 +212,21 @@ auto parseLuaValue(const LuaVarDesc& desc, std::string_view text, const NodeReso
 				}
 				return out;
 			}
-			case LuaVarKind::string: return text.empty() ? std::any {std::vector<std::string> {}} : std::any {tokens('\x1f')};
+			case LuaVarKind::string: {
+				// terminator
+				std::vector<std::string> out;
+				std::string_view rest = text;
+				while (!rest.empty()) {
+					const size_t end = rest.find('\x1f');
+					if (end == std::string_view::npos) {
+						out.emplace_back(rest);    // tolerate a missing final terminator
+						break;
+					}
+					out.emplace_back(rest.substr(0, end));
+					rest.remove_prefix(end + 1);
+				}
+				return std::any {std::move(out)};
+			}
 			case LuaVarKind::vec2: return group(2, [&](size_t i) { return glm::vec2(floats[i], floats[i + 1]); });
 			case LuaVarKind::vec3: return group(3, [&](size_t i) { return glm::vec3(floats[i], floats[i + 1], floats[i + 2]); });
 			case LuaVarKind::vec4:

@@ -211,6 +211,7 @@ pub fn build_template_context(node: &NodeInfo) -> json_t {
         "methods":               methods_ctx,
         "has_asset_handle":      has_asset_handle,
         "is_interface":          node.is_interface,
+        "signals":               node.class.signals,
     })
 }
 

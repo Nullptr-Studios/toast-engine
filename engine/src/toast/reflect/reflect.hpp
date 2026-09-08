@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "toast/uid.hpp"
+
 #include <any>
 #include <cassert>
 #include <cstdint>
@@ -16,6 +18,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <toast/events/signal_types.hpp>
 #include <toast/export.hpp>
 #include <toast/log.hpp>
 #include <toast/world/box.hpp>
@@ -24,6 +27,8 @@
 #include <utility>
 
 namespace toast {
+
+class Node;
 
 /**
  * @brief Serialization kind for a reflected field
@@ -42,6 +47,23 @@ enum class FieldType : uint8_t {
 	vec3_t,
 	vec4_t,
 	quaternion_t,
+};
+
+struct TOAST_API SignalInfo {
+	using SignalGetterPtr = std::vector<signals::ConnectionInfo> (*)(void*);
+	using SignalConnectPtr = void (*)(void*, Node&, std::string_view, bool);
+	using SignalDisconnectPtr = void (*)(void*, Node&, std::string_view);
+	using SignalClearEditorPtr = void (*)(void*);
+
+	std::string_view name;
+	std::string_view type;
+	std::vector<const std::type_info*> args;
+	nlohmann::json attributes;
+
+	SignalGetterPtr get;
+	SignalConnectPtr connect;
+	SignalDisconnectPtr disconnect;
+	SignalClearEditorPtr clear_editor;
 };
 
 /**

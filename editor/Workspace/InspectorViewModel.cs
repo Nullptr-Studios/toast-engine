@@ -544,7 +544,7 @@ public partial class InspectorViewModel : Tool, IDisposable, IInspectorClipboard
 			: InspectorClipboardScope.Value;
 		var payload = new InspectorClipboardPayload(
 			InspectorClipboardPayload.CurrentVersion, scope, null, value, null);
-		var text = field.IsArray ? field.EngineValue.Replace('\x1f', '\n') : value.EngineValue;
+		var text = field.IsArray ? string.Join('\n', field.ArrayItems.Select(item => item.EngineValue)) : value.EngineValue;
 		await InspectorClipboardService.WriteAsync(payload, text);
 	}
 
