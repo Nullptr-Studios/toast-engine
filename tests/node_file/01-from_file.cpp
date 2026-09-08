@@ -70,4 +70,35 @@ TOAST_TEST_NAMED("node_file", "node_file/01-from_file", test_node_file_01_from_f
 	const auto& reparsed_values =
 	    std::any_cast<const std::vector<std::string>&>(reparsed_wrapped.nodes[0].fields[0].value);
 	assert((reparsed_values == std::vector<std::string> {"first value", "second value", "third value", "fourth value", "fifth value"}));
+
+	std::stringstream signal_text {
+	    "[root type=toast::Node]\n"
+	    "activated @signal = 10 \"on_activated\" \\\n"
+	    "    11 \"on_other_activated\"\n"
+	};
+	Prefab signal_prefab(signal_text);
+	assert(signal_prefab.nodes[0].signals.size() == 1);
+	const auto& signal = signal_prefab.nodes[0].signals[0];
+	assert(signal.name == "activated");
+	assert(signal.connections.size() == 2);
+	assert(signal.connections[0].target.data() == 10 && signal.connections[0].function == "on_activated");
+	assert(signal.connections[1].target.data() == 11 && signal.connections[1].function == "on_other_activated");
+
+	Prefab wrapped_signals;
+	Prefab::Signal long_signal {.name = "activated"};
+	for (uint64_t i = 1; i <= 5; ++i) {
+		long_signal.connections.push_back({.target = UID(i), .function = "on_a_very_long_signal_function"});
+	}
+	wrapped_signals.nodes.push_back({.name = "root", .type = "toast::Node", .signals = {std::move(long_signal)}});
+	const std::string signal_output = wrapped_signals.toFile();
+	assert(signal_output.contains("activated @signal = \\\n"));
+	assert(signal_output.contains("    1 \"on_a_very_long_signal_function\" \\\n"));
+	const std::vector<uint8_t> signal_binary = wrapped_signals.toBinary();
+	Prefab binary_signals(std::span<const uint8_t>(signal_binary));
+	assert(binary_signals.nodes.size() == 1);
+	assert(binary_signals.nodes[0].signals.size() == 1);
+	assert(binary_signals.nodes[0].signals[0].name == "activated");
+	assert(binary_signals.nodes[0].signals[0].connections.size() == 5);
+	assert(binary_signals.nodes[0].signals[0].connections[0].target.data() == 1);
+	assert(binary_signals.nodes[0].signals[0].connections[0].function == "on_a_very_long_signal_function");
 }

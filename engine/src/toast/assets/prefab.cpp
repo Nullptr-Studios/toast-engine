@@ -485,6 +485,18 @@ auto Prefab::parseNodeChunk(std::span<const std::string> lines) -> std::optional
 				node.lua_vars.push_back(std::move(*lua_var));
 			}
 			i++;
+		} else if (const size_t name_end = current.find(' ');
+		           name_end != std::string::npos && std::string_view(current).substr(name_end + 1).starts_with("@signal ")) {
+			auto signal = parseSignal(current);
+			if (signal) {
+				auto existing = std::ranges::find(node.signals, signal->name, &Signal::name);
+				if (existing == node.signals.end()) {
+					node.signals.push_back(std::move(*signal));
+				} else {
+					existing->connections.insert(existing->connections.end(), signal->connections.begin(), signal->connections.end());
+				}
+			}
+			i++;
 		} else {
 			auto field = parseField(current);
 			if (field) {
@@ -658,6 +670,50 @@ auto Prefab::parseLuaVarOverride(std::string_view line) -> std::optional<LuaVarO
 	std::string_view value_str = (val_last != std::string_view::npos) ? line.substr(0, val_last + 1) : line;
 
 	return LuaVarOverride {.path = std::move(path), .value = std::string(value_str)};
+}
+
+auto Prefab::parseSignal(std::string_view line) -> std::optional<Signal> {
+	const size_t name_end = line.find(' ');
+	if (name_end == std::string_view::npos || name_end == 0) {
+		TOAST_ERROR("ResourceManager", "Malformed signal line: missing signal name");
+		return std::nullopt;
+	}
+	Signal signal {.name = std::string(line.substr(0, name_end))};
+	line.remove_prefix(name_end + 1);
+	if (!line.starts_with("@signal")) {
+		TOAST_ERROR("ResourceManager", "Malformed signal line for {}: missing '@signal'", signal.name);
+		return std::nullopt;
+	}
+	line.remove_prefix(7);
+
+	const size_t value_start = line.find('=');
+	if (value_start == std::string_view::npos) {
+		TOAST_ERROR("ResourceManager", "Malformed signal line for {}: missing '='", signal.name);
+		return std::nullopt;
+	}
+	line.remove_prefix(value_start + 1);
+
+	while (!line.empty()) {
+		auto target_token = nextStringValue(line);
+		if (!target_token) {
+			break;
+		}
+		auto function_token = nextStringValue(line);
+		if (!function_token) {
+			TOAST_ERROR("ResourceManager", "Malformed signal line for {}: missing function", signal.name);
+			return std::nullopt;
+		}
+
+		UID target;
+		target.assign(*target_token);
+		if (target.data() == 0) {
+			TOAST_WARN("ResourceManager", "Ignoring invalid signal target '{}' for {}", *target_token, signal.name);
+			continue;
+		}
+		signal.connections.push_back({.target = target, .function = unescapeString(*function_token)});
+	}
+
+	return signal;
 }
 
 auto Prefab::parseType(std::string_view type, bool& is_array) -> std::optional<FieldType> {
@@ -874,6 +930,10 @@ void Prefab::writeNode(const BasicNode& node, std::stringstream& ss) const {
 		ss << std::format("~lua {} = {}\n", lua_var.path, lua_var.value);
 	}
 
+	for (const auto& signal : node.signals) {
+		writeSignal(signal, ss);
+	}
+
 	for (const auto& group : node.groups) {
 		writeGroup(group, ss);
 	}
@@ -896,6 +956,42 @@ void Prefab::writeSubgroup(const Subgroup& subgroup, std::stringstream& ss) cons
 
 	for (const auto& field : subgroup.fields) {
 		writeField(field, ss, "        ");
+	}
+}
+
+void Prefab::writeSignal(const Signal& signal, std::stringstream& ss) const {
+	if (signal.connections.empty()) {
+		return;
+	}
+
+	const std::string prefix = std::format("{} @signal = ", signal.name);
+	std::vector<std::string> entries;
+	entries.reserve(signal.connections.size());
+	for (const auto& connection : signal.connections) {
+		entries.push_back(std::format("{} {}", connection.target, escapeString(connection.function)));
+	}
+
+	constexpr size_t wrap_column = 90;
+	size_t inline_size = prefix.size();
+	for (const auto& entry : entries) {
+		inline_size += entry.size() + (inline_size == prefix.size() ? 0 : 1);
+	}
+	if (inline_size < wrap_column) {
+		ss << prefix;
+		for (size_t i = 0; i < entries.size(); ++i) {
+			if (i != 0) {
+				ss << ' ';
+			}
+			ss << entries[i];
+		}
+		ss << '\n';
+		return;
+	}
+
+	ss << prefix << "\\\n";
+	for (size_t i = 0; i < entries.size(); ++i) {
+		ss << "    " << entries[i];
+		ss << (i + 1 < entries.size() ? " \\\n" : "\n");
 	}
 }
 
@@ -1081,6 +1177,16 @@ auto Prefab::toBinary() const -> std::vector<uint8_t> {
 			writeString(buffer, lua_var.value);
 		}
 
+		writeValue(buffer, static_cast<uint32_t>(node.signals.size()));
+		for (const auto& signal : node.signals) {
+			writeString(buffer, signal.name);
+			writeValue(buffer, static_cast<uint32_t>(signal.connections.size()));
+			for (const auto& connection : signal.connections) {
+				writeValue(buffer, connection.target.data());
+				writeString(buffer, connection.function);
+			}
+		}
+
 		writeValue(buffer, static_cast<uint32_t>(node.groups.size()));
 		for (const auto& group : node.groups) {
 			writeString(buffer, group.name);
@@ -1204,6 +1310,22 @@ Prefab::Prefab(std::span<const uint8_t> bytes) {
 				lua_var.path = reader.readString();
 				lua_var.value = reader.readString();
 				node.lua_vars.push_back(std::move(lua_var));
+			}
+		}
+
+		if (header.version >= 4) {
+			uint32_t signal_count = reader.readValue<uint32_t>();
+			for (uint32_t j = 0; j < signal_count; ++j) {
+				Signal signal;
+				signal.name = reader.readString();
+				uint32_t connection_count = reader.readValue<uint32_t>();
+				signal.connections.reserve(connection_count);
+				for (uint32_t k = 0; k < connection_count; ++k) {
+					UID target;
+					target.value = reader.readValue<uint64_t>();
+					signal.connections.push_back({.target = target, .function = reader.readString()});
+				}
+				node.signals.push_back(std::move(signal));
 			}
 		}
 
@@ -1413,6 +1535,30 @@ void Prefab::serializeNode(const toast::Node& node, bool is_root) {
 			});
 		}
 	}
+
+	node_info->forEachSignal([&](const NodeInfo&, const SignalInfo& signal_info) {
+		if (!signal_info.get) {
+			return;
+		}
+
+		Signal signal {.name = std::string(signal_info.name)};
+		for (const signals::ConnectionInfo& connection : signal_info.get(const_cast<toast::Node*>(&node))) {
+			if (connection.target.data() == 0 || !m_allowed_uids.contains(connection.target.data())) {
+				TOAST_WARN(
+				    "ResourceManager",
+				    "Signal '{}' of '{}' references UID {} outside this prefab; omitting",
+				    signal_info.name,
+				    node.name(),
+				    connection.target
+				);
+				continue;
+			}
+			signal.connections.push_back({.target = connection.target, .function = connection.function});
+		}
+		if (!signal.connections.empty()) {
+			out.signals.push_back(std::move(signal));
+		}
+	});
 
 	nodes.push_back(std::move(out));
 
