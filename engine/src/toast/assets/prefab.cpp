@@ -196,6 +196,58 @@ auto removeSpaces(const std::string& text) -> std::string {
 	return result;
 }
 
+/**
+ * Escapes a string for the .tnode text format.
+ * Wraps the result in double quotes, escaping any internal " as \" and \ as \\.
+ */
+auto escapeString(const std::string& str) -> std::string {
+	std::string out;
+	out.reserve(str.size() + 2);
+	out += '"';
+	for (char c : str) {
+		if (c == '\\') {
+			out += "\\\\";
+		} else if (c == '"') {
+			out += "\\\"";
+		} else {
+			out += c;
+		}
+	}
+	out += '"';
+	return out;
+}
+
+/**
+ * Unescapes a quoted string from the .tnode text format.
+ * Strips surrounding double quotes and resolves \" -> " and \\\\ -> \\.
+ * If the string is not quoted, returns it as-is for backward compatibility.
+ */
+auto unescapeString(std::string_view str) -> std::string {
+	// Backward compatibility: if not quoted, return raw
+	if (str.size() < 2 || str.front() != '"' || str.back() != '"') {
+		return std::string(str);
+	}
+
+	// Strip surrounding quotes
+	str.remove_prefix(1);
+	str.remove_suffix(1);
+
+	std::string out;
+	out.reserve(str.size());
+	for (size_t i = 0; i < str.size(); ++i) {
+		if (str[i] == '\\' && i + 1 < str.size()) {
+			char next = str[i + 1];
+			if (next == '"' || next == '\\') {
+				out += next;
+				++i;
+				continue;
+			}
+		}
+		out += str[i];
+	}
+	return out;
+}
+
 }
 
 namespace assets {
@@ -599,7 +651,7 @@ auto Prefab::valueFromString(FieldType type, bool is_array, std::string_view val
 	auto parse_single = [](FieldType type, std::string_view token) -> std::optional<std::any> {
 		switch (type) {
 			// holy boilerplate lil bro
-			case FieldType::string_t: return std::any {std::string(token)};
+			case FieldType::string_t: return std::any {unescapeString(token)};
 			case FieldType::bool_t:
 				if (auto b = getValue<bool>(token)) {
 					return std::any {b.value()};
@@ -686,7 +738,7 @@ auto Prefab::valueFromString(FieldType type, bool is_array, std::string_view val
 			// terminator, not separator
 			std::vector<std::string> result;
 			while (!remaining.empty()) {
-				result.emplace_back(nextValue(remaining, _detail::string_array_separator));
+				result.emplace_back(unescapeString(nextValue(remaining, _detail::string_array_separator)));
 			}
 			return std::any {std::move(result)};
 		}
@@ -852,6 +904,25 @@ auto Prefab::stringifyValue(FieldType type, bool is_array, const std::any& value
 
 void Prefab::writeField(const Field& field, std::stringstream& ss, std::string offset) const {
 	std::string value_str = stringifyValue(field.type, field.is_array, field.value);
+
+	if (field.type == FieldType::string_t) {
+		if (field.is_array) {
+			std::string escaped_array;
+			for (size_t start = 0; start < value_str.size();) {
+				size_t end = value_str.find(_detail::string_array_separator, start);
+				if (end == std::string::npos) {
+					end = value_str.size();
+				}
+				escaped_array += escapeString(value_str.substr(start, end - start));
+				escaped_array += _detail::string_array_separator;
+				start = end + 1;
+			}
+			value_str = std::move(escaped_array);
+		} else {
+			value_str = escapeString(value_str);
+		}
+	}
+
 	ss << std::format("{0}{1} @{2} = {3}\n", offset, field.name, writeType(field.type, field.is_array), value_str);
 }
 
