@@ -1,0 +1,51 @@
+/**
+ * @file body.hpp
+ * @author Xein
+ * @date 09 Sep 2026
+ * @brief Body identifiers, creation data, and copied runtime state
+ */
+
+#pragma once
+
+#include <compare>
+#include <cstdint>
+#include <limits>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+namespace physics {
+
+struct BodyID {
+	uint32_t slot = std::numeric_limits<uint32_t>::max();
+	uint32_t generation = 0;
+	auto operator<=>(const BodyID&) const = default;
+};
+
+enum class BodyType : uint8_t {
+	static_body,
+	dynamic_body,
+	kinematic_body
+};
+
+struct BodyDescriptor {
+	BodyType type = BodyType::dynamic_body;
+	glm::vec3 position = {};
+	glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 linear_velocity = {};
+	glm::vec3 angular_velocity = {};
+	float mass = 1.0f;
+	float gravity_scale = 1.0f;
+};
+
+struct BodyState {
+	BodyType type = BodyType::dynamic_body;
+	glm::vec3 position = {};
+	glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 previous_position = {};
+	glm::quat previous_rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 linear_velocity = {};
+	glm::vec3 angular_velocity = {};
+};
+
+}

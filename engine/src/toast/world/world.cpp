@@ -103,8 +103,9 @@ void World::tick() {
 
 	m_accumulator.tick(Time::delta(), [&]() {
 		physics::Simulator::callTick();
-		m_scheduler.runPhase(m_scheduler.schedule.post_physics, TickFunctionList::post_physics, "post_physics");
 	});
+	// TODO: Is this class really needed?
+	m_scheduler.runPhase(m_scheduler.schedule.post_physics, TickFunctionList::post_physics, "post_physics");
 
 	m_scheduler.runPhase(m_scheduler.schedule.late_tick, TickFunctionList::late_tick, "late_tick");
 }
