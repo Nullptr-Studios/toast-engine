@@ -31,6 +31,8 @@ concept SignalCallback = std::is_invocable_r_v<void, F, Args...> ||    //
 
 template<typename... Args>
 class Signal {
+	static_assert(sizeof...(Args) <= 4, "signals::Signal supports at most four arguments");
+
 	using callback_t = std::function<void(Args...)>;
 
 	struct SigGroup {
