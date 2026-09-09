@@ -71,9 +71,7 @@ template<typename... Args>
 inline void Signal<Args...>::fire(Args... args) {
 	std::erase_if(m_connections, [](const Connection& listener) { return !listener.node; });
 	for (auto& listener : m_connections) {
-		if (listener.node->enabled()) {
-			listener.cb(args...);
-		}
+		listener.cb(args...);
 	}
 }
 

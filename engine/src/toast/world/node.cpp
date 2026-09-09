@@ -62,8 +62,10 @@ void Node::enabled(bool value) noexcept {
 
 	if (value) {
 		callTick(m_info, TickFunctionList::on_enable);
+		on_enable.fire(this->box());
 	} else {
 		callTick(m_info, TickFunctionList::on_disable);
+		on_disable.fire(this->box());
 	}
 
 	for (auto& c : m_children) {
