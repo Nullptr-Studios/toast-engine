@@ -493,7 +493,7 @@ void Workspace::eventSubscriptions() {
 		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
 		auto target = findFrom(m_root_node, e.target_node);
 		if (source.exists() && signal && signal->connect && target.exists()) {
-			signal->connect(&*source, *target, e.function, e.forwards_args);
+			signal->connect(&*source, *target, e.function, signals::ConnectionSource::editor, e.forwards_args);
 		}
 		send_signal_state(e.source_node);
 		return true;
@@ -506,7 +506,7 @@ void Workspace::eventSubscriptions() {
 		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
 		auto target = findFrom(m_root_node, e.target_node);
 		if (source.exists() && signal && signal->disconnect && target.exists()) {
-			signal->disconnect(&*source, *target, e.function);
+			signal->disconnect(&*source, *target, e.function, signals::ConnectionSource::editor);
 		}
 		send_signal_state(e.source_node);
 		return true;
@@ -517,8 +517,8 @@ void Workspace::eventSubscriptions() {
 			return false;
 		}
 		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
-		if (source.exists() && signal && signal->clear_editor) {
-			signal->clear_editor(&*source);
+		if (source.exists() && signal && signal->clear) {
+			signal->clear(&*source, signals::ConnectionSource::editor);
 		}
 		send_signal_state(e.source_node);
 		return true;

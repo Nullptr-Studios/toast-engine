@@ -4,6 +4,7 @@
 #include "lua_types.hpp"
 #include "lua_util.hpp"
 #include "node_proxy.hpp"
+#include "signal_proxy.hpp"
 #include "ui_binds_proxy.hpp"
 
 #include <algorithm>
@@ -523,6 +524,31 @@ void LuaState::registerApi(lua_State* state) noexcept {
 	    .addFunction("call", &NodeProxy::call)
 	    .addIndexMetaMethod(nodeProxyIndex)
 	    .addNewIndexMetaMethod(nodeProxyNewindex)
+	    .endClass()
+
+	    // SignalProxy
+	    .beginClass<SignalProxy>("Signal")
+	    .addFunction(
+	        "connect",
+	        overload<SignalProxy&, const NodeProxy&, std::string>(
+	            +[](SignalProxy& signal, const NodeProxy& target, std::string function) {
+		            return signal.connect(target, function, signals::ConnectionSource::lua, true);
+	            }
+	        ),
+	        overload<SignalProxy&, const NodeProxy&, std::string, bool>(
+	            +[](SignalProxy& signal, const NodeProxy& target, std::string function, bool forwards_args) {
+		            return signal.connect(target, function, signals::ConnectionSource::lua, forwards_args);
+	            }
+	        )
+	    )
+	    .addFunction(
+	        "disconnect",
+	        [](SignalProxy& signal, const NodeProxy& target, std::string function) {
+		        return signal.disconnect(target, signals::ConnectionSource::lua, function);
+	        }
+	    )
+	    .addFunction("clear", [](SignalProxy& signal) { signal.clear(signals::ConnectionSource::lua); })
+	    .addFunction("fire", &SignalProxy::fire)
 	    .endClass()
 
 	    // UIBindsProxy
