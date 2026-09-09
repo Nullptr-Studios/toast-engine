@@ -52,13 +52,13 @@ class Signal {
 public:
 	template<typename F>
 	  requires SignalCallback<F, Args...>
-	void subscribe(toast::Node& node, F&& cb);
+	void connect(toast::Node& node, F&& cb);
 
-	void subscribe(toast::Node& node, std::string_view identifier);
-	void subscribe(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args);
+	void connect(toast::Node& node, std::string_view identifier);
+	void connect(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args);
 
-	void unsubscribe(toast::Node& node, std::string_view identifier);
-	void unsubscribe(toast::Node& node, std::string_view identifier, ConnectionSource source);
+	void disconnect(toast::Node& node, std::string_view identifier);
+	void disconnect(toast::Node& node, std::string_view identifier, ConnectionSource source);
 
 	void clear() { m.listeners.clear(); }
 

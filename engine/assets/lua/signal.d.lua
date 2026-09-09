@@ -21,12 +21,12 @@
 ---@param function_name string
 ---@param forwards_args? boolean
 ---@return boolean
-function Signal0:subscribe(target, function_name, forwards_args) end
+function Signal0:connect(target, function_name, forwards_args) end
 
 ---@param target Node
 ---@param function_name string
 ---@return boolean
-function Signal0:unsubscribe(target, function_name) end
+function Signal0:disconnect(target, function_name) end
 
 function Signal0:clear() end
 
@@ -37,12 +37,12 @@ function Signal0:fire() end
 ---@param function_name string
 ---@param forwards_args? boolean
 ---@return boolean
-function Signal1:subscribe(target, function_name, forwards_args) end
+function Signal1:connect(target, function_name, forwards_args) end
 
 ---@param target Node
 ---@param function_name string
 ---@return boolean
-function Signal1:unsubscribe(target, function_name) end
+function Signal1:disconnect(target, function_name) end
 
 function Signal1:clear() end
 
@@ -54,12 +54,12 @@ function Signal1:fire(value) end
 ---@param function_name string
 ---@param forwards_args? boolean
 ---@return boolean
-function Signal2:subscribe(target, function_name, forwards_args) end
+function Signal2:connect(target, function_name, forwards_args) end
 
 ---@param target Node
 ---@param function_name string
 ---@return boolean
-function Signal2:unsubscribe(target, function_name) end
+function Signal2:disconnect(target, function_name) end
 
 function Signal2:clear() end
 
@@ -72,12 +72,12 @@ function Signal2:fire(value1, value2) end
 ---@param function_name string
 ---@param forwards_args? boolean
 ---@return boolean
-function Signal3:subscribe(target, function_name, forwards_args) end
+function Signal3:connect(target, function_name, forwards_args) end
 
 ---@param target Node
 ---@param function_name string
 ---@return boolean
-function Signal3:unsubscribe(target, function_name) end
+function Signal3:disconnect(target, function_name) end
 
 function Signal3:clear() end
 
@@ -91,12 +91,12 @@ function Signal3:fire(value1, value2, value3) end
 ---@param function_name string
 ---@param forwards_args? boolean
 ---@return boolean
-function Signal4:subscribe(target, function_name, forwards_args) end
+function Signal4:connect(target, function_name, forwards_args) end
 
 ---@param target Node
 ---@param function_name string
 ---@return boolean
-function Signal4:unsubscribe(target, function_name) end
+function Signal4:disconnect(target, function_name) end
 
 function Signal4:clear() end
 

@@ -7,7 +7,7 @@ namespace signals {
 template<typename... Args>
 template<typename F>
   requires SignalCallback<F, Args...>
-inline void Signal<Args...>::subscribe(toast::Node& node, F&& cb) {
+inline void Signal<Args...>::connect(toast::Node& node, F&& cb) {
 	callback_t wrapper = [f = std::forward<F>(cb)](Args... args) mutable {
 		if constexpr (std::is_invocable_r_v<void, F, Args...>) {
 			f(args...);
@@ -25,13 +25,13 @@ inline void Signal<Args...>::subscribe(toast::Node& node, F&& cb) {
 }
 
 template<typename... Args>
-inline void Signal<Args...>::subscribe(toast::Node& node, std::string_view identifier) {
-	subscribe(node, identifier, ConnectionSource::cpp, true);
+inline void Signal<Args...>::connect(toast::Node& node, std::string_view identifier) {
+	connect(node, identifier, ConnectionSource::cpp, true);
 }
 
 template<typename... Args>
 inline void
-    Signal<Args...>::subscribe(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args) {
+    Signal<Args...>::connect(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args) {
 	callback_t wrapper;
 	if (forwards_args) {
 		wrapper = [iden = std::string(identifier), box = toast::Box<toast::Node>(node)](Args... args) mutable {
@@ -51,14 +51,14 @@ inline void
 }
 
 template<typename... Args>
-inline void Signal<Args...>::unsubscribe(toast::Node& node, std::string_view identifier) {
+inline void Signal<Args...>::disconnect(toast::Node& node, std::string_view identifier) {
 	std::erase_if(m.listeners, [&](const SigGroup& listener) {
 		return listener.node == toast::Box<toast::Node>(node) && listener.identifier == identifier;
 	});
 }
 
 template<typename... Args>
-inline void Signal<Args...>::unsubscribe(toast::Node& node, std::string_view identifier, ConnectionSource source) {
+inline void Signal<Args...>::disconnect(toast::Node& node, std::string_view identifier, ConnectionSource source) {
 	std::erase_if(m.listeners, [&](const SigGroup& listener) {
 		return listener.node == toast::Box<toast::Node>(node) && listener.identifier == identifier && listener.source == source;
 	});
@@ -117,7 +117,7 @@ inline void Signal<Args...>::connect(void* signal, toast::Node& target, std::str
 	}
 	auto& target_signal = static_cast<NodeType*>(signal)->*MemberPtr;
 	if (!target_signal.has(target.uid(), identifier)) {
-		target_signal.subscribe(target, identifier, ConnectionSource::editor, forwards_args);
+		target_signal.connect(target, identifier, ConnectionSource::editor, forwards_args);
 	}
 }
 
@@ -128,7 +128,7 @@ inline void Signal<Args...>::disconnect(void* signal, toast::Node& target, std::
 		return;
 	}
 	auto& target_signal = static_cast<NodeType*>(signal)->*MemberPtr;
-	target_signal.unsubscribe(target, identifier, ConnectionSource::editor);
+	target_signal.disconnect(target, identifier, ConnectionSource::editor);
 }
 
 template<typename... Args>
