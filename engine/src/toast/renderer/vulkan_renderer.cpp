@@ -901,7 +901,7 @@ void VulkanRenderer::tick(float time) noexcept {
 	frame.mesh_instances.reserve(mesh_nodes_snapshot.size());
 
 	for (auto* node : mesh_nodes_snapshot) {
-		if (node == nullptr || !node->enabled()) {
+		if (node == nullptr || !node->enabled() || !node->participatesIn(toast::NodeOwnerParticipation::render)) {
 			continue;
 		}
 

@@ -131,6 +131,7 @@ Workspace::Workspace(UID uid) : m_handle(uid) {
 
 Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
 	m_editor_camera = std::make_unique<Camera>();
+	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
 
 	auto bytes = assets::AssetManager::get().loadBytes(source_uri);
@@ -143,8 +144,8 @@ Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
 	// to load the node as a .tbnode rather than as a .tnode, we need to be careful with that
 	VectorStreamBuf buffer(*bytes);
 	std::istream autosave(&buffer);
-	assets::Prefab prefab(autosave);
-	assets::Handle<assets::Prefab> file(&prefab, uid, "");
+	m_owned_source_prefab = std::make_unique<assets::Prefab>(autosave);
+	assets::Handle<assets::Prefab> file(m_owned_source_prefab.get(), uid, "");
 	initFromPrefab(file);
 	if (m_root_node.exists()) {
 		initializeHistory(true, false);
@@ -225,7 +226,8 @@ void Workspace::destroyOwnedTree(Box<Node>& root) {
 }
 
 auto Workspace::restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool {
-	assets::Handle<assets::Prefab> handle(const_cast<assets::Prefab*>(&snapshot), toast::UID(0), "");
+	auto owned_snapshot = std::make_unique<assets::Prefab>(snapshot);
+	assets::Handle<assets::Prefab> handle(owned_snapshot.get(), toast::UID(0), "");
 	INodeOwner::InstantiateContext context;
 	context.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
 	Box<Node> replacement = instantiate(handle, context);
@@ -245,6 +247,7 @@ auto Workspace::restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool {
 
 	m_focused_node = {};
 	destroyOwnedTree(m_root_node);
+	m_owned_source_prefab = std::move(owned_snapshot);
 	m_root_node = replacement;
 	if (focused_uid.data() != 0) {
 		m_focused_node = findFrom(m_root_node, focused_uid);
@@ -270,6 +273,9 @@ Workspace::~Workspace() {
 		return;
 	}
 
+	if (isActiveWorkspace() && renderer::VulkanRenderer::instance) {
+		renderer::setActiveCamera(nullptr);
+	}
 	beginCameraShutdown();
 	m_root_node->propagateCallTick(m_root_node->info(), TickFunctionList::on_disable);
 	m_root_node->propagateCallTick(m_root_node->info(), TickFunctionList::end);
