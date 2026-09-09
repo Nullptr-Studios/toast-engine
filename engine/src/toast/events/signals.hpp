@@ -23,7 +23,6 @@ class Node;
 }
 
 namespace signals {
-namespace _detail { }
 
 template<typename F, typename... Args>
 concept SignalCallback = std::is_invocable_r_v<void, F, Args...> ||    //
