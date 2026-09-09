@@ -1,6 +1,7 @@
 #include "play_workspace.hpp"
 
 #include "node.hpp"
+#include "toast/physics/simulator.hpp"
 #include "workspace_events.hpp"
 
 #include <toast/assets/assets.hpp>
@@ -83,10 +84,16 @@ void PlayWorkspace::tick() {
 		}
 
 		m_scheduler.runPhase(m_scheduler.schedule.early_tick, TickFunctionList::early_tick, "early_tick");
+
 		INodeOwner::updateTransforms(*m_root_node);
+
 		m_scheduler.runPhase(m_scheduler.schedule.tick, TickFunctionList::tick, "tick");
-		// TODO: physics step goes between tick and post_physics
-		m_scheduler.runPhase(m_scheduler.schedule.post_physics, TickFunctionList::post_physics, "post_physics");
+
+		m_accumulator.tick(Time::delta(), [&]() {
+			physics::Simulator::callTick();
+			m_scheduler.runPhase(m_scheduler.schedule.post_physics, TickFunctionList::post_physics, "post_physics");
+		});
+
 		m_scheduler.runPhase(m_scheduler.schedule.late_tick, TickFunctionList::late_tick, "late_tick");
 	}
 
