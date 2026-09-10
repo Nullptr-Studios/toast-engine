@@ -14,10 +14,11 @@ namespace physics {
 
 class Simulator;
 
-class [[ToastNode, Hidden, Interface, Icon("RigidBody"), Color("Green")]] TOAST_API Rigidbody : public toast::Node3D {
-friend class Simulator;
+class [[ToastNode, Hidden, Interface, Icon("PhysicsBody"), Color("Green")]] TOAST_API Rigidbody : public toast::Node3D {
+	friend class Simulator;
 
 public:
+
 protected:
 	explicit Rigidbody(BodyType type) : m_body_type(type) { }
 
@@ -27,7 +28,9 @@ private:
 
 	[[nodiscard]]
 	auto descriptor() const -> BodyDescriptor;
+
 	void assignBody(BodyID body) noexcept { m_body = body; }
+
 	void applyPhysicsTransform(const glm::vec3& position, const glm::quat& rotation);
 
 	BodyType m_body_type;

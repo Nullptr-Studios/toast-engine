@@ -14,6 +14,7 @@ namespace physics {
 class [[ToastNode]] TOAST_API StaticRigidbody : public physics::Rigidbody {
 public:
 	StaticRigidbody() : Rigidbody(BodyType::static_body) { }
+
 private:
 };
 

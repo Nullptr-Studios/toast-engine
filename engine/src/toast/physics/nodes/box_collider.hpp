@@ -13,6 +13,7 @@ namespace physics {
 
 class [[ToastNode, Icon("BoxMesh")]] TOAST_API BoxCollider : public physics::Collider {
 public:
+
 private:
 };
 

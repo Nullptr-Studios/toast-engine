@@ -11,9 +11,10 @@
 
 namespace physics {
 
-class [[ToastNode]] TOAST_API DynamicRigidbody : public physics::Rigidbody {
+class [[ToastNode, Icon("RigidBody")]] TOAST_API DynamicRigidbody : public physics::Rigidbody {
 public:
 	DynamicRigidbody() : Rigidbody(BodyType::dynamic_body) { }
+
 private:
 };
 

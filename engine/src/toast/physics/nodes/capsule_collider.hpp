@@ -13,6 +13,7 @@ namespace physics {
 
 class [[ToastNode, Icon("CapsuleMesh")]] TOAST_API CapsuleCollider : public physics::Collider {
 public:
+
 private:
 };
 

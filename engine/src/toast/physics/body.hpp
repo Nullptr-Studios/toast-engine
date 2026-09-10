@@ -9,10 +9,9 @@
 
 #include <compare>
 #include <cstdint>
-#include <limits>
-
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 
 namespace physics {
 
@@ -46,6 +45,24 @@ struct BodyState {
 	glm::quat previous_rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	glm::vec3 linear_velocity = {};
 	glm::vec3 angular_velocity = {};
+};
+
+struct Body {
+	BodyType type = BodyType::dynamic_body;
+	glm::vec3 position = {};
+	glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 previous_position = {};
+	glm::quat previous_rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 linear_velocity = {};
+	glm::vec3 angular_velocity = {};
+	float inverse_mass = 1.0f;
+	float gravity_scale = 1.0f;
+};
+
+struct BodySlot {
+	Body body;
+	uint32_t generation = 1;
+	bool occupied = false;
 };
 
 }

@@ -11,9 +11,10 @@
 
 namespace physics {
 
-class [[ToastNode]] TOAST_API KinematicRigidbody : public physics::Rigidbody {
+class [[ToastNode, Icon("CharacterBody")]] TOAST_API KinematicRigidbody : public physics::Rigidbody {
 public:
 	KinematicRigidbody() : Rigidbody(BodyType::kinematic_body) { }
+
 private:
 };
 

@@ -2,6 +2,7 @@
 
 #include "accumulator.hpp"
 #include "nodes/rigidbody.hpp"
+#include "nodes/sphere_collider.hpp"
 
 #include <cmath>
 
@@ -25,7 +26,25 @@ void Simulator::registerRigidbody(Rigidbody& node) {
 	const BodyID body = instance->createBody(node.descriptor());
 	node.assignBody(body);
 	if (instance->valid(body)) {
-		instance->m_body_bindings.push_back({.body = body, .node = node.box().as<Rigidbody>()});
+		instance->m_node_bindings.push_back({.body = body, .node = node.box().as<Rigidbody>()});
+
+		for (const auto& child : node.children()) {
+			const auto sphere = child.as<SphereCollider>();
+			if (not sphere.exists() or sphere->disabled) {
+				continue;
+			}
+
+			const ShapeID shape = instance->createSphere(
+			    body,
+			    SphereShape {
+			      .local_center = sphere->position,
+			      .radius = sphere->radius,
+			    }
+			);
+			if (not instance->valid(shape)) {
+				TOAST_WARN("Physics", "Sphere collider on rigidbody '{}' was not registered", node.name());
+			}
+		}
 	}
 }
 
@@ -35,19 +54,21 @@ void Simulator::unregisterRigidbody(Rigidbody& node) {
 	}
 	const BodyID body = node.m_body;
 	instance->destroyBody(body);
-	std::erase_if(instance->m_body_bindings, [body](const BodyBinding& binding) { return binding.body == body; });
+	std::erase_if(instance->m_node_bindings, [body](const NodeBinding& binding) { return binding.body == body; });
 	node.assignBody({});
 }
 
 void Simulator::tick() {
-	step(static_cast<float>(Accumulator::fixed_delta));
+	integrate(static_cast<float>(Accumulator::fixed_delta));
+
+	auto candidates = broadPhase();
 
 	// push poses after simulation settles
-	for (auto binding = m_body_bindings.begin(); binding != m_body_bindings.end();) {
+	for (auto binding = m_node_bindings.begin(); binding != m_node_bindings.end();) {
 		TOAST_INFO("Physics", "Simulator::tick");
 		Body* body = tryGetBody(binding->body);
 		if (not binding->node.exists() or not body) {
-			binding = m_body_bindings.erase(binding);
+			binding = m_node_bindings.erase(binding);
 			continue;
 		}
 
@@ -58,7 +79,7 @@ void Simulator::tick() {
 	}
 }
 
-void Simulator::step(float dt) {
+void Simulator::integrate(float dt) {
 	if (not std::isfinite(dt) or dt <= 0.0f) {
 		return;
 	}
@@ -88,8 +109,7 @@ void Simulator::callTick() {
 }
 
 auto Simulator::createBody(const BodyDescriptor& descriptor) -> BodyID {
-	if (descriptor.type == BodyType::dynamic_body &&
-	    (not std::isfinite(descriptor.mass) or descriptor.mass <= 0.0f)) {
+	if (descriptor.type == BodyType::dynamic_body && (not std::isfinite(descriptor.mass) or descriptor.mass <= 0.0f)) {
 		TOAST_ERROR("Physics", "Dynamic body mass must be finite and greater than zero");
 		return {};
 	}
@@ -106,8 +126,7 @@ auto Simulator::createBody(const BodyDescriptor& descriptor) -> BodyID {
 	}
 
 	const glm::quat rotation = glm::normalize(descriptor.rotation);
-	const float inverse_mass =
-	    descriptor.type == BodyType::dynamic_body ? 1.0f / descriptor.mass : 0.0f;
+	const float inverse_mass = descriptor.type == BodyType::dynamic_body ? 1.0f / descriptor.mass : 0.0f;
 
 	Body body {
 	  .type = descriptor.type,
@@ -144,6 +163,13 @@ void Simulator::destroyBody(BodyID body) {
 		return;
 	}
 
+	for (uint32_t index = 0; index < m_shapes.size(); ++index) {
+		ShapeSlot& shape_slot = m_shapes[index];
+		if (shape_slot.occupied && shape_slot.shape.owner == body) {
+			destroyShape({.slot = index, .generation = shape_slot.generation});
+		}
+	}
+
 	BodySlot& slot = m_bodies[body.slot];
 	slot.occupied = false;
 	// invalidate every stale handle
@@ -154,9 +180,67 @@ void Simulator::destroyBody(BodyID body) {
 	m_free_body_slots.emplace_back(body.slot);
 }
 
+auto Simulator::createSphere(BodyID owner, const SphereShape& sphere) -> ShapeID {
+	if (not valid(owner)) {
+		TOAST_ERROR("Physics", "Cannot create a sphere for an invalid body");
+		return {};
+	}
+
+	if (not std::isfinite(sphere.radius) or sphere.radius <= 0.0f || not std::isfinite(sphere.local_center.x) or
+	    not std::isfinite(sphere.local_center.y) or not std::isfinite(sphere.local_center.z)) {
+		TOAST_ERROR("Physics", "Sphere radius and local center must be finite, and radius must be greater than zero");
+		return {};
+	}
+
+	Shape shape {
+	  .owner = owner,
+	  .type = ShapeType::sphere,
+	  .sphere = sphere,
+	};
+
+	if (not m_free_shape_slots.empty()) {
+		const uint32_t index = m_free_shape_slots.back();
+		m_free_shape_slots.pop_back();
+
+		ShapeSlot& slot = m_shapes[index];
+		slot.shape = shape;
+		slot.occupied = true;
+		return {.slot = index, .generation = slot.generation};
+	}
+
+	const uint32_t index = static_cast<uint32_t>(m_shapes.size());
+	m_shapes.emplace_back(ShapeSlot {.shape = shape, .generation = 1, .occupied = true});
+	return {.slot = index, .generation = 1};
+}
+
+void Simulator::destroyShape(ShapeID shape) {
+	if (not valid(shape)) {
+		return;
+	}
+
+	ShapeSlot& slot = m_shapes[shape.slot];
+	slot.occupied = false;
+	++slot.generation;
+	if (slot.generation == 0) {
+		++slot.generation;
+	}
+	m_free_shape_slots.emplace_back(shape.slot);
+}
+
+auto Simulator::valid(ShapeID shape) const -> bool {
+	return shape.slot < m_shapes.size() && m_shapes[shape.slot].occupied && m_shapes[shape.slot].generation == shape.generation;
+}
+
+auto Simulator::tryGetShape(ShapeID shape) -> Shape* {
+	return valid(shape) ? &m_shapes[shape.slot].shape : nullptr;
+}
+
+auto Simulator::tryGetShape(ShapeID shape) const -> const Shape* {
+	return valid(shape) ? &m_shapes[shape.slot].shape : nullptr;
+}
+
 auto Simulator::valid(BodyID body) const -> bool {
-	return body.slot < m_bodies.size() && m_bodies[body.slot].occupied &&
-	       m_bodies[body.slot].generation == body.generation;
+	return body.slot < m_bodies.size() && m_bodies[body.slot].occupied && m_bodies[body.slot].generation == body.generation;
 }
 
 auto Simulator::state(BodyID body) const -> std::optional<BodyState> {
