@@ -13,6 +13,10 @@ namespace physics {
 
 class [[ToastNode, Icon("CapsuleMesh")]] TOAST_API CapsuleCollider : public physics::Collider {
 public:
+	[[Reflect, Unit("m")]]
+	float radius = 0.5f;
+	[[Reflect, Unit("m")]]
+	float height = 2.0f;
 
 private:
 };

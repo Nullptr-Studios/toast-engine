@@ -23,6 +23,12 @@ public:
 	bool debug_fill = true;
 
 private:
+	void init();
+	void destroy();
+	void onEnable();
+	void onDisable();
+	void drawDebug();
+	bool m_debug_visible = false;
 };
 
 }

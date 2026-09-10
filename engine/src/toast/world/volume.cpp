@@ -1,8 +1,34 @@
 #include "volume.hpp"
+#include <toast/renderer/vulkan_renderer.hpp>
 
 using namespace glm;
 
 namespace toast {
+void Volume::init() {
+	m_debug_visible = enabled();
+	if (renderer::VulkanRenderer::instance) {
+		renderer::VulkanRenderer::instance->registerDebugDraw(this, [](Node3D& node) {
+			static_cast<Volume&>(node).drawDebug();
+		});
+	}
+}
+void Volume::destroy() {
+	if (renderer::VulkanRenderer::instance) renderer::VulkanRenderer::instance->unregisterDebugDraw(this);
+}
+void Volume::onEnable() {
+	m_debug_visible = true;
+}
+void Volume::onDisable() {
+	m_debug_visible = false;
+}
+void Volume::drawDebug() {
+	ZoneScoped;
+	if (!m_debug_visible) return;
+	if (m_is_global) return;
+	syncTransform();
+	renderer::debugDrawShapeBox(getWorldTransform(), debug_color, debug_fill);
+}
+
 auto Volume::isGlobal() const -> bool {
 	return m_is_global;
 }

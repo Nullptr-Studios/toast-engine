@@ -15,9 +15,6 @@ class [[ToastNode, Icon("SphereMesh")]] TOAST_API SphereCollider : public physic
 public:
 	[[Reflect, Unit("m")]]
 	float radius = 0.5f;
-
-	[[Reflect, Unit("m")]]
-	float margin = 0.05f;
 };
 
 }

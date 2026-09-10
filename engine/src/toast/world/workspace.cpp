@@ -640,35 +640,7 @@ void Workspace::eventSubscriptions() {
 		recordHistory(std::move(context), [&] {
 			// Detach from the parent so the editor no longer reaches the subtree
 			std::erase(parent->m_children, node);
-
-			// Collect the whole subtree into raw pointers
-			std::vector<Node*> victims;
-			auto collect = [&victims](this auto&& self, Node& n) -> void {
-				victims.push_back(&n);
-				for (auto& c : n.m_children) {
-					self(*c);
-				}
-			};
-			collect(*node);
-			node = {};
-
-			// Free every node in place
-			for (Node* victim : victims) {
-				_detail::ControlBox* control = _detail::ControlBox::get(victim);
-				const NodeInfo* info = victim->info();
-
-				victim->m_parent = {};
-				victim->m_children.clear();
-				victim->m_listener.reset();
-
-				if (info && info->destroy) {
-					info->destroy(victim);
-				} else {
-					delete victim;
-				}
-				releaseNode(*control);
-			}
-			reapTombstones();
+			destroyOwnedTree(node);
 		});
 
 		event::send<event::RequestHierarchyUpdate>();

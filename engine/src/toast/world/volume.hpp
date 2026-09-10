@@ -21,6 +21,10 @@ struct VolumeTarget {
 
 class TOAST_API [[ToastNode, Hidden, Interface, Icon("Area")]] Volume : public Node3D {
 public:
+	[[Reflect, Color]]
+	glm::vec4 debug_color = glm::vec4(0.0f, 1.0f, 0.251f, 0.5f);
+	[[Reflect]]
+	bool debug_fill = true;
 	/**
 	 * @brief Evaluates if a target is inside the volume or not
 	 * @returns true if the target is inside the volume
@@ -57,6 +61,12 @@ protected:
 	auto closestPointOnBounds(glm::vec3 point) -> glm::vec3;
 
 private:
+	void init();
+	void destroy();
+	void onEnable();
+	void onDisable();
+	void drawDebug();
+	bool m_debug_visible = false;
 	[[Reflect]]
 	bool m_is_global = false;
 

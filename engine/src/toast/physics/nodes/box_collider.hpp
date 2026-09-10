@@ -13,6 +13,8 @@ namespace physics {
 
 class [[ToastNode, Icon("BoxMesh")]] TOAST_API BoxCollider : public physics::Collider {
 public:
+	[[Reflect, Unit("m")]]
+	glm::vec3 size = glm::vec3(1.0f);
 
 private:
 };
