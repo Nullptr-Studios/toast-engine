@@ -6,8 +6,6 @@
 namespace toast::voxel {
 
 BrickPool::BrickPool(uint32_t capacity) : m_capacity(capacity) {
-	// A brick id has to survive a round trip through a BrickEntry's 30-bit payload, and k_invalid_brick takes
-	// the top value, so the largest usable id is one below it
 	assert(capacity < k_invalid_brick);
 
 	m_material.assign(static_cast<size_t>(capacity) * k_brick_material_bytes, k_empty_palette_index);
@@ -24,13 +22,10 @@ auto BrickPool::allocate() -> uint32_t {
 	}
 
 	if (m_next_unused >= m_capacity) {
-		// Exhaustion is reported rather than grown into, and rather than logged from here: `toast/voxel/`
-		// depends on the standard library and glm only, so the caller owns the diagnostic
 		return k_invalid_brick;
 	}
 
 	const uint32_t id = m_next_unused++;
-	// Already clear from construction, but a fresh brick and a recycled one must be indistinguishable
 	clearBrick(id);
 	return id;
 }

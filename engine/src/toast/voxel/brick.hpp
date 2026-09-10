@@ -4,15 +4,6 @@
  * @date 08/09/2026
  *
  * @brief Occupancy bit operations over a 8x8x8 brick
- *
- * The foundation of the whole voxel system: primary-visibility traversal, narrowphase contact generation,
- * surface classification, connectivity and flood fill all reduce to the operations in this file. Every one of
- * them is a handful of 64-bit words rather than a loop over 512 voxels, which is the entire reason the brick
- * dimension is 8 - see `voxel_constants.hpp` and `docs/voxel_plan.md` §2.2.
- *
- * **Bit layout. A brick is eight `uint64_t`, one per z-slice. Within a slice, the bit for `(x, y)` is at
- * index `y * 8 + x`. So a whole 8x8 z-slice is one word, a y-row is one byte, and x is the bit within that
- * byte. Nothing here is valid if that layout changes.
  */
 
 #pragma once
@@ -26,9 +17,9 @@
 namespace toast::voxel {
 
 /**
- * @brief state of one brick's 512 voxels
+ * @brief state of one brick 512 voxels
  *
- * Index by z-slice, the bit for (x, y) within a slice is y * 8 + x
+ * Index by z-slice, the bit for (x, y) a slice is y * 8 + x
  */
 struct BrickOccupancy {
 	std::array<uint64_t, k_brick_dim> slices {};
@@ -68,7 +59,6 @@ inline constexpr uint64_t k_row_y_min = 0x00000000000000FFull;
 
 /// @brief Bits of a z-slice whose voxel has y == 7
 inline constexpr uint64_t k_row_y_max = 0xFF00000000000000ull;
-
 
 // Addressing
 
@@ -189,7 +179,6 @@ constexpr auto operator~(const BrickOccupancy& a) noexcept -> BrickOccupancy {
 	}
 	return out;
 }
-
 
 /// @brief Occupancy of each voxel -X neighbour
 [[nodiscard]]

@@ -23,25 +23,19 @@ inline constexpr size_t k_brick_material_bytes = static_cast<size_t>(k_brick_vox
 
 /**
  * @brief Returned by BrickPool::allocate when the pool is full
- *
- * Equal to the largest value an indirection payload can hold
  */
 inline constexpr uint32_t k_invalid_brick = k_brick_payload_mask;
 
 /**
  * @brief The material and occupancy of every brick
  *
- * Not thread-safe allocation, freeing and writes are single-threaded. Should apply all destruction 
- * at the end of a physics step rather than when damage is reported
+ * Not thread-safe allocation, freeing and writes are single-threaded. Should apply all destruction
+ * at the end of a physics step
  */
 class TOAST_API BrickPool {
 public:
 	/**
 	 * @brief Reserves storage for @p capacity bricks up front
-	 *
-	 * The full capacity is allocated at construction and never reallocated 
-	 * occupancy() hands out a reference and material() a span, and a std::vector that grew would
-	 * invalidate every one of them
 	 */
 	explicit BrickPool(uint32_t capacity);
 
@@ -98,7 +92,6 @@ private:
 	/// Bump pointer over never allocated ids
 	uint32_t m_next_unused = 0;
 
-	/// Explicitly freed ids
 	std::vector<uint32_t> m_free_list;
 
 	std::vector<uint8_t> m_material;

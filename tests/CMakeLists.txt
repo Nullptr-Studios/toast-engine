@@ -18,6 +18,9 @@ if (BUILD_TESTING)
 	find_package(slang CONFIG REQUIRED)
 	target_link_libraries(toast_tests PRIVATE toast_engine RmlUi::RmlUi slang::slang)
 	target_compile_definitions(toast_tests PRIVATE UNIT_TESTING TRACY_NO_INVARIANT_CHECK=1)
+	# Lets a test read the shipped core assets (meshes, shaders) without guessing at a relative path
+	target_compile_definitions(toast_tests PRIVATE TOAST_CORE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/engine/assets")
+	target_compile_definitions(toast_tests PRIVATE TOAST_TEST_CONTENT_DIR="${CMAKE_SOURCE_DIR}/tools/test_content")
 
 	foreach(config IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
 		string(TOUPPER "${config}" config_upper)

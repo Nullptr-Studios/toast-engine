@@ -4,20 +4,6 @@
  * @date 08/09/2026
  *
  * @brief incremental mass properties for a body made of voxels
- *
- * Centre of mass and the inertia tensor are sums over solid voxels
- *
- * The part that makes it more than "incremental" is that the sums are kept as **integers**. Voxels sit on a
- * lattice and palette densities are whole numbers of kg/m³, so every add and every remove is exact and a body
- * carved ten thousand times has accumulated no error at all. In floating point the same scheme drifts, and
- * the drift presents as an object that slowly begins to spin about the wrong axis - a symptom that appears
- * long after the code responsible and looks like a solver bug.
- *
- * Ten sums are enough for the whole tensor: the zeroth moment, three first moments and six second moments.
- * Everything metric - kilograms, metres, kg·m² - is derived once in `resolve()`, so the conversion to float
- * happens at the end rather than being accumulated.
- *
- * See `docs/voxel_plan.md` §2.4 and §13.1
  */
 
 #pragma once
@@ -31,43 +17,27 @@ namespace toast::voxel {
 
 /**
  * @brief Headroom check for the second moments
- *
- * The dangerous term is `sum(density * coordinate²)`. For a fully solid cube of edge `E` voxels at the
- * highest density the palette can express (65535 kg/m³, denser than osmium), that sum is about
- * `65535 * E⁵ / 3`, which reaches `int64`'s range at roughly `E = 670` - a 67 m solid body at an absurd
- * density, and far beyond any dynamic body this engine will produce. The static world never queries mass
- * properties at all (`docs/voxel_plan.md` §13.10), so it is not bounded by this.
- *
- * Asserted rather than assumed, with a factor of two spare, because silent `int64` overflow would corrupt an
- * inertia tensor in a way that reads as a physics bug
  */
 inline constexpr int64_t k_moment_safe_limit = int64_t {1} << 62;
 
 /**
- * @brief The ten integer moments of a voxel body, in **lattice coordinates**
- *
- * Coordinates are integer voxel indices, not metres. Keeping them integral is what keeps the sums exact; the
- * half-voxel offset that places a voxel's mass at its *centre* rather than its corner is uniform across every
- * voxel, so it is applied analytically in `resolve()` instead of being carried per sample.
- *
- * "Density" throughout is the palette's `uint16` kg/m³. Mass never appears here in kilograms - `mass` is a
- * plain sum of densities, and one multiplication by the voxel volume turns it into one
+ * @brief The ten integer moments of a voxel body
  */
 struct MassMoments {
-	/// Sum of densities. Zero exactly when the body has no solid voxels
+	/// Sum of densities
 	int64_t mass = 0;
 
-	/// Sum of `density * coordinate`
+	/// Sum of density * coordinate
 	int64_t m_x = 0;
 	int64_t m_y = 0;
 	int64_t m_z = 0;
 
-	/// Sum of `density * coordinate²`
+	/// Sum of density * coordinate*coordinate
 	int64_t m_xx = 0;
 	int64_t m_yy = 0;
 	int64_t m_zz = 0;
 
-	/// Sum of `density * coordinate_a * coordinate_b`
+	/// Sum of density * coordinate_a * coordinate_b
 	int64_t m_xy = 0;
 	int64_t m_xz = 0;
 	int64_t m_yz = 0;
@@ -86,14 +56,11 @@ struct MassMoments {
 	}
 
 	/**
-	 * @brief Removes one voxel, exactly undoing the `add` that placed it
-	 *
-	 * The density must be the one the voxel was added with - which the caller has, because it is the palette
-	 * entry it is about to clear
+	 * @brief Removes one voxel
 	 */
 	constexpr void remove(int32_t x, int32_t y, int32_t z, uint32_t density) noexcept {
 		accumulate(x, y, z, -static_cast<int64_t>(density));
-		assert(mass >= 0);    // removing more than was added is a bookkeeping bug, not a valid state
+		assert(mass >= 0);
 	}
 
 	constexpr auto operator+=(const MassMoments& other) noexcept -> MassMoments& {
@@ -120,14 +87,6 @@ struct MassMoments {
 
 	/**
 	 * @brief The same moments expressed in a coordinate frame translated by @p ox, @p oy, @p oz
-	 *
-	 * The parallel-axis theorem, and the reason moments are stored **per brick** in brick-local coordinates:
-	 * a brick's own sums never exceed a few billion whatever the body's size, and a body's - or a fragment's,
-	 * after a split - are the sum of its bricks' moments each shifted by that brick's offset.
-	 *
-	 * Brick offsets are integer multiples of the brick dimension, so the shift stays in integers and stays
-	 * exact. That is what makes splitting a body **O(bricks) rather than O(voxels)** (`docs/voxel_plan.md`
-	 * §13.10)
 	 */
 	[[nodiscard]]
 	constexpr auto shifted(int32_t ox, int32_t oy, int32_t oz) const noexcept -> MassMoments {
@@ -174,33 +133,20 @@ private:
 	}
 };
 
-/// @brief Mass properties in physical units, derived from a `MassMoments`
+/// @brief Mass properties in physical units
 struct MassProperties {
 	/// Total mass, kilograms
 	float mass = 0.0f;
 
-	/// Centre of mass in volume-local metres, measured from the volume's lattice origin
+	/// Centre of mass in volume-local metres
 	glm::vec3 center_of_mass {0.0f};
 
-	/// Inertia tensor about the centre of mass, kg·m². Symmetric
+	/// Inertia tensor about the centre of mass, kg·m²
 	glm::mat3 inertia {0.0f};
 };
 
 /**
  * @brief Converts integer moments into kilograms, metres and kg·m²
- *
- * Three things happen here that the integer sums deliberately do not carry:
- *
- * - **The half-voxel offset.** A voxel's mass sits at its centre, and the lattice coordinate names its
- *   corner. The offset is the same for every voxel, so it factors out of the sums.
- * - **Each voxel's own inertia.** Summing point masses at voxel centres gives the tensor of a lattice of
- *   points, not of a body made of cubes. A cube of edge `s` has `m·s²/6` about each of its own axes, and
- *   because that term does not depend on where the voxel is, it is one addition to the diagonal for the
- *   whole body. Without it the tensor is wrong for any body only a few voxels thick.
- * - **The shift to the centre of mass**, since the sums are taken about the lattice origin.
- *
- * Computed in double and narrowed once at the end, so the float result carries one rounding rather than a
- * body's worth of them
  */
 [[nodiscard]]
 inline auto resolve(const MassMoments& moments, float voxel_size = k_voxel_size) -> MassProperties {
@@ -233,7 +179,7 @@ inline auto resolve(const MassMoments& moments, float voxel_size = k_voxel_size)
 	const double com_y = (static_cast<double>(moments.m_y) / density_sum + 0.5) * s;
 	const double com_z = (static_cast<double>(moments.m_z) / density_sum + 0.5) * s;
 
-	// Each voxel's inertia about its own centre: a cube of edge s contributes m * s² / 6 to every diagonal
+	// Each voxel inertia about its own centre, a cube of edge s contributes m * s² / 6 to every diagonal
 	const double self_term = total_mass * s * s / 6.0;
 
 	// About the lattice origin
@@ -244,7 +190,7 @@ inline auto resolve(const MassMoments& moments, float voxel_size = k_voxel_size)
 	double i_xz = -s5 * p_xz;
 	double i_yz = -s5 * p_yz;
 
-	// Shifted to the centre of mass. The self term is position-independent and correctly rides along
+	// Shifted to the centre of mass, The self term is position-independent and correctly rides along
 	i_xx -= total_mass * (com_y * com_y + com_z * com_z);
 	i_yy -= total_mass * (com_x * com_x + com_z * com_z);
 	i_zz -= total_mass * (com_x * com_x + com_y * com_y);

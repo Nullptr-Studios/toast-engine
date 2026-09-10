@@ -40,7 +40,7 @@ inline constexpr float k_region_size = static_cast<float>(k_region_dim_bricks) *
 /// @brief Entries in one palette BYTE
 inline constexpr uint32_t k_palette_size = 256;
 
-/// @brief Reserved in every palette: not a material, and what a cleared voxel holds
+/// @brief Reserved in every palette, not a material, and what a cleared voxel holds
 inline constexpr uint8_t k_empty_palette_index = 0;
 
 /**
@@ -51,7 +51,7 @@ enum class BrickTag : uint32_t {
 	empty = 0,
 	/// Fully solid, one material throughout; the payload is a palette index, not a brick id
 	uniform = 1,
-	/// A real brick in the pool, owned by the source asset. Read freely; copy before writing
+	/// A real brick in the pool, owned by the source asset, copy before writing
 	shared = 2,
 	/// A real brick in the pool, owned by this volume. Writable in place
 	owned = 3,
@@ -79,7 +79,7 @@ struct BrickEntry {
 		return static_cast<BrickTag>(value & ((1u << k_brick_tag_bits) - 1u));
 	}
 
-	/// @returns a palette index when `tag()` is `uniform`, a brick pool id when it is `shared` or `owned`
+	/// @returns a palette index when tag() is uniform, a brick pool id when it is shared or owned
 	[[nodiscard]]
 	constexpr auto payload() const noexcept -> uint32_t {
 		return value >> k_brick_tag_bits;

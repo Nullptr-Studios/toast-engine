@@ -1,4 +1,4 @@
-#include "volume.hpp"
+#include "voxel_volume.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -9,11 +9,9 @@ namespace {
 
 static_assert(k_brick_dim == 8, "brickOf and localOf shift and mask by 3 and 7");
 
-/// @brief Floor-divides a voxel coordinate to its brick, correctly for negatives
+/// @brief Floor-divides a voxel coordinate to its brick
 [[nodiscard]]
 auto brickOf(glm::ivec3 voxel) noexcept -> glm::ivec3 {
-	// Arithmetic shift rather than division: -1 / 8 is 0 in C++, but the brick containing voxel -1 is brick -1,
-	// and getting that wrong would fold the row of voxels at -1 into the volume's own first brick
 	return {voxel.x >> 3, voxel.y >> 3, voxel.z >> 3};
 }
 
@@ -62,8 +60,6 @@ auto Volume::instanceOf(const Volume& source) -> Volume {
 
 	out.m_entries = source.m_entries;
 	for (BrickEntry& entry : out.m_entries) {
-		// The instance may read the source's bricks but must copy before writing to one. Empty and uniform
-		// entries carry no storage, so they need no demotion
 		if (entry.tag() == BrickTag::owned) {
 			entry = BrickEntry::make(BrickTag::shared, entry.payload());
 		}
@@ -158,8 +154,7 @@ auto Volume::makeWritable(uint32_t entry_index) -> uint32_t {
 
 	switch (entry.tag()) {
 		case BrickTag::uniform: {
-			// Materialising a uniform brick is the one place a carve allocates, and it has to reproduce the
-			// brick the entry was standing in for before the write lands
+			// Materialising a uniform brick is the one place a carve allocates
 			const auto fill = static_cast<uint8_t>(entry.payload());
 			std::span<uint8_t, k_brick_material_bytes> bytes = m_pool->material(id);
 			std::fill(bytes.begin(), bytes.end(), fill);
@@ -167,7 +162,7 @@ auto Volume::makeWritable(uint32_t entry_index) -> uint32_t {
 			break;
 		}
 		case BrickTag::shared: {
-			// Copy-on-write: the instance takes its own copy of this brick and leaves the source's alone
+			// Copy-on-write, the instance takes its own copy of this brick and leaves the source alone
 			const uint32_t source_id = entry.payload();
 			std::span<const uint8_t, k_brick_material_bytes> source_bytes = m_pool->material(source_id);
 			std::span<uint8_t, k_brick_material_bytes> bytes = m_pool->material(id);
@@ -176,7 +171,7 @@ auto Volume::makeWritable(uint32_t entry_index) -> uint32_t {
 			break;
 		}
 		default:
-			// Empty: the pool already hands back a cleared brick
+			// Empty, the pool already hands back a cleared brick
 			break;
 	}
 
@@ -193,7 +188,7 @@ auto Volume::setVoxel(glm::ivec3 voxel, uint8_t material) -> VoxelWrite {
 	const uint8_t previous = materialAt(voxel);
 	result.previous_material = previous;
 	if (previous == material) {
-		return result;    // no-op, and in particular no copy of a shared brick
+		return result;    // no copy of a shared brick
 	}
 
 	const uint32_t index = entryIndex(brickOf(voxel));
@@ -201,7 +196,7 @@ auto Volume::setVoxel(glm::ivec3 voxel, uint8_t material) -> VoxelWrite {
 
 	const uint32_t id = makeWritable(index);
 	if (id == k_invalid_brick) {
-		return result;    // pool exhausted; the volume is unchanged and the caller decides what that means
+		return result;    // pool exhausted
 	}
 
 	const BrickCoord local = localOf(voxel);
@@ -213,9 +208,7 @@ auto Volume::setVoxel(glm::ivec3 voxel, uint8_t material) -> VoxelWrite {
 	if (material != k_empty_palette_index) {
 		result.brick_became_occupied = !was_occupied;
 	} else if (isEmpty(m_pool->occupancy(id))) {
-		// A brick emptied by a carve gives its storage straight back, which is what keeps memory bounded
-		// while a building comes down. It is also one of the two transitions that dirty the acceleration
-		// structure - see VoxelWrite
+		// A brick emptied by a carve gives its storage straight back
 		m_pool->free(id);
 		m_entries[index] = BrickEntry {};
 		result.brick_became_empty = true;
@@ -245,7 +238,7 @@ auto Volume::tryCollapseUniform(glm::ivec3 brick) -> bool {
 	const uint32_t index = entryIndex(brick);
 	const BrickEntry entry = m_entries[index];
 	if (entry.tag() != BrickTag::owned) {
-		return false;    // shared bricks are not ours to release, and empty/uniform are already collapsed
+		return false;    // shared bricks are not ours to release
 	}
 
 	const uint32_t id = entry.payload();
