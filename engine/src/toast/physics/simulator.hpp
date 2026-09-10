@@ -10,6 +10,8 @@
 #include "body.hpp"
 #include "collision.hpp"
 #include "shape.hpp"
+#include "manifold.hpp"
+#include "constraint.hpp"
 
 #include <deque>
 #include <optional>
@@ -47,6 +49,8 @@ public:
 	static void unregisterRigidbody(Rigidbody& node);
 
 private:
+	using ManifoldQueue = std::deque<Manifold>;
+
 	struct NodeBinding {
 		BodyID body;
 		toast::Box<Rigidbody> node;
@@ -67,61 +71,33 @@ private:
 	[[nodiscard]]
 	auto tryGetBody(BodyID body) const -> const Body*;
 
+	static void integrateBody(BodyID id, Body& body, const glm::vec3& gravity, float dt);
+
 	[[nodiscard]]
-	auto broadPhase() const -> std::vector<BroadPhasePair> {
-		std::vector<BroadPhasePair> pairs;
+	auto broadPhase() const -> std::vector<BroadPhasePair>;
+	[[nodiscard]]
+	auto broadPhasePair(size_t shape_a, size_t shape_b) const -> std::optional<BroadPhasePair>;
+	void clearManifoldQueues();
+	void narrowPhase(const std::vector<BroadPhasePair>& candidates);
+	void mergeManifoldQueues();
+	void mergeManifold(const Manifold& manifold);
+	void sortManifolds();
 
-		for (size_t i = 0; i < m_shapes.size(); ++i) {
-			if (not m_shapes[i].occupied) {
-				continue;
-			}
+	[[nodiscard]]
+	auto prepareConstraints(const std::vector<Manifold>& manifolds) const -> std::vector<NormalConstraint>;
+	[[nodiscard]]
+	auto prepareConstraint(const Manifold& manifold) const -> std::optional<NormalConstraint>;
+	void solveConstraints(const std::vector<NormalConstraint>& constraints);
+	[[nodiscard]]
+	auto solveConstraint(const NormalConstraint& constraint) -> bool;
+	void publishTransforms();
+	[[nodiscard]]
+	auto publishTransform(NodeBinding& binding) -> bool;
 
-			for (size_t j = i + 1; j < m_shapes.size(); ++j) {
-				if (not m_shapes[j].occupied) {
-					continue;
-				}
+	void collide(BroadPhasePair pair);
 
-				// skip if they have the same owner
-				if (m_shapes[j].shape.owner == m_shapes[i].shape.owner) {
-					continue;
-				}
-
-				const auto* body1 = tryGetBody(m_shapes[i].shape.owner);
-				const auto* body2 = tryGetBody(m_shapes[j].shape.owner);
-
-				// skip if body is invalid
-				if (not body1 || not body2) {
-					continue;
-				}
-
-				// skip if they are both static/kinematic
-				if (body1->inverse_mass == 0 && body2->inverse_mass == 0) {
-					continue;
-				}
-
-				// clang-format off
-				pairs.emplace_back(canonicalPair(
-					BodyShapeKey {
-						.body = m_shapes[i].shape.owner,
-						.shape = {
-							.slot = static_cast<uint32_t>(i),
-							.generation = m_shapes[i].generation
-						}
-					},
-					BodyShapeKey {
-						.body = m_shapes[j].shape.owner,
-						.shape = {
-							.slot = static_cast<uint32_t>(j),
-							.generation = m_shapes[j].generation
-						}
-					}
-				));
-				// clang-format on
-			}
-		}
-
-		return pairs;
-	}
+	[[nodiscard]]
+	static auto collideSpheres(BroadPhasePair pair, const Shape& shape_a, const Body& body_a, const Shape& shape_b, const Body& body_b) -> std::optional<Manifold>;
 
 	inline static Simulator* instance = nullptr;
 
@@ -133,6 +109,9 @@ private:
 	std::deque<uint32_t> m_free_shape_slots;
 
 	glm::vec3 gravity = {0.0f, 0.0f, -9.8f};
+
+	std::vector<ManifoldQueue> m_manifold_queues;
+	std::vector<Manifold> m_manifolds;
 };
 
 }

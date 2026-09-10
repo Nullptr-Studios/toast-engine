@@ -1,5 +1,7 @@
 #include "rigidbody.hpp"
 
+#include "sphere_collider.hpp"
+
 #include <toast/physics/simulator.hpp>
 
 namespace physics {
@@ -25,6 +27,24 @@ auto Rigidbody::descriptor() const -> BodyDescriptor {
 	result.position = world_position;
 	result.rotation = world_rotation;
 	return result;
+}
+
+auto Rigidbody::sphereShapes() const -> std::vector<SphereShape> {
+	std::vector<SphereShape> shapes;
+
+	for (const auto& child : children()) {
+		const auto sphere = child.as<SphereCollider>();
+		if (not sphere.exists() || sphere->disabled) {
+			continue;
+		}
+
+		shapes.emplace_back(SphereShape {
+			.local_center = sphere->position,
+			.radius = sphere->radius,
+		});
+	}
+
+	return shapes;
 }
 
 void Rigidbody::applyPhysicsTransform(const glm::vec3& position, const glm::quat& rotation) {

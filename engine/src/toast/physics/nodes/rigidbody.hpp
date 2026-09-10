@@ -8,7 +8,10 @@
 
 #pragma once
 #include <toast/physics/body.hpp>
+#include <toast/physics/shape.hpp>
 #include <toast/world/node_3d.hpp>
+
+#include <vector>
 
 namespace physics {
 
@@ -28,6 +31,8 @@ private:
 
 	[[nodiscard]]
 	auto descriptor() const -> BodyDescriptor;
+	[[nodiscard]]
+	auto sphereShapes() const -> std::vector<SphereShape>;
 
 	void assignBody(BodyID body) noexcept { m_body = body; }
 
