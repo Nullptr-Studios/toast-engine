@@ -53,12 +53,16 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <print>
 #include <span>
 #include <sstream>
 
@@ -66,11 +70,9 @@ namespace toast {
 
 namespace {
 IApplication* active_application = nullptr;
-float total_time = 0.0;
 double clear_assets_timer = 0.0;
 double lua_memory_plot_timer = 0.0;
 double script_reload_timer = 0.0;
-Camera* camera = nullptr;
 
 }
 
@@ -159,8 +161,7 @@ void Engine::init() {
 		}
 	}
 
-	// User settings. The project layer sits next to the project file and ships with the game; the user layer
-	// goes wherever the platform keeps per-user data, which is the only location a packaged game may write to
+	// User settings
 	{
 		auto& settings = settings::Settings::get();
 		const auto& proj_root = assets::AssetManager::projectRoot();
@@ -175,7 +176,7 @@ void Engine::init() {
 		settings.setPaths(proj_root / "settings.toml", user_file);
 		settings.load();
 
-		// Before the renderer exists: ShadowPass reads its resolution when it allocates, so this cannot wait
+		// Before the renderer exists, ShadowPass reads its resolution when it allocates, so this cannot wait
 		// for the rest of the renderer settings
 		renderer::registerRendererStartupSettings();
 	}
@@ -232,23 +233,24 @@ void Engine::init() {
 
 Engine::~Engine() noexcept {
 	if (m) {
-		// Before anything is torn down: a change made seconds before quitting is exactly the one most likely to
-		// be lost, and nothing else writes the file on the way out
-		settings::Settings::get().saveIfDirty();
+		// Save settings before closing down
+		try {
+			settings::Settings::get().saveIfDirty();
+		} catch (const std::exception& e) { TOAST_ERROR("Engine", "Failed to save settings on shutdown: {}", e.what()); }
 
+		// Stops the render thread and waits for anything still building
 		if (m->renderer) {
 			m->renderer->stop();
 		}
 
-		// remove objects before closing
 		{
 			std::scoped_lock lock(m->owners_mutex);
 			m->owners.clear();
 		}
 		m->world.reset();
 		m->ui_system.reset();
-		m->asset_manager.reset();
 		m->renderer.reset();
+		m->asset_manager.reset();
 		m->vulkan_core.reset();
 
 		delete m;
@@ -303,7 +305,7 @@ void Engine::tick() {
 	{
 		std::scoped_lock lock(m->owners_mutex);
 		ZoneScopedN("NodeOwners::tick()");
-		for (const auto& [_, node_owner] : m->owners) {
+		for (const auto& node_owner : m->owners | std::views::values) {
 			node_owner->tick();
 		}
 	}
@@ -312,15 +314,6 @@ void Engine::tick() {
 	if (active_application) {
 		ZoneScopedN("GameLayer::tick()");
 		active_application->tick();
-	}
-	total_time += Time::delta();
-
-	// Fallback orbit animation for the bootstrap camera, before any real scene/workspace camera takes over
-	// (see Workspace::applyActiveCamera() for the editor path - its own EditorCameraController is what
-	// actually drives the editor viewport's fly-camera now, ticked from Workspace::tick())
-	if (camera) {
-		camera->world_position = glm::vec3(std::sin(total_time) * 5.0f, std::cos(total_time) * 5.0f, 5);
-		camera->syncTransform();
 	}
 
 	if (m->audio_system) {
@@ -332,13 +325,14 @@ void Engine::tick() {
 	}
 
 	// TODO MOVE THIS
+	// FIXME: @XEIN where should we move this??
 	clear_assets_timer += Time::delta();
 	if (clear_assets_timer > 30.0) {
 		m->asset_manager->clearUnusedAssets();
 		clear_assets_timer = 0.0;
 	}
 
-	// TODO: move this to editor only scope
+	// FIXME: move this to editor only scope
 	{
 		std::scoped_lock lock(m->owners_mutex);
 		auto it = m->owners.find(m->active_workspace);
@@ -368,7 +362,7 @@ void Engine::tick() {
 	}
 
 	if (m->renderer) {
-		m->renderer->tick(total_time);
+		m->renderer->tick(Time::uptime());
 	}
 
 	lua_memory_plot_timer += Time::delta();
@@ -379,6 +373,7 @@ void Engine::tick() {
 		}
 	}
 
+	// SHOULDNT THIS ALSO HAPPEN IN RELEASE EDITOR BUILDS?
 #ifdef DEBUG
 	// dev builds hot-reload scripts, shaders and materials edited on disk
 	script_reload_timer += Time::delta();
@@ -408,10 +403,7 @@ void Engine::createSDLWindow(const char* w_name) {
 	auto device_extensions = renderer::SDLOutputTarget::getRequiredDeviceExtensions();
 	m->vulkan_core = std::make_unique<renderer::VulkanCore>(instance_extensions, device_extensions);
 
-	// Compile every stale shader up front - after the device, never before it. A shader is compiled against the
-	// optional features the device actually has (ShaderCompiler::setRayQueryAvailable), because SPIR-V that
-	// declares a capability the device lacks is rejected at pipeline creation rather than degrading. Compiling
-	// first produced modules built for the wrong feature set
+	// Compile every stale shader up front
 	renderer::ShaderCache::get().compileAllAtStartup();
 
 	// create output texture
@@ -424,33 +416,24 @@ void Engine::createSDLWindow(const char* w_name) {
 
 	m->renderer = std::make_unique<renderer::VulkanRenderer>(*m->vulkan_core, std::move(output_target));
 
-	// FIXME: change this
-	camera = new Camera();
-	camera->world_position = glm::vec3(0.0f);
-	camera->syncTransform();
-
-	m->renderer->setActiveCamera(camera);
-
-	// Constructed before any material pass so materials can bind the culled light buffers straight away.
-	// addComputePass() takes ownership via unique_ptr, so the reference is captured before the move
+	// Constructed before any material pass so materials can bind the culled light buffers straight away
 	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
 	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
 	m->renderer->setClusterLightingPass(&cluster_lighting_pass_ref);
 	m->renderer->addComputePass(std::move(cluster_lighting_pass));
 
-	// Same ordering requirement as the lighting pass: a material pass binds the shadow map into its frame
-	// set when it's built, and material passes are created on demand from whatever the frame contains
+	// Same ordering requirement as the lighting pass
 	auto shadow_pass = std::make_unique<renderer::ShadowPass>(*m->vulkan_core);
 	m->renderer->setShadowPass(shadow_pass.get());
 	m->renderer->addRenderPass(std::move(shadow_pass));
 
-	// Environment cubemaps, for the same reason: material passes bind them by name when they are built
+	// Environment cubemaps
 	auto environment_pass =
 	    std::make_unique<renderer::EnvironmentPass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
 	m->renderer->setEnvironmentPass(environment_pass.get());
 	m->renderer->addRenderPass(std::move(environment_pass));
 
-	// Probe cubemaps, bound by name alongside the environment for the same reason
+	// Probe cubemaps
 	auto reflection_probe_pass =
 	    std::make_unique<renderer::ReflectionProbePass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
 	m->renderer->setReflectionProbePass(reflection_probe_pass.get());
@@ -458,24 +441,17 @@ void Engine::createSDLWindow(const char* w_name) {
 
 	// Mesh rendering runs through per-material passes
 
-	// World-stage passes render into the HDR scene target, so they build their pipelines against its format;
-	// only the overlays and the tonemap itself target the output image's format
+	// World-stage passes render into the HDR scene target
 	const auto scene_format = m->renderer->getSceneColorFormat();
 
-	// World-space UI panels are scene content and get exposed with it; the screen-space UI does not
+	// World-space UI panels are scene content and get exposed with it, the screen-space UI does not
 	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, scene_format, depth_format, extent));
 
-	// Order matters twice over. SSR composites radiance, so it has to run while the image still *is*
-	// radiance - past the tonemap it would add display-space values and blow out every highlight. And a
-	// bright reflection is a light source as far as bloom is concerned, so bloom has to see it to spread it
-	// Only when the device can trace, so mesh.slang never has to carry an acceleration-structure binding it
-	// could not satisfy elsewhere. A debug view rather than a shadow implementation - see TracedShadowPass
 	if (m->vulkan_core->isRayTracingSupported()) {
 		m->renderer->addPostProcessPass(std::make_unique<renderer::TracedShadowPass>(*m->vulkan_core, scene_format, extent));
 	}
 
-	// SSAO first: it weights the indirect diffuse term down, and SSR and bloom should both see the result of
-	// that rather than the brightness a crevice had before it was occluded
+	// SSAO first
 	m->renderer->addPostProcessPass(std::make_unique<renderer::SsaoPass>(*m->vulkan_core, scene_format, extent));
 	m->renderer->addPostProcessPass(std::make_unique<renderer::SsrPass>(*m->vulkan_core, scene_format, extent));
 	m->renderer->addPostProcessPass(std::make_unique<renderer::BloomPass>(*m->vulkan_core, scene_format, extent));
@@ -490,19 +466,15 @@ void Engine::createSDLWindow(const char* w_name) {
 		});
 	}
 
-	// capped to 240 for now
+	// FIXME: CAPPED AT 240 for now
 	m->renderer->setFrameRateLimit(240.0);
 
-	// After the passes, because the quality toggles resolve a post-process pass by name. Anything the settings
-	// file carries overrules the frame rate limit set just above, which is only a default
 	renderer::registerRendererSettings(*m->renderer);
 
 	m->renderer->start();
 }
 
 void Engine::createAvaloniaWindow() {
-	// The editor authors the defaults a packaged game ships with; a standalone run leaves the layer at `user`,
-	// so a player's own tweaks land in their own file and survive a patch that moves a default
 	settings::Settings::get().setActiveLayer(settings::Layer::project);
 
 	m->vulkan_core = std::make_unique<renderer::VulkanCore>(std::span<const char* const> {}, std::span<const char* const> {});
@@ -516,33 +488,24 @@ void Engine::createAvaloniaWindow() {
 
 	m->renderer = std::make_unique<renderer::VulkanRenderer>(*m->vulkan_core, std::move(output_target));
 
-	// FIXME: change this
-	camera = new Camera();
-	camera->world_position = glm::vec3(0.0f);
-	camera->syncTransform();
-
-	m->renderer->setActiveCamera(camera);
-
-	// Constructed before any material pass so materials can bind the culled light buffers straight away.
-	// addComputePass() takes ownership via unique_ptr, so the reference is captured before the move
+	// Constructed before any material pass so materials can bind the culled light buffers straight away
 	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
 	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
 	m->renderer->setClusterLightingPass(&cluster_lighting_pass_ref);
 	m->renderer->addComputePass(std::move(cluster_lighting_pass));
 
-	// Same ordering requirement as the lighting pass: a material pass binds the shadow map into its frame
-	// set when it's built, and material passes are created on demand from whatever the frame contains
+	// Same ordering requirement as the lighting pass
 	auto shadow_pass = std::make_unique<renderer::ShadowPass>(*m->vulkan_core);
 	m->renderer->setShadowPass(shadow_pass.get());
 	m->renderer->addRenderPass(std::move(shadow_pass));
 
-	// Environment cubemaps, for the same reason: material passes bind them by name when they are built
+	// Environment cubemaps
 	auto environment_pass =
 	    std::make_unique<renderer::EnvironmentPass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
 	m->renderer->setEnvironmentPass(environment_pass.get());
 	m->renderer->addRenderPass(std::move(environment_pass));
 
-	// Probe cubemaps, bound by name alongside the environment for the same reason
+	// Probe cubemaps
 	auto reflection_probe_pass =
 	    std::make_unique<renderer::ReflectionProbePass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
 	m->renderer->setReflectionProbePass(reflection_probe_pass.get());
@@ -550,24 +513,17 @@ void Engine::createAvaloniaWindow() {
 
 	// Mesh rendering runs through per-material passes
 
-	// World-stage passes render into the HDR scene target, so they build their pipelines against its format;
-	// only the overlays and the tonemap itself target the output image's format
+	// World-stage passes render into the HDR scene target
 	const auto scene_format = m->renderer->getSceneColorFormat();
 
 	// World-space UI panels are scene content
 	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, scene_format, depth_format, extent));
 
-	// Order matters twice over. SSR composites radiance, so it has to run while the image still *is*
-	// radiance - past the tonemap it would add display-space values and blow out every highlight. And a
-	// bright reflection is a light source as far as bloom is concerned, so bloom has to see it to spread it
-	// Only when the device can trace, so mesh.slang never has to carry an acceleration-structure binding it
-	// could not satisfy elsewhere. A debug view rather than a shadow implementation - see TracedShadowPass
 	if (m->vulkan_core->isRayTracingSupported()) {
 		m->renderer->addPostProcessPass(std::make_unique<renderer::TracedShadowPass>(*m->vulkan_core, scene_format, extent));
 	}
 
-	// SSAO first: it weights the indirect diffuse term down, and SSR and bloom should both see the result of
-	// that rather than the brightness a crevice had before it was occluded
+	// SSAO first
 	m->renderer->addPostProcessPass(std::make_unique<renderer::SsaoPass>(*m->vulkan_core, scene_format, extent));
 	m->renderer->addPostProcessPass(std::make_unique<renderer::SsrPass>(*m->vulkan_core, scene_format, extent));
 	m->renderer->addPostProcessPass(std::make_unique<renderer::BloomPass>(*m->vulkan_core, scene_format, extent));
@@ -580,8 +536,7 @@ void Engine::createAvaloniaWindow() {
 	    std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent, &cluster_lighting_pass_ref)
 	);
 
-	// DebugPass is the only thing that draws queued gizmos, and only the editor registers it. Without this the
-	// standalone path still built every light sphere and probe box each frame for nobody to read
+	// DebugPass is enabled on editor
 	m->renderer->setDebugDrawEnabled(true);
 	m->renderer->addRenderPass(std::make_unique<ui::UIPass>(*m->vulkan_core, color_format, depth_format, extent));
 	if (m->ui_system) {
@@ -591,6 +546,7 @@ void Engine::createAvaloniaWindow() {
 		});
 	}
 
+	// editor will always be capped
 	m->renderer->setFrameRateLimit(240.0);
 
 	renderer::registerRendererSettings(*m->renderer);
@@ -774,11 +730,6 @@ void Engine::startGame() {
 	}
 }
 }
-
-// No Tracy global memory profiling here, deliberately. Overriding ::operator new/delete only instruments
-// toast_engine.dll: the game DLL has its own CRT heap and uninstrumented new/delete, so anything allocated
-// there and freed through ours reports a free Tracy never saw an alloc for. Bistro hits it reliably and
-// crashes. Per-zone CPU profiling is unaffected
 
 // ffi stuff
 extern "C" {

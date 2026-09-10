@@ -24,9 +24,6 @@ class VulkanCore;
 /**
  * @class MaterialRuntime
  * @brief GPU-facing view of one Material, owned by the render thread
- *
- * Merges the reflection of the material's shader vector, bakes its DataValues into CPU bytes at the
- * reflected offsets, resolves texture handles and owns the samplers its settings describe
  */
 class MaterialRuntime {
 public:
@@ -73,17 +70,13 @@ public:
 		return m_model_offset;
 	}
 
-	/// @returns byte offset of the push-constant "jointOffset" field, if the shader declares one
+	/// @returns byte offset of the push-constant jointOffset field
 	[[nodiscard]]
 	auto jointOffsetOffset() const -> std::optional<uint32_t> {
 		return m_joint_offset_offset;
 	}
 
-	/// @returns push-constant offset of `instanceBase`, when the shader draws instanced
-	///
-	/// Declaring it means the model matrix comes from the instance buffer, which is what lets many proxies
-	/// collapse into one draw. A shader declaring `model` instead keeps the per-draw path; both work, chosen
-	/// per material by what its push block holds
+	/// @returns push-constant offset of instanceBase
 	[[nodiscard]]
 	auto instanceBaseOffset() const -> std::optional<uint32_t> {
 		return m_instance_base_offset;
@@ -94,8 +87,8 @@ public:
 		uint32_t binding = 0;
 		assets::Handle<assets::Texture> texture;
 		vk::Sampler sampler;
-		std::string default_fallback;    ///< "white" (default), "black", or "flat_normal" - see ShaderInspectorMeta
-		bool linear_data = false;        ///< [Linear] - must not be bound an sRGB-encoded texture
+		std::string default_fallback;
+		bool linear_data = false;
 	};
 
 	auto textureSlots() -> const std::vector<TextureSlot>&;
@@ -113,6 +106,8 @@ private:
 
 	const VulkanCore* m_core = nullptr;
 	assets::Material* m_material = nullptr;
+
+	assets::Handle<assets::Material> m_material_ref;
 
 	ShaderReflection m_merged;
 	std::vector<std::shared_ptr<const ShaderCache::Entry>> m_entries;

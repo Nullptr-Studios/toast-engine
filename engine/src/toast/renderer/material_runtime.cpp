@@ -201,7 +201,10 @@ auto stringField(const DataValue& obj, std::string_view key, std::string_view fa
 
 }
 
-MaterialRuntime::MaterialRuntime(const VulkanCore& core, assets::Material* material) : m_core(&core), m_material(material) {
+MaterialRuntime::MaterialRuntime(const VulkanCore& core, assets::Material* material)
+    : m_core(&core),
+      m_material(material),
+      m_material_ref(material) {
 	rebuild();
 }
 

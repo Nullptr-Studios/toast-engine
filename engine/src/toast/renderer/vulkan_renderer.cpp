@@ -302,12 +302,37 @@ auto unpackExtent(uint64_t packed) -> vk::Extent2D {
 	return {static_cast<uint32_t>(packed >> 32u), static_cast<uint32_t>(packed & 0xFFFFFFFFu)};
 }
 
+assets::Handle<assets::Mesh> g_camera_gizmo_mesh;
+bool g_camera_gizmo_resolved = false;
+
+std::array<assets::Handle<assets::Texture>, 5> g_light_icons;
+std::array<bool, 5> g_light_icons_resolved {};
+
+void clearCachedAssetHandles() {
+	g_camera_gizmo_mesh = {};
+	g_camera_gizmo_resolved = false;
+	g_light_icons = {};
+	g_light_icons_resolved = {};
+}
+
+/// @brief The camera body drawn in the editor viewport for every scene camera
+auto cameraGizmoMesh() -> const assets::Handle<assets::Mesh>& {
+	static constexpr std::string_view k_uri = "core://meshes/ToastEngineCam.tmesh";
+
+	if (!g_camera_gizmo_resolved) {
+		g_camera_gizmo_resolved = true;
+		if (const auto uid = assets::resolveURI(k_uri); uid.has_value()) {
+			g_camera_gizmo_mesh = assets::load<assets::Mesh>(*uid);
+		} else {
+			TOAST_WARN("Render", "Camera gizmo mesh '{}' not found in the asset manifest", k_uri);
+		}
+	}
+	return g_camera_gizmo_mesh;
+}
+
 /// @brief Debug billboard icon for a light, by type
-///
-/// Not exposed as a node property: these exist to make lights visible in the editor, not to be authored
 auto lightIcon(toast::LightType type) -> const assets::Handle<assets::Texture>& {
-	// Indexed by LightType (none/point/directional/spot/ambient); ambient has no icon of its own so it
-	// borrows the omni one
+	// Indexed by LightType (none/point/directional/spot/ambient)
 	static constexpr std::array<std::string_view, 5> k_uris {
 	  "",
 	  "core://textures/PointLight.ktx2",
@@ -316,25 +341,24 @@ auto lightIcon(toast::LightType type) -> const assets::Handle<assets::Texture>& 
 	  "core://textures/OmniLight.ktx2",
 	};
 
-	static std::array<assets::Handle<assets::Texture>, k_uris.size()> handles {};
-	static std::array<bool, k_uris.size()> resolved {};
+	static_assert(k_uris.size() == g_light_icons.size(), "icon cache must cover every LightType");
 
 	const auto index = static_cast<size_t>(type);
 	if (index >= k_uris.size()) {
-		return handles[0];
+		return g_light_icons[0];
 	}
 
-	if (!resolved[index]) {
-		resolved[index] = true;    // set first: a missing asset should be looked up once, not every frame
+	if (!g_light_icons_resolved[index]) {
+		g_light_icons_resolved[index] = true;
 		if (!k_uris[index].empty()) {
 			if (const auto uid = assets::resolveURI(k_uris[index]); uid.has_value()) {
-				handles[index] = assets::load<assets::Texture>(*uid);
+				g_light_icons[index] = assets::load<assets::Texture>(*uid);
 			} else {
 				TOAST_WARN("Render", "Light debug icon '{}' not found in the asset manifest", k_uris[index]);
 			}
 		}
 	}
-	return handles[index];
+	return g_light_icons[index];
 }
 
 /// @brief Picks which Skin a skinned MeshNode uses out of its assigned Animation asset
@@ -619,6 +643,9 @@ VulkanRenderer::VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTa
 
 VulkanRenderer::~VulkanRenderer() {
 	stop();
+	// Before the AssetManager goes: these hold Handles, and releasing one after the Asset is gone is a
+	// read of freed memory. Engine's teardown order guarantees the assets are still here at this point
+	clearCachedAssetHandles();
 	instance = nullptr;
 }
 
@@ -2402,7 +2429,6 @@ void VulkanRenderer::start() noexcept {
 }
 
 void VulkanRenderer::submitFrame() noexcept {
-	// TracyMessage("Swapped frame resource", 256);
 	{
 		std::lock_guard lock(m_queue_mutex);
 
@@ -2569,8 +2595,7 @@ void VulkanRenderer::fitShadowViews(
 void VulkanRenderer::tick(float time) noexcept {
 	ZoneScopedN("VulkanRenderer::tick()");
 
-	// Waits briefly rather than giving up: returning straight away advances the sim clock on iterations that
-	// never become frames, so motion is sampled unevenly and displayed evenly
+	// Waits briefly
 	using namespace std::chrono_literals;
 	if (!m_free_frames.try_acquire_for(50ms)) {
 		m_skipped_builds.fetch_add(1, std::memory_order_relaxed);
@@ -2580,14 +2605,16 @@ void VulkanRenderer::tick(float time) noexcept {
 	auto& frame = beginFrameBuild();
 
 	frame.mesh_instances.clear();
-	// resolveSkinning() only appends, so without this the slot accumulates until it trips
-	// k_max_joint_matrices and skinning stops entirely
+
+	frame.asset_refs.clear();
+	// resolveSkinning() only appends
 	frame.joint_matrices.clear();
 	frame.instance_data.clear();
 	frame.shadow_instance_data.clear();
 	frame.debug_line_vertices.clear();
 	frame.debug_gizmo_instances.clear();
 	frame.debug_billboards.clear();
+	frame.debug_meshes.clear();
 	frame.transform_gizmo = TransformGizmoDraw {};
 	frame.ui_command_buffers.clear();
 	frame.ui_output_views.clear();
@@ -2731,6 +2758,12 @@ void VulkanRenderer::tick(float time) noexcept {
 			// Joint origins alone don't reach the skin around them, so the mesh's own bind radius is added
 			// rather than used to replace the spread - a hand's vertices sit well outside its joint
 			world_radius = (glm::length(maximum - minimum) * 0.5f) + (local_sphere.w * std::max({scale.x, scale.y, scale.z}));
+		}
+
+		// Held for the frame lifetime
+		frame.asset_refs.push_back(mesh_handle);
+		if (material_handle.hasValue()) {
+			frame.asset_refs.push_back(material_handle);
 		}
 
 		frame.mesh_instances.push_back(
@@ -3080,6 +3113,31 @@ void VulkanRenderer::tick(float time) noexcept {
 	frame.viewport_extent = glm::vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
 	frame.camera_near = m_camera->near_plane;
 	frame.camera_far = m_camera->far_plane;
+
+	// Camera bodies
+	{
+		auto& camera_nodes_snapshot = m_tick_camera_nodes;
+		{
+			std::scoped_lock lock(m_camera_proxy_mutex);
+			camera_nodes_snapshot.assign(m_camera_proxy_nodes.begin(), m_camera_proxy_nodes.end());
+		}
+
+		for (auto* camera : camera_nodes_snapshot) {
+			if (camera == nullptr || !camera->enabled() || camera == m_camera) {
+				continue;
+			}
+			if (m_render_owner_filter != nullptr && camera->owner() != m_render_owner_filter) {
+				continue;
+			}
+			camera->syncTransform();
+			debugDrawMesh(cameraGizmoMesh(), camera->getWorldTransform());
+
+			constexpr float k_camera_frustum_length = 3.0f;
+			const auto extent = m_output_target->getExtent();
+			const float aspect = extent.height > 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
+			debugDrawFrustum(*camera, aspect, glm::vec4(1.0f, 1.0f, 0.2f, 1.0f), k_camera_frustum_length);
+		}
+	}
 
 	// Global (unclustered) lights fold straight into FrameUBO; PointLight/Spotlight resolve to
 	// GpuLight entries in frame.lights instead, consumed by ClusterLightingPass
@@ -3673,6 +3731,26 @@ void VulkanRenderer::unregisterLightNodeProxy(toast::Light* node) {
 	std::erase(m_light_proxy_nodes, node);
 }
 
+void VulkanRenderer::registerCameraNodeProxy(toast::Camera* node) {
+	if (node == nullptr) {
+		return;
+	}
+
+	std::scoped_lock lock(m_camera_proxy_mutex);
+	if (!std::ranges::contains(m_camera_proxy_nodes, node)) {
+		m_camera_proxy_nodes.push_back(node);
+	}
+}
+
+void VulkanRenderer::unregisterCameraNodeProxy(toast::Camera* node) {
+	if (node == nullptr) {
+		return;
+	}
+
+	std::scoped_lock lock(m_camera_proxy_mutex);
+	std::erase(m_camera_proxy_nodes, node);
+}
+
 void VulkanRenderer::stop() {
 	const bool was_running = m_running.exchange(false, std::memory_order_acq_rel);
 	if (!was_running) {
@@ -3691,7 +3769,11 @@ void VulkanRenderer::stop() {
 	}
 
 	if (m_core) {
-		m_core->getDevice().waitIdle();
+		try {
+			m_core->getDevice().waitIdle();
+		} catch (const std::exception& e) {
+			TOAST_ERROR("Render", "Device wait failed during shutdown, tearing down anyway: {}", e.what());
+		}
 	}
 
 #ifdef TRACY_ENABLE
@@ -3905,14 +3987,22 @@ void VulkanRenderer::setActiveCamera(toast::Camera* camera) {
 	m_camera = camera;
 }
 
-void debugDrawFrustum(const toast::Camera& camera, float aspect, glm::vec4 color) {
+void VulkanRenderer::forgetCamera(const toast::Camera* camera) {
+	if (m_camera == camera) {
+		m_camera = nullptr;
+	}
+}
+
+void debugDrawFrustum(const toast::Camera& camera, float aspect, glm::vec4 color, float far_override) {
 	if (!VulkanRenderer::instance->debugDrawEnabled()) {
 		return;
 	}
+	const float far_distance = far_override > 0.0f ? std::min(far_override, camera.far_plane) : camera.far_plane;
+
 	const float tan_half_fov_y = std::tan(glm::radians(camera.fov) * 0.5f);
 	const float near_height = 2.0f * tan_half_fov_y * camera.near_plane;
 	const float near_width = near_height * aspect;
-	const float far_height = 2.0f * tan_half_fov_y * camera.far_plane;
+	const float far_height = 2.0f * tan_half_fov_y * far_distance;
 	const float far_width = far_height * aspect;
 
 	const std::array<glm::vec3, 8> view_space_corners {
@@ -3920,10 +4010,10 @@ void debugDrawFrustum(const toast::Camera& camera, float aspect, glm::vec4 color
 	  glm::vec3 { near_width * 0.5f, -near_height * 0.5f, -camera.near_plane},
 	  glm::vec3 { near_width * 0.5f,  near_height * 0.5f, -camera.near_plane},
 	  glm::vec3 {-near_width * 0.5f,  near_height * 0.5f, -camera.near_plane},
-	  glm::vec3 { -far_width * 0.5f,  -far_height * 0.5f,  -camera.far_plane},
-	  glm::vec3 {  far_width * 0.5f,  -far_height * 0.5f,  -camera.far_plane},
-	  glm::vec3 {  far_width * 0.5f,   far_height * 0.5f,  -camera.far_plane},
-	  glm::vec3 { -far_width * 0.5f,   far_height * 0.5f,  -camera.far_plane},
+	  glm::vec3 { -far_width * 0.5f,  -far_height * 0.5f,      -far_distance},
+	  glm::vec3 {  far_width * 0.5f,  -far_height * 0.5f,      -far_distance},
+	  glm::vec3 {  far_width * 0.5f,   far_height * 0.5f,      -far_distance},
+	  glm::vec3 { -far_width * 0.5f,   far_height * 0.5f,      -far_distance},
 	};
 
 	const glm::mat4 inv_view = glm::inverse(camera.getView());
@@ -3971,6 +4061,13 @@ void debugDrawFrustumFromMatrix(const glm::mat4& view_projection, glm::vec4 colo
 	for (const auto& [a, b] : edges) {
 		debugDrawLine(world_corners[static_cast<size_t>(a)], world_corners[static_cast<size_t>(b)], color);
 	}
+}
+
+void debugDrawMesh(toast::UID mesh, const glm::mat4& transform, glm::vec4 tint) {
+	if (!VulkanRenderer::instance->debugDrawEnabled()) {
+		return;
+	}
+	debugDrawMesh(assets::load<assets::Mesh>(mesh), transform, tint);
 }
 
 void debugDrawBillboard(glm::vec3 world_position, float size, toast::UID texture, glm::vec4 tint) {

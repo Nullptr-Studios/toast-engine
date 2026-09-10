@@ -36,10 +36,6 @@ auto toBlendPreset(assets::BlendMode mode) -> VulkanPipeline::BlendPreset {
 }
 
 /// @brief Warns once per texture when a slot holding data is fed an sRGB-encoded image
-///
-/// An authored 0.5 decodes to 0.21, and nothing else distinguishes "wrong" from "dark". Which slots carry
-/// data is declared by the shader with [Linear]: roughness and occlusion share white with albedo, so it
-/// cannot be inferred
 void warnIfWrongColorSpace(const MaterialRuntime::TextureSlot& slot, const VulkanTexture& texture) {
 	if (!slot.linear_data) {
 		return;
@@ -55,7 +51,6 @@ void warnIfWrongColorSpace(const MaterialRuntime::TextureSlot& slot, const Vulka
 		default: return;
 	}
 
-	// Keyed by view: one message per offending texture, not one per frame per material instance
 	static std::mutex warned_mutex;
 	static std::unordered_set<VkImageView> warned;
 
@@ -87,6 +82,7 @@ MaterialPass::MaterialPass(
 )
     : m_core(&core),
       m_root_material(root_material),
+      m_root_material_ref(root_material),
       m_name(root_material != nullptr ? root_material->name() : "Material"),
       m_color_format(color_format),
       m_depth_format(depth_format),
@@ -100,8 +96,6 @@ auto MaterialPass::resolvedAlphaCutoff() -> float {
 }
 
 auto MaterialPass::resolvedAlphaCutoffOf(MaterialRuntime& runtime) -> float {
-	// From the bytes the GPU will see, not the TOML: a value that failed to resolve looks exactly like one
-	// authored to zero, and here that decides whether a cutout renders as solid quads
 	const auto& blobs = runtime.uniformBlobs();
 	for (const auto& binding : runtime.reflection().bindings) {
 		if (binding.kind != ShaderBindingKind::uniform_buffer || !binding.engine_semantic.empty()) {
@@ -158,7 +152,7 @@ void MaterialPass::rebuildPipeline() {
 	config.depth_test = settings.depth_test;
 	config.depth_write = settings.depth_write;
 
-	// eLessOrEqual, not eLess: the prepass writes the exact depth this pass produces, so a strict test
+	// eLessOrEqual, the prepass writes the exact depth this pass produces, so a strict test
 	// rejects every prepassed fragment and the scene renders empty
 	config.depth_compare = vk::CompareOp::eLessOrEqual;
 	config.cull_mode = toCullMode(settings.cull_mode);
@@ -172,16 +166,14 @@ void MaterialPass::rebuildPipeline() {
 		config.fragment_entry = "fragmentMainCutout";
 	}
 
-	// Only opaque geometry owns the surface at a pixel. A transparent fragment sits in front of what a
-	// screen-space consumer wants, leaving the two buffers describing different geometry
+	// Only opaque geometry owns the surface at a pixel
 	config.write_extra_color = config.blend_preset == VulkanPipeline::BlendPreset::none;
 
 	m_pipeline.rebuild(*m_core, config);
 
 	TOAST_INFO("Render", "MaterialPass '{}' pipeline ready: {}", m_name, m_pipeline.isReady());
 
-	// What the .tmat resolved to, read back from the bytes the GPU will see. A parameter that failed to
-	// resolve is otherwise indistinguishable from one authored to zero
+	// What the .tmat resolved to
 	{
 		const auto& blobs = m_root_runtime.uniformBlobs();
 		for (const auto& binding : m_root_runtime.reflection().bindings) {
@@ -225,8 +217,7 @@ auto MaterialPass::ensureInstanceResources(assets::Material* material) -> Instan
 
 	res.runtime = std::make_unique<MaterialRuntime>(*m_core, material);
 
-	// The variant comes from the *root* material but alphaCutoff is per instance, so an instance raising it
-	// under a zero root draws without the discard and renders as solid quads
+	// The variant comes from the root material but alphaCutoff is per instance
 	if (!m_uses_cutout && resolvedAlphaCutoffOf(*res.runtime) > 0.0f) {
 		TOAST_WARN(
 		    "Render",
@@ -385,7 +376,7 @@ void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t 
 		return;
 	}
 
-	// Before the bind, not after: the set is consumed by the draws below
+	// Before the bind
 	m_scene_sets.updateTlas(frame_index);
 
 	cmd.bindDescriptorSets(
@@ -398,7 +389,7 @@ void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t 
 
 	assets::Material* bound_material = nullptr;
 
-	// No joints means no posed slice, so it draws bind pose with its real transform
+	// No joints means no posed slice, so draws bind pose with real transform
 	const vk::Buffer posed_vertices = VulkanRenderer::instance->getPosedVertexBuffer(frame_index);
 	const auto posed_offset_of = [&](const VulkanRenderer::MeshInstanceProxy& proxy) {
 		return posed_vertices ? proxy.posed_vertex_offset : VulkanRenderer::MeshInstanceProxy::k_no_posed_vertices;
@@ -408,15 +399,14 @@ void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t 
 		drawInstance(cmd, frame_index, proxy, posed_vertices, posed_offset_of(proxy), &bound_material, instance_count);
 	};
 
-	// Only this material's slice, from the ranges tick() recorded while sorting - scanning the whole list per
-	// pass is quadratic in (materials x instances)
+	// Only this material slice, from the ranges tick() recorded while sorting
 	const auto range =
 	    std::ranges::find_if(frame->material_ranges, [this](const auto& r) { return r.root_material == m_root_material; });
 	if (range == frame->material_ranges.end()) {
 		return;
 	}
 
-	// A member so the capacity survives - Bistro registers a pass per material, each allocating per frame
+	// A member so the capacity survives
 	std::vector<uint32_t>& order = m_draw_order;
 	order.clear();
 	order.reserve(range->end - range->begin);
@@ -439,8 +429,7 @@ void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t 
 		std::ranges::sort(order, [&](uint32_t a, uint32_t b) { return distance_squared(a) > distance_squared(b); });
 	}
 
-	// Collapses a run of adjacent proxies into one instanced draw; tick() sorted the list to make those runs
-	// exist. Blended never batches - the depth sort broke adjacency, so merging would reorder them
+	// Collapses a run of adjacent proxies into one instanced draw
 	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_pipeline.getPipeline());
 
 	const bool allow_batching = !isBlended() && m_root_runtime.instanceBaseOffset().has_value();
@@ -452,7 +441,6 @@ void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t 
 			continue;
 		}
 
-		// A posed proxy owns a distinct slice, so no two share a vertex binding and none can share a draw
 		const bool posed = posed_offset_of(proxy) != VulkanRenderer::MeshInstanceProxy::k_no_posed_vertices;
 
 		uint32_t run = 1;
@@ -482,8 +470,7 @@ void MaterialPass::drawInstance(
 		return;
 	}
 
-	// Null means bind unconditionally, which the interleaved blended path needs: another pass may have
-	// recorded between two of our draws and left its own sets bound
+	// Null means bind unconditionally
 	if (bound_material == nullptr || *bound_material != res->runtime->material()) {
 		updateInstanceDescriptors(*res, frame_index);
 
@@ -500,8 +487,6 @@ void MaterialPass::drawInstance(
 		}
 	}
 
-	// `instanceBase` means the transform comes from the instance buffer, so only the run's start is pushed;
-	// `model`/`jointOffset` are patched per draw. A member, not a local - this runs once per draw
 	const auto& blob = res->runtime->pushBlob();
 	m_push_scratch.assign(blob.begin(), blob.end());
 	std::vector<std::byte>& push_data = m_push_scratch;
@@ -514,8 +499,7 @@ void MaterialPass::drawInstance(
 		    model_offset.has_value() && *model_offset + sizeof(glm::mat4) <= push_data.size()) {
 			std::memcpy(push_data.data() + *model_offset, &proxy.model, sizeof(glm::mat4));
 		}
-		// Still patched for a custom shader that declares it - leaving a declared field unwritten is worse
-		// than writing one it may ignore
+
 		if (const auto joint_offset_offset = res->runtime->jointOffsetOffset();
 		    joint_offset_offset.has_value() && *joint_offset_offset + sizeof(uint32_t) <= push_data.size()) {
 			std::memcpy(push_data.data() + *joint_offset_offset, &proxy.joint_offset, sizeof(uint32_t));
@@ -542,12 +526,9 @@ void MaterialPass::recordInstance(vk::CommandBuffer cmd, uint32_t frame_index, c
 		return;
 	}
 
-	// A blended pass never goes through record(), so this is its only chance at the frame's TLAS. A no-op
-	// once the handle is unchanged, which it is after the first instance
 	m_scene_sets.updateTlas(frame_index);
 
-	// Rebound per instance: the renderer interleaves these across materials for one global back-to-front
-	// order, so nothing this pass bound last time is still bound
+	// Rebound per instance
 	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_pipeline.getPipeline());
 	cmd.bindDescriptorSets(
 	    vk::PipelineBindPoint::eGraphics,

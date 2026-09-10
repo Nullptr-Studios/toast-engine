@@ -27,7 +27,7 @@ class [[ToastNode, Icon("Camera")]] TOAST_API Camera : public Node3D {
 public:
 	Camera() = default;
 
-	~Camera() override = default;
+	~Camera() override;
 
 public:
 	[[Reflect, Unit("°")]]
@@ -62,6 +62,8 @@ private:
 
 	[[Reflect, ReadOnly]]
 	bool m_is_active = false;
+
+	bool m_registered_proxy = false;
 
 	friend class INodeOwner;
 };

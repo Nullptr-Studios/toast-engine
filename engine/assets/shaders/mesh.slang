@@ -242,7 +242,10 @@ float4 shadeSurface(VSOutput input, inout float4 outNormalRoughness, inout float
     // The alpha test lives in fragmentMainCutout, not here: a reachable `discard` forces the whole pipeline
     // onto late-Z, so in the shared body every material paid for a branch almost none of them take
 
-    float3 albedo = albedoSample.rgb * gMaterial.tint.rgb;
+    // Vertex colour is the third albedo input, alongside the map and the material tint. It is what lets a
+    // model painted in Blender carry per-part colour without splitting into one mesh per material.
+    // Meshes written before .tmesh v7 left the field zeroed, so the reader forces those to white
+    float3 albedo = albedoSample.rgb * gMaterial.tint.rgb * input.color;
     float metallic = clamp(gMaterial.metallic * channelOf(gMetallicMap.Sample(input.uv), gMaterial.metallicChannel), 0.0, 1.0);
     float roughness = clamp(gMaterial.roughness * channelOf(gRoughnessMap.Sample(input.uv), gMaterial.roughnessChannel), 0.045, 1.0);
     float occlusion = lerp(

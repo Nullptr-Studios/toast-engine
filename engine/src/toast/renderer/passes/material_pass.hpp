@@ -11,8 +11,6 @@
 #include "../scene_descriptor_set.hpp"
 #include "../shader_layout.hpp"
 #include "../vulkan_pipeline.hpp"
-// For MeshInstanceProxy. Not a cycle - vulkan_renderer.hpp only forward-declares MaterialPass - and without
-// it this header compiled only when something else in the same unity TU had already included it
 #include "../vulkan_renderer.hpp"
 
 #include <atomic>
@@ -44,9 +42,7 @@ public:
 
 	void record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) override;
 
-	/// @brief Records one instance, for the renderer's global blended ordering
-	///
-	/// record() orders a pass only against itself, so interleaved transparents cannot both be right
+	/// @brief Records one instance
 	void recordInstance(vk::CommandBuffer cmd, uint32_t frame_index, const VulkanRenderer::MeshInstanceProxy& proxy);
 
 	[[nodiscard]]
@@ -54,7 +50,7 @@ public:
 		return m_root_material;
 	}
 
-	/// Schedules a full pipeline + descriptor rebuild at the start of the next record()
+	/// Schedules a full pipeline and descriptor rebuild at the start of the next record
 	void markShadersDirty() { m_rebuild_pending.store(true, std::memory_order_release); }
 
 	/// Schedules a re-bake of parameter values
@@ -65,37 +61,33 @@ public:
 		return m_pipeline.isReady();
 	}
 
-	/// @returns true when this pass built the alpha-cutout variant. The depth prepass skips these - their
-	///          silhouette comes from a discard, and a depth-only pipeline has no fragment stage
+	/// @returns true when this pass built the alpha-cutout variant
 	[[nodiscard]]
 	auto usesCutout() const noexcept -> bool {
 		return m_uses_cutout;
 	}
 
-	/// @returns true when this pass blends rather than writing opaque coverage. Opaque records first, or a
-	///          blended surface composites before the geometry behind it exists
+	/// @returns true when this pass blends rather than writing opaque coverage
 	[[nodiscard]]
 	auto isBlended() const -> bool {
 		return m_root_material != nullptr && m_root_material->settings().blend_mode != assets::BlendMode::opaque;
 	}
 
 private:
-	/// @returns the root material's resolved alphaCutoff, read back from the uniform blob
+	/// @returns the root material resolved alphaCutoff
 	[[nodiscard]]
 	auto resolvedAlphaCutoff() -> float;
 
-	/// @returns @p runtime's resolved alphaCutoff; 0 when it declares none. Non-const because the runtime
-	///          resolves its blobs lazily
+	/// @returns @p runtime resolved alphaCutoff, 0 when it declares none
 	[[nodiscard]]
 	static auto resolvedAlphaCutoffOf(MaterialRuntime& runtime) -> float;
 
-	/// True when this pass built the cutout pipeline variant, which forfeits early-Z
 	bool m_uses_cutout = false;
 
-	/// @brief Binds this instance's material resources and issues its draw
-	/// @param posed_vertex_offset Slice of @p posed_vertices, or k_no_posed_vertices for the bind pose
-	/// @param bound_material Caller's currently-bound cache; null binds unconditionally
-	/// @param instance_count Proxies in this run, sharing a mesh and material in consecutive slots
+	/// @brief Binds this instance material resources and issues its draw
+	/// @param posed_vertex_offset Slice of @p posed_vertices
+	/// @param bound_material Caller's currently-bound cache
+	/// @param instance_count Proxies in this run
 	void drawInstance(
 	    vk::CommandBuffer cmd, uint32_t frame_index, const VulkanRenderer::MeshInstanceProxy& proxy, vk::Buffer posed_vertices,
 	    uint32_t posed_vertex_offset, assets::Material** bound_material, uint32_t instance_count = 1
@@ -122,6 +114,9 @@ private:
 
 	const VulkanCore* m_core = nullptr;
 	assets::Material* m_root_material = nullptr;
+
+	/// @brief Keeps the material alive for as long as this pass exists
+	assets::Handle<assets::Material> m_root_material_ref;
 	std::string m_name;
 
 	vk::Format m_color_format = vk::Format::eUndefined;

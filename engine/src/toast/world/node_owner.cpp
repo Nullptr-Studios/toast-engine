@@ -196,15 +196,32 @@ auto INodeOwner::activeCamera() noexcept -> Box<Camera>& {
 	return m_active_camera;
 }
 
+INodeOwner::INodeOwner() = default;
+INodeOwner::~INodeOwner() = default;
+
 auto INodeOwner::activeRenderCamera() noexcept -> Camera* {
 	if (m_has_camera_controller) {
-		if (!m_active_camera_controller.exists()) {
-			return nullptr;
+		if (m_active_camera_controller.exists()) {
+			if (Box<Camera> camera = m_active_camera_controller->getActiveCamera(); camera.exists()) {
+				return &*camera;
+			}
 		}
-		Box<Camera> camera = m_active_camera_controller->getActiveCamera();
-		return camera.exists() ? &*camera : nullptr;
+	} else if (m_active_camera.exists()) {
+		return &*m_active_camera;
 	}
-	return m_active_camera.exists() ? &*m_active_camera : nullptr;
+
+	// Nothing in the scene to look through. Handing back null makes every consumer carry a no-camera path,
+	// and the one in the renderer only ever existed on paper while the engine leaked a bootstrap camera to
+	// keep it non-null. A placeholder at the origin renders the scene from 0,0,0 instead of nothing
+	if (m_is_shutting_down) {
+		return nullptr;
+	}
+	if (!m_fallback_camera) {
+		m_fallback_camera = std::make_unique<Camera>();
+		m_fallback_camera->syncTransform();
+		TOAST_WARN("World", "No camera in the scene; rendering from a placeholder at the origin");
+	}
+	return m_fallback_camera.get();
 }
 
 namespace {

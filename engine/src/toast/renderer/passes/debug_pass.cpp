@@ -10,6 +10,7 @@
 #include "../skinned_blas_pool.hpp"
 #include "../vulkan_core.hpp"
 #include "../vulkan_debug.hpp"
+#include "../vulkan_mesh.hpp"
 #include "../vulkan_renderer.hpp"
 #include "../vulkan_texture.hpp"
 #include "cluster_lighting_pass.hpp"
@@ -253,6 +254,31 @@ DebugPass::DebugPass(
 		m_gizmo_pipeline.rebuild(core, config);
 	}
 
+	// Editor furniture meshes
+	if (shape_shader) {
+		VulkanPipeline::Config config;
+		config.pipeline_type = VulkanPipeline::PipelineType::graphics;
+		config.debug_name = "DebugPass Mesh";
+		config.color_format = color_format;
+		config.depth_format = depth_format;
+		config.extent = extent;
+		config.shader_spirv = shape_shader->spirv;
+		config.pipeline_layout = *m_shader_layout.getPipelineLayout();
+		config.vertex_entry = "vertexMesh";
+		config.fragment_entry = "fragmentMesh";
+		config.vertex_bindings = {vertexBindingDescription()};
+		// Position, normal and colour out of the full renderer::Vertex stream
+		const auto mesh_attributes = vertexAttributeDescriptions();
+		config.vertex_attributes = {mesh_attributes[0], mesh_attributes[1], mesh_attributes[4]};
+		config.topology = vk::PrimitiveTopology::eTriangleList;
+		// Backface culled and depth tested, unlike the flat gizmos
+		config.cull_mode = vk::CullModeFlagBits::eBack;
+		config.depth_test = true;
+		config.depth_write = true;
+		config.blend_enable = false;
+		m_mesh_pipeline.rebuild(core, config);
+	}
+
 	createResources(core);
 	createBillboardResources(core, color_format, depth_format, extent);
 	initImGui(core, color_format, depth_format);
@@ -267,9 +293,7 @@ DebugPass::~DebugPass() {
 
 namespace {
 
-/// @brief Maps the SDL-keycode encoding used by event::WindowKey (a printable codepoint, or
-/// (1<<30)|scancode for non-printable keys) to the small subset of ImGuiKey this engine's C# side actually
-/// forwards (see ViewportControl.axaml.cs's MapKey())
+/// @brief Maps the SDL-keycode encoding used by event::WindowKey
 auto sdlKeyToImGuiKey(int32_t key) -> ImGuiKey {
 	constexpr int32_t k_scancode_mask = 1 << 30;
 
@@ -321,8 +345,7 @@ auto sdlKeyToImGuiKey(int32_t key) -> ImGuiKey {
 	return ImGuiKey_None;
 }
 
-/// @brief Cluster light-count -> color ramp for the ImGui cluster-grid overlay - mirrors
-/// clusterHeatmapColor() in mesh.slang exactly, so the overlay and the per-pixel shader heatmap agree
+/// @brief Cluster light-count, color ramp for the ImGui cluster-grid overlay
 auto clusterHeatmapColorImGui(uint32_t light_count) -> ImVec4 {
 	constexpr float k_heatmap_max_lights = 8.0f;
 	const float t = std::clamp(static_cast<float>(light_count) / k_heatmap_max_lights, 0.0f, 1.0f);
@@ -395,12 +418,9 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				if (out_of_order > 0) {
 					ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Frames out of order: %u", out_of_order);
 				}
-				// Dropped frames are the usual explanation for motion that looks wrong: the main thread built
-				// them, the render thread never got to them, and the movement in between was never drawn
+
 				ImGui::TextDisabled("Frames dropped: %u", dropped);
 
-				// The counter that catches judder the other two cannot - simulation advanced, nothing was
-				// rendered from it, and the motion was sampled unevenly as a result
 				const uint32_t skipped = VulkanRenderer::instance->getSkippedBuildCount();
 				if (skipped > 0) {
 					ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Ticks with no frame built: %u", skipped);
@@ -431,9 +451,6 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 
 			ImGui::TextDisabled("Depth prepass: %u instances", VulkanRenderer::instance->getPrepassDrawnCount());
 
-			// Both numbers used to be much larger: one draw per caster per view, and one render pass per atlas
-			// layer whether a light occupied it or not. Instancing, multiview and the idle-layer skip only show
-			// up here - the image is meant to be identical
 			if (const auto* shadows = VulkanRenderer::instance->getShadowPass(); shadows != nullptr) {
 				ImGui::TextDisabled("Shadow pass: %u draws, %u scopes", shadows->getDrawCount(), shadows->getPassCount());
 			}
@@ -447,9 +464,7 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				);
 			}
 
-			// Says whether there is anything to trace at all. A traced view that looks identical to the raster
-			// one is ambiguous - it could mean the shadows agree, or that the TLAS is empty and every ray
-			// misses. This distinguishes them
+			// Says whether there is anything to trace at all
 			if (auto* rt = VulkanRenderer::instance->getRayTracingScene(); rt != nullptr) {
 				const uint32_t traced = rt->getInstanceCount();
 				if (traced == 0) {
@@ -458,9 +473,6 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 					ImGui::TextDisabled("TLAS: %u instances", traced);
 				}
 
-				// The real integration, as opposed to the two traced debug views: with this on, mesh.slang traces
-				// every light's shadow instead of sampling a map. It is the only way a point or spot light gets a
-				// shadow beyond the handful the atlas has slots for
 				bool trace_all_lights = VulkanRenderer::instance->tracedShadowsEnabled();
 				if (ImGui::Checkbox("Traced shadows (all lights)", &trace_all_lights)) {
 					VulkanRenderer::instance->setTracedShadowsEnabled(trace_all_lights);
@@ -483,15 +495,12 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 
 			ImGui::Separator();
 
-			// The generated sky is the scene's only light until something else is added, and its brightness is
-			// the difference between an environment that lights a scene and one that merely tints it. Editing
-			// it here re-runs the precompute, so the skybox and both convolutions move together
+			// The generated sky is the scene's only light until something else is added
 			if (auto* environment = VulkanRenderer::instance->getEnvironmentPassMutable(); environment != nullptr) {
 				if (m_sky_intensity_ui < 0.0f) {
 					m_sky_intensity_ui = environment->getSkyIntensity();
 				}
-				// A URI rather than a file picker: ImGui has no browser and the editor's renderer-settings
-				// window does not exist yet. Typing "project://sky.hdr" is enough to prove the path end to end
+				// A URI rather than a file picker
 				ImGui::InputText("Environment HDR", m_environment_uri_ui.data(), m_environment_uri_ui.size());
 				ImGui::SameLine();
 				if (ImGui::Button("Load")) {
@@ -505,16 +514,14 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				}
 
 				ImGui::SliderFloat("Sky intensity", &m_sky_intensity_ui, 0.0f, 20.0f, "%.2f");
-				// Committed on release, not per frame: a rebuild reconvolves the whole environment, and doing
-				// that on every frame of a drag would stutter for as long as the slider is held
+
 				if (ImGui::IsItemDeactivatedAfterEdit()) {
 					environment->setSkyIntensity(m_sky_intensity_ui);
 				}
 			}
 
 			// What the shader actually received, not what the node holds. A probe that contributes nothing is
-			// indistinguishable from no probe from the viewport, and the usual cause is extents authored in the
-			// wrong units - so the numbers being fed in are the thing worth showing
+			// indistinguishable from no probe from the viewport
 			{
 				const uint32_t probe_count = frame->frame_data.reflection_probe_count_pad.x;
 				ImGui::Text("Reflection probes: %u", probe_count);
@@ -562,10 +569,7 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				ImGui::TextDisabled("(6 frames per probe)");
 			}
 
-			// Read-only: these come from whichever PostProcessVolume the camera is inside, blended fresh every
-			// tick, so a value poked in here would be overwritten before the next frame. Shown because SSR's
-			// coverage is entirely a function of these four numbers - a correct-but-sparse result and a
-			// threshold set too tight look identical without them. Edit them on the volume
+			// Read-only
 			if (ImGui::CollapsingHeader("Screen-space reflections")) {
 				const auto& ssr = frame->post_process.ssr;
 				ImGui::TextDisabled("intensity %.2f, max roughness %.2f", ssr.intensity, ssr.max_roughness);
@@ -574,8 +578,6 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				ImGui::TextDisabled("Ray reach: %.1f m", ssr.stride * static_cast<float>(ssr.max_steps));
 			}
 
-			// Kept next to the reflection bake because they share the staging cube and are sequenced against
-			// each other - starting one while the other runs simply queues it, it does not interleave
 			if (const uint32_t irradiance_probes = VulkanRenderer::instance->getIrradianceProbeCount(); irradiance_probes > 0) {
 				if (ImGui::Button("Bake irradiance volumes")) {
 					VulkanRenderer::instance->requestIrradianceBake();
@@ -588,7 +590,6 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 				}
 			}
 
-			// Read-only for the same reason as the SSR block above - edit these on the PostProcessVolume
 			if (ImGui::CollapsingHeader("Ambient occlusion")) {
 				const auto& ssao = frame->post_process.ssao;
 				ImGui::TextDisabled("radius %.2f m, strength %.2f", ssao.radius, ssao.strength);
@@ -604,9 +605,7 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 		}
 		ImGui::End();
 
-		// Cluster-heatmap overlay, the 16x9 XY tile grid from clustered_lighting_constants.hpp, each cell
-		// filled by its worst-case light count across all Z slices and labelled with the number. The shader
-		// heatmap already colour-codes per pixel; this adds the grid and exact counts on top
+		// Cluster-heatmap overlay
 		if (frame->render_mode == 1 && m_cluster_lighting_pass != nullptr) {
 			const auto counts = m_cluster_lighting_pass->getClusterLightGridCounts(frame_index);
 			if (!counts.empty()) {
@@ -671,8 +670,7 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 		return;
 	}
 
-	// Nothing here belongs in a reflection probe. Light icons, gizmos and the probe volumes themselves are
-	// editor furniture, and a probe that captured them would light the scene with its own wireframe
+	// Nothing here belongs in a reflection probe
 	if (frame->probe_capture_index >= 0) {
 		return;
 	}
@@ -690,9 +688,6 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 	if (line_vertex_count > 0 && m_line_pipeline.isReady()) {
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_line_pipeline.getPipeline());
 
-		// glm::mat4 has no default member initializer and GLM_FORCE_CTOR_INIT isn't defined anywhere in this
-		// project, so a default-constructed DrawPushConstants{} leaves model uninitialized, not identity -
-		// must set it explicitly. Line vertices are already in world space, so identity is what we want
 		DrawPushConstants pc {};
 		pc.model = glm::mat4(1.0f);
 		cmd.pushConstants(
@@ -725,6 +720,36 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 			    &pc
 			);
 			cmd.draw(m_gizmo_vertex_count, 1, 0, 0);
+		}
+	}
+
+	// Editor meshes
+	if (!frame->debug_meshes.empty() && m_mesh_pipeline.isReady()) {
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_mesh_pipeline.getPipeline());
+
+		for (const auto& entry : frame->debug_meshes) {
+			if (!entry.mesh.hasValue()) {
+				continue;
+			}
+
+			const auto& gpu_mesh = entry.mesh->gpuMesh();
+			if (!gpu_mesh.isReady() || gpu_mesh.getIndexCount() == 0) {
+				continue;
+			}
+
+			DrawPushConstants pc {};
+			pc.model = entry.model;
+			pc.tint = entry.tint;
+			cmd.pushConstants(
+			    *m_shader_layout.getPipelineLayout(),
+			    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+			    0,
+			    sizeof(DrawPushConstants),
+			    &pc
+			);
+
+			gpu_mesh.bind(cmd);
+			cmd.drawIndexed(gpu_mesh.getIndexCount(), 1, 0, 0, 0);
 		}
 	}
 
@@ -766,8 +791,7 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 				DrawPushConstants pc {};
 				pc.model = frame->transform_gizmo.model;
 
-				// Scale feedback: stretch just the dragged handle's own local geometry by the live factor,
-				// so it visibly grows/shrinks with the mouse instead of sitting there static during the drag
+				// Scale feedback
 				if (frame->transform_gizmo.tool == toast::GizmoTool::scale && is_active) {
 					glm::vec3 stretch {1.0f};
 					if (handle == toast::GizmoHandle::center) {
@@ -780,8 +804,7 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 				}
 
 				pc.tint = highlighted ? k_highlight : range.base_color;
-				// Stage flags must cover every stage the layout's overlapping range declares, not just the
-				// stages that happen to read the data - ShaderLayout reflects this range as vertex|fragment
+				// Stage flags must cover every stage the layout
 				cmd.pushConstants(
 				    *m_shader_layout.getPipelineLayout(),
 				    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
@@ -811,7 +834,7 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 			}
 			const auto& gpu_texture = billboard.texture->gpuTexture();
 			if (!gpu_texture.isReady() || !gpu_texture.getView()) {
-				continue;    // still uploading; it'll show up on a later frame
+				continue;    // still uploading
 			}
 
 			const vk::DescriptorSet texture_set = billboardTextureSet(core, gpu_texture.getView());
@@ -830,13 +853,12 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 			    layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(BillboardPushConstants), &pc
 			);
 
-			// Six vertices, no vertex buffer - debug_billboard.slang builds the quad from SV_VertexID
+			// Six vertices
 			cmd.draw(6, 1, 0, 0);
 		}
 	}
 
-	// ImGui draws last, always on top - shares this pass's already-open dynamic rendering scope, no
-	// separate begin/end needed
+	// ImGui draws last, always on top
 	if (m_imgui_ready) {
 		ImDrawData* draw_data = ImGui::GetDrawData();
 		if (draw_data != nullptr) {
@@ -908,13 +930,10 @@ void DebugPass::createBillboardResources(
 	config.extent = extent;
 	config.shader_spirv = shader->spirv;
 	config.pipeline_layout = *m_billboard_layout.getPipelineLayout();
-	// The shader generates its own quad from SV_VertexID, so there's deliberately no vertex binding here -
-	// VulkanPipeline treats an empty attribute list as "no vertex input"
+	// The shader generates its own quad from SV_VertexIDt
 	config.topology = vk::PrimitiveTopology::eTriangleList;
 	config.cull_mode = vk::CullModeFlagBits::eNone;
-	// Depth-tested so icons sit correctly in the scene and get hidden behind geometry, but not depth-writing:
-	// they're screen-aligned overlays, and letting them occlude real geometry would be worse than the
-	// blend-order imprecision of leaving depth alone
+	// Depth-tested so icons sit correctly in the scene and get hidden behind geometry
 	config.depth_test = true;
 	config.depth_write = false;
 	config.blend_preset = VulkanPipeline::BlendPreset::alpha;
@@ -989,8 +1008,7 @@ void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_for
 	io.BackendPlatformName = "toast_engine (manual input feed)";
 	io.BackendRendererName = "imgui_impl_vulkan";
 
-	// No OS cursor/clipboard integration yet (input comes from Avalonia via events, not a platform backend) -
-	// keep ImGui from trying to touch either
+	// FIXME: No OS cursor/clipboard integration yet
 	io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 	io.SetClipboardTextFn = nullptr;
 	io.GetClipboardTextFn = nullptr;
@@ -999,9 +1017,7 @@ void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_for
 	vk::PipelineRenderingCreateInfo rendering_ci {};
 	rendering_ci.colorAttachmentCount = 1;
 	rendering_ci.pColorAttachmentFormats = color_formats.data();
-	// Must match the depth attachment of the scope this pass shares with the material draws, even though
-	// ImGui never touches depth: every pipeline inside a scope with a depth attachment has to declare a
-	// matching depthAttachmentFormat, or validation flags every draw
+	// Must match the depth attachment of the scope this pass shares with the material draws
 	rendering_ci.depthAttachmentFormat = depth_format;
 
 	ImGui_ImplVulkan_InitInfo init_info {};
@@ -1085,7 +1101,7 @@ void DebugPass::createTranslateGizmoGeometry(const renderer::VulkanCore& core) {
 		record_handle(k_axis_handles[axis], start, k_axis_colors[axis]);
 	}
 
-	// Plane handles: XY/YZ/XZ, offset from the origin along their own two axes
+	// Plane handles XY/YZ/XZ, offset from the origin along their own two axes
 	constexpr std::array<toast::GizmoHandle, 3> plane_handles {
 	  toast::GizmoHandle::plane_xy, toast::GizmoHandle::plane_yz, toast::GizmoHandle::plane_xz
 	};
@@ -1164,7 +1180,7 @@ void DebugPass::createScaleGizmoGeometry(const renderer::VulkanCore& core) {
 		const size_t start = vertices.size();
 		appendShaftAlongAxis(vertices, axis, k_shaft_length, k_shaft_half_size, k_white);
 
-		// cube head, sitting right past the shaft tip - the scale-tool equivalent of translate's arrowhead
+		// cube head
 		glm::vec3 min(-k_scale_head_half_size);
 		glm::vec3 max(k_scale_head_half_size);
 		min[axis] = k_shaft_length;

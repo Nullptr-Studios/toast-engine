@@ -33,6 +33,7 @@
 #include <string_view>
 #include <thread>
 #include <toast/assets/core_types.hpp>
+#include <toast/assets/mesh.hpp>
 #include <toast/assets/texture.hpp>
 #include <toast/events/event.inl>
 #include <toast/events/listener.hpp>
@@ -335,6 +336,14 @@ public:
 		assets::Handle<assets::Texture> texture;
 	};
 
+	/// @brief An editor-only mesh drawn as debug draw
+
+	struct DebugMesh {
+		glm::mat4 model {1.0f};
+		glm::vec4 tint {1.0f};
+		assets::Handle<assets::Mesh> mesh;
+	};
+
 	/// @brief Editor selection's active gizmo
 	struct TransformGizmoDraw {
 		bool visible = false;
@@ -378,6 +387,9 @@ public:
 		FrameUBO frame_data;
 
 		std::vector<MeshInstanceProxy> mesh_instances;
+
+		/// @brief Keeps every asset this frame points at alive until the frame has been rendered
+		std::vector<assets::HandleBase> asset_refs;
 
 		// PointLight/Spotlight entries; inert until Stage 3b's clustered light culling consumes it
 		std::vector<GpuLight> lights;
@@ -444,6 +456,7 @@ public:
 		std::vector<DebugVertex> debug_line_vertices;    // consecutive pairs; each pair is one line segment
 		std::vector<glm::mat4> debug_gizmo_instances;    // one axis-triad gizmo draw per entry
 		std::vector<DebugBillboard> debug_billboards;    // one camera-facing textured quad per entry
+		std::vector<DebugMesh> debug_meshes;             // one editor furniture mesh per entry
 
 		TransformGizmoDraw transform_gizmo;
 
@@ -491,6 +504,11 @@ public:
 
 	/// @brief Unregisters @p node so it stops contributing to lighting
 	void unregisterLightNodeProxy(toast::Light* node);
+
+	/// @brief Registers a Camera so the editor can draw its body as furniture
+	void registerCameraNodeProxy(toast::Camera* node);
+
+	void unregisterCameraNodeProxy(toast::Camera* node);
 
 	/// @brief Registers @p node so it's collected into the per-frame probe list; no-op if already registered
 	void registerReflectionProbeProxy(toast::ReflectionProbe* node);
@@ -850,6 +868,9 @@ public:
 	[[nodiscard]]
 	void setActiveCamera(toast::Camera* camera);
 
+	/// @brief Drops @p camera if it is the one being rendered from
+	void forgetCamera(const toast::Camera* camera);
+
 	[[nodiscard]]
 	auto getCore() -> const VulkanCore& {
 		return *m_core;
@@ -1057,6 +1078,11 @@ private:
 		uint32_t slot = 0;
 	};
 
+	vk::raii::CommandPool m_command_pool = nullptr;
+	vk::raii::CommandPool m_transfer_command_pool = nullptr;
+	vk::raii::CommandPool m_compute_command_pool = nullptr;
+	vk::raii::DescriptorPool m_descriptor_pool = nullptr;
+
 	std::vector<UploadSlot> m_upload_slots;
 	uint32_t m_next_upload_slot = 0;
 
@@ -1165,15 +1191,7 @@ private:
 	std::vector<vk::ImageView> m_present_bound_views;
 	vk::ImageLayout m_depth_layout = vk::ImageLayout::eUndefined;
 
-	vk::raii::CommandPool m_command_pool = nullptr;
-
-	vk::raii::CommandPool m_transfer_command_pool = nullptr;
-
-	vk::raii::CommandPool m_compute_command_pool = nullptr;
-
 	TracyVkCtx m_tracy_vk_ctx = nullptr;    ///< Tracy GPU profiling context
-
-	vk::raii::DescriptorPool m_descriptor_pool = nullptr;
 
 	std::vector<FrameContext> m_frames;
 	std::vector<vk::raii::Semaphore> m_render_finished_per_image;
@@ -1237,6 +1255,9 @@ private:
 	std::mutex m_light_proxy_mutex;
 	std::vector<toast::Light*> m_light_proxy_nodes;
 
+	std::mutex m_camera_proxy_mutex;
+	std::vector<toast::Camera*> m_camera_proxy_nodes;
+
 	std::mutex m_reflection_probe_mutex;
 	std::vector<toast::ReflectionProbe*> m_reflection_probe_nodes;
 
@@ -1252,6 +1273,7 @@ private:
 	/// Clearing a member keeps the capacity, so a steady scene stops allocating here entirely
 	std::vector<toast::MeshNode*> m_tick_mesh_nodes;
 	std::vector<toast::Light*> m_tick_light_nodes;
+	std::vector<toast::Camera*> m_tick_camera_nodes;
 	std::vector<toast::ReflectionProbe*> m_tick_probe_nodes;
 	std::vector<std::pair<uint32_t, const toast::ReflectionProbe*>> m_tick_probes_by_distance;
 	std::vector<PunctualShadowCandidate> m_tick_spot_candidates;
@@ -1306,7 +1328,7 @@ private:
 	std::atomic<uint32_t> m_out_of_order_frames {0};
 	std::atomic<uint32_t> m_dropped_frames {0};
 
-	/// Main-thread ticks that advanced the simulation but never produced a render frame
+	/// Main thread ticks that advanced the simulation but never produced a render frame
 	std::atomic<uint32_t> m_skipped_builds {0};
 
 	/// @brief Render-thread frame interval statistics over a short rolling window, in milliseconds
@@ -1321,8 +1343,6 @@ private:
 	std::atomic_bool m_cull_debug_draw {false};
 
 	/// @brief Holds the culling frustum still while the camera keeps moving
-	///
-	/// Anything culled is off-screen by definition. Freeze, fly out, look back at what it dropped
 	std::atomic_bool m_cull_freeze {false};
 	glm::mat4 m_frozen_cull_view_projection {1.0f};
 	bool m_has_frozen_cull = false;
@@ -1382,6 +1402,12 @@ inline void setActiveCamera(toast::Camera* camera) {
 	VulkanRenderer::instance->setActiveCamera(camera);
 }
 
+inline void forgetCamera(const toast::Camera* camera) {
+	if (VulkanRenderer::instance != nullptr) {
+		VulkanRenderer::instance->forgetCamera(camera);
+	}
+}
+
 inline void registerMeshNodeProxy(toast::MeshNode* node) {
 	VulkanRenderer::instance->registerMeshNodeProxy(node);
 }
@@ -1396,6 +1422,17 @@ inline void registerLightNodeProxy(toast::Light* node) {
 
 inline void unregisterLightNodeProxy(toast::Light* node) {
 	VulkanRenderer::instance->unregisterLightNodeProxy(node);
+}
+
+inline void registerCameraNodeProxy(toast::Camera* node) {
+	VulkanRenderer::instance->registerCameraNodeProxy(node);
+}
+
+/// @brief Null-safe: a camera can outlive the renderer on the way down
+inline void unregisterCameraNodeProxy(toast::Camera* node) {
+	if (VulkanRenderer::instance != nullptr) {
+		VulkanRenderer::instance->unregisterCameraNodeProxy(node);
+	}
 }
 
 inline void registerReflectionProbeProxy(toast::ReflectionProbe* node) {
@@ -1442,7 +1479,7 @@ inline auto getRenderDocAPI() -> const RENDERDOC_API_1_6_0* {
 	return VulkanRenderer::instance->getRenderDocAPI();
 }
 
-//@WARN NOT THREAD SAFE
+/// @WARN NOT THREAD SAFE
 inline auto renderingFrame() -> const VulkanRenderer::RenderFrame* {
 	return VulkanRenderer::instance->renderingFrame();
 }
@@ -1533,11 +1570,26 @@ inline void debugDrawBillboard(
 	);
 }
 
+/// @brief Queues an editor debug mesh for this frame
+inline void debugDrawMesh(
+    const assets::Handle<assets::Mesh>& mesh, const glm::mat4& transform, glm::vec4 tint = {1.0f, 1.0f, 1.0f, 1.0f}
+) {
+	if (!mesh.hasValue() || !VulkanRenderer::instance->debugDrawEnabled()) {
+		return;
+	}
+	VulkanRenderer::instance->beginFrameBuild().debug_meshes.push_back(
+	    VulkanRenderer::DebugMesh {.model = transform, .tint = tint, .mesh = mesh}
+	);
+}
+
+/// @brief debugDrawMesh() overload taking a mesh asset UID, resolved on the calling thread
+void debugDrawMesh(toast::UID mesh, const glm::mat4& transform, glm::vec4 tint = {1.0f, 1.0f, 1.0f, 1.0f});
+
 /// @brief debugDrawBillboard() overload taking a texture asset UID, resolved on the calling thread
+/// @note will crash if UID does nt point to a texture
 void debugDrawBillboard(glm::vec3 world_position, float size, toast::UID texture, glm::vec4 tint = {1.0f, 1.0f, 1.0f, 1.0f});
 
-/// @brief Queues a simple arrow (shaft + a small V-shaped head) pointing from @p from to @p to - used for
-/// DirectionalLight, which has no meaningful radius/range to draw a bounded shape for
+/// @brief Queues an arrow pointing from @p from to @p
 inline void debugDrawArrow(glm::vec3 from, glm::vec3 to, glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f}, float head_size = 0.2f) {
 	debugDrawLine(from, to, color);
 
@@ -1555,19 +1607,18 @@ inline void debugDrawArrow(glm::vec3 from, glm::vec3 to, glm::vec4 color = {1.0f
 	debugDrawLine(to, back - side * head_size * 0.5f, color);
 }
 
-/// @brief Queues a wireframe cone: @p apex at the light, @p length its range, @p half_angle_degrees its
-///        outer cone angle
+/// @brief Queues a wireframe cone
 void debugDrawCone(
     glm::vec3 apex, glm::vec3 direction, float length, float half_angle_degrees, glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f},
     int segments = 24
 );
 
-/// @brief Queues a wireframe frustum for @p camera, from its own fov/near/far rather than by unprojecting
-void debugDrawFrustum(const toast::Camera& camera, float aspect, glm::vec4 color = {1.0f, 1.0f, 0.0f, 1.0f});
+/// @brief Queues a wireframe frustum for @p camera
+void debugDrawFrustum(
+    const toast::Camera& camera, float aspect, glm::vec4 color = {1.0f, 1.0f, 0.0f, 1.0f}, float far_override = 0.0f
+);
 
-/// @brief Draws the frustum of an arbitrary view-projection, by unprojecting its clip-space corners
-///
-/// Needs no live camera, so a frozen culling frustum can be drawn while the viewport camera has moved
+/// @brief Draws the frustum of an arbitrary view-projection
 void debugDrawFrustumFromMatrix(const glm::mat4& view_projection, glm::vec4 color = {1.0f, 1.0f, 0.0f, 1.0f});
 
 }    // namespace renderer

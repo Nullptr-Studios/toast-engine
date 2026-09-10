@@ -29,7 +29,8 @@ namespace _detail {
  * Layout: header, uint8 name length, name, vertex_count Vertex, index_count uint32,
  *         uint32 skin vertex count + that many SkinVertex (0 for a static mesh)
  */
-inline constexpr uint16_t mesh_format_version = 6;
+
+inline constexpr uint16_t mesh_format_version = 7;
 
 /**
  * @brief Fixed 16-byte .tmesh header

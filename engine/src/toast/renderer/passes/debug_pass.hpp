@@ -119,6 +119,8 @@ private:
 	vma::raii::Buffer m_scale_gizmo_vertex_buffer = nullptr;
 	std::array<GizmoHandleRange, 7> m_scale_gizmo_handles;
 
+	VulkanPipeline m_mesh_pipeline;
+
 	// Camera-facing textured icons, Separate shader/layout from the untextured debug
 	// shapes above, since those have no set 1 and no sampler
 	struct BillboardPushConstants {

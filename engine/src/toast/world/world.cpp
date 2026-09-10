@@ -1084,6 +1084,14 @@ auto WorldTestAccess::createWorld() -> WorldPtr {
 	return WorldPtr(new World());
 }
 
+auto WorldTestAccess::activeRenderCamera(World& world) -> Camera* {
+	return world.activeRenderCamera();
+}
+
+auto WorldTestAccess::hasActiveCamera(World& world) -> bool {
+	return world.activeCamera().exists();
+}
+
 auto WorldTestAccess::createNode(World& world, std::string_view name, NodeState state) -> Box<Node> {
 	auto node = world.nodeAllocation();
 	node->m_name = name;

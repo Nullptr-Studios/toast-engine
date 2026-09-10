@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string_view>
 #include <toast/assets/prefab.hpp>
@@ -34,8 +35,8 @@ enum class NodeOwnerParticipation : uint8_t {
 
 class TOAST_API INodeOwner {
 public:
-	INodeOwner() = default;
-	virtual ~INodeOwner() = default;
+	INodeOwner();
+	virtual ~INodeOwner();
 	virtual auto name() -> std::string = 0;
 
 	virtual void tick() = 0;
@@ -140,6 +141,7 @@ protected:
 
 	[[nodiscard]]
 	auto activeCamera() noexcept -> Box<Camera>&;
+
 	[[nodiscard]]
 	auto activeRenderCamera() noexcept -> Camera*;
 	virtual void applyActiveCamera() = 0;
@@ -158,6 +160,8 @@ private:
 	friend class CameraController;
 
 	std::unordered_set<_detail::ControlBox> nodes;
+
+	std::unique_ptr<Camera> m_fallback_camera;
 	Box<Camera> m_active_camera;
 	Box<CameraController> m_active_camera_controller;
 	bool m_has_camera_controller = false;

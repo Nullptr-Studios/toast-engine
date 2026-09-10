@@ -4,7 +4,18 @@
 
 #include "camera.hpp"
 
+#include <toast/renderer/vulkan_renderer.hpp>
+
 namespace toast {
+
+Camera::~Camera() {
+	if (m_registered_proxy) {
+		renderer::unregisterCameraNodeProxy(this);
+		m_registered_proxy = false;
+	}
+	renderer::forgetCamera(this);
+}
+
 void Camera::setActiveCamera() {
 	if (m_owner) {
 		m_owner->activateCamera(*this);
@@ -13,9 +24,16 @@ void Camera::setActiveCamera() {
 
 void Camera::begin() {
 	setActiveCamera();
+
+	renderer::registerCameraNodeProxy(this);
+	m_registered_proxy = true;
 }
 
 void Camera::end() {
+	if (m_registered_proxy) {
+		renderer::unregisterCameraNodeProxy(this);
+		m_registered_proxy = false;
+	}
 	if (m_owner) {
 		m_owner->deactivateCamera(*this);
 	}
@@ -37,20 +55,8 @@ auto Camera::getView() const -> glm::mat4 {
 }
 
 auto Camera::getProjection(float aspect) const -> glm::mat4 {
-	// _ZO, not plain glm::perspective. GLM defaults to OpenGL's [-1,1] depth range, and Vulkan's clip volume
-	// is [0,1] - so the default maps the near plane to -1 and lets the hardware clip everything in front of
-	// ndc z = 0, which for a 1cm near plane is roughly the first 2cm of the view. It also throws away half the
-	// depth buffer's precision, since only the [0,1] half of the emitted range is ever stored
-	//
-	// Every other projection in the engine already says _ZO explicitly - the shadow cascades, the punctual
-	// shadow faces and the probe captures. This was the one that did not, which made the camera the odd one
-	// out rather than the rule. screenPointToRay() below already assumed this convention: it unprojects
-	// z = 0 and calls the result the near point, which is only true here
 	glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(fov), aspect, near_plane, far_plane);
 
-	// Vulkan's framebuffer y runs down the screen where GL's runs up, so the projection is flipped once here
-	// rather than every shader having to remember. Note this is the *only* place it happens - a cube face
-	// capture deliberately does not flip, because its texel rows run along the face's own up vector
 	proj[1][1] *= -1.0f;
 
 	return proj;

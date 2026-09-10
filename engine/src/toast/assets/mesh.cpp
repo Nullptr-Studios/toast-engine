@@ -150,79 +150,83 @@ Mesh::Mesh(const std::vector<uint8_t>& data) : m_gpu_mesh(std::make_unique<rende
 	std::memcpy(static_cast<void*>(&header), data.data(), sizeof(_detail::MeshFileHeader));
 	TOAST_ASSERT(header.magic == cmp_magic, "AssetManager", "Mesh data has invalid magic");
 
-	switch (header.version) {
-		case _detail::mesh_format_version: {
-			TOAST_ASSERT(
-			    data.size() >= sizeof(_detail::MeshFileHeader) + sizeof(uint8_t), "AssetManager", "Mesh data too small for name length"
-			);
+	if (header.version != _detail::mesh_format_version) {
+		TOAST_ERROR(
+		    "AssetManager",
+		    "Mesh uses .tmesh version {} but this build reads {} only; reimport the source asset",
+		    header.version,
+		    _detail::mesh_format_version
+		);
+		return;
+	}
 
-			const uint8_t* data_start = data.data() + sizeof(header);
+	TOAST_ASSERT(
+	    data.size() >= sizeof(_detail::MeshFileHeader) + sizeof(uint8_t), "AssetManager", "Mesh data too small for name length"
+	);
 
-			// name
-			uint8_t name_length = 0;
-			memcpy(&name_length, data_start, sizeof(name_length));
+	const uint8_t* data_start = data.data() + sizeof(header);
 
-			// The trailing uint32 is the skin vertex count, always written even when zero
-			const size_t expected_size = sizeof(_detail::MeshFileHeader) + sizeof(uint8_t) + name_length +
-			                             (header.vertex_count * sizeof(renderer::Vertex)) + (header.index_count * sizeof(uint32_t)) +
-			                             sizeof(uint32_t);
+	// name
+	uint8_t name_length = 0;
+	memcpy(&name_length, data_start, sizeof(name_length));
 
-			TOAST_ASSERT(
-			    data.size() >= expected_size, "AssetManager", "Mesh data size does not match expected size based on header information"
-			);
-			data_start += sizeof(name_length);
+	// The trailing uint32 is the skin vertex count, always written even when zero
+	const size_t expected_size = sizeof(_detail::MeshFileHeader) + sizeof(uint8_t) + name_length +
+	                             (header.vertex_count * sizeof(renderer::Vertex)) + (header.index_count * sizeof(uint32_t)) +
+	                             sizeof(uint32_t);
 
-			m_name.resize(name_length);
-			memcpy(m_name.data(), data_start, name_length);
-			data_start += name_length;
+	TOAST_ASSERT(
+	    data.size() >= expected_size, "AssetManager", "Mesh data size does not match expected size based on header information"
+	);
+	data_start += sizeof(name_length);
 
-			// Reserve sizes
-			m_vertices.resize(header.vertex_count);
-			m_indices.resize(header.index_count);
+	m_name.resize(name_length);
+	memcpy(m_name.data(), data_start, name_length);
+	data_start += name_length;
 
-			// Import sizes
-			// clang-format off
-			memcpy(
-					m_vertices.data(),
-					data_start,
-					header.vertex_count * sizeof(renderer::Vertex)
-			);
-			data_start += header.vertex_count * sizeof(renderer::Vertex);
+	// Reserve sizes
+	m_vertices.resize(header.vertex_count);
+	m_indices.resize(header.index_count);
 
-			memcpy(
-					m_indices.data(),
-					data_start,
-					header.index_count * sizeof(uint32_t)
-			);
-			data_start += header.index_count * sizeof(uint32_t);
-			// clang-format on
+	// Import sizes
+	// clang-format off
+	memcpy(
+			m_vertices.data(),
+			data_start,
+			header.vertex_count * sizeof(renderer::Vertex)
+	);
+	data_start += header.vertex_count * sizeof(renderer::Vertex);
 
-			// Skinning block, count always present (0 for a static mesh)
-			uint32_t skin_vertex_count = 0;
-			memcpy(&skin_vertex_count, data_start, sizeof(skin_vertex_count));
-			data_start += sizeof(skin_vertex_count);
+	memcpy(
+			m_indices.data(),
+			data_start,
+			header.index_count * sizeof(uint32_t)
+	);
+	data_start += header.index_count * sizeof(uint32_t);
+	// clang-format on
 
-			if (skin_vertex_count > 0) {
-				const size_t skin_bytes = static_cast<size_t>(skin_vertex_count) * sizeof(renderer::SkinVertex);
-				TOAST_ASSERT(
-				    data_start + skin_bytes <= data.data() + data.size(), "AssetManager", "Mesh skinning block runs past end of file"
-				);
-				m_skin_vertices.resize(skin_vertex_count);
-				memcpy(m_skin_vertices.data(), data_start, skin_bytes);
-				data_start += skin_bytes;
-			}
+	// Skinning block, count always present 0 for a static mesh
+	uint32_t skin_vertex_count = 0;
+	memcpy(&skin_vertex_count, data_start, sizeof(skin_vertex_count));
+	data_start += sizeof(skin_vertex_count);
 
-			break;
-		}
-		default:
-			TOAST_ERROR(
-			    "AssetManager",
-			    "Mesh '{}' uses unsupported .tmesh version {} (this build reads {} only); reimport the source asset",
-			    m_name,
-			    header.version,
-			    _detail::mesh_format_version
-			);
-			return;
+	if (skin_vertex_count > 0) {
+		TOAST_ASSERT(
+		    skin_vertex_count == header.vertex_count, "AssetManager", "Mesh skinning block length does not match the vertex count"
+		);
+		const size_t skin_bytes = static_cast<size_t>(skin_vertex_count) * sizeof(renderer::SkinVertex);
+		TOAST_ASSERT(
+		    data_start + skin_bytes <= data.data() + data.size(), "AssetManager", "Mesh skinning block runs past end of file"
+		);
+		m_skin_vertices.resize(skin_vertex_count);
+		memcpy(m_skin_vertices.data(), data_start, skin_bytes);
+		data_start += skin_bytes;
+	}
+
+	// Same guard Texture carries
+	if (renderer::VulkanRenderer::instance == nullptr) {
+		TOAST_WARN("Mesh", "VulkanRenderer is not available; mesh '{}' was loaded without GPU upload", m_name);
+		return;
 	}
 
 	// create GPU Side mesh

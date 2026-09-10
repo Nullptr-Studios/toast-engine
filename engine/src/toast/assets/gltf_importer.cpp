@@ -355,6 +355,38 @@ auto generateIntermediates(const std::filesystem::path& path) {
 			const uint8_t* tan_data = tan_idx != -1 ? accessor_bytes(tan_idx) : nullptr;
 			const uint8_t* col_data = col_idx != -1 ? accessor_bytes(col_idx) : nullptr;
 
+			// COLOR_0
+			uint32_t col_components = 0;
+			size_t col_component_size = 0;
+			bool col_normalized = false;
+			if (col_data != nullptr) {
+				const auto& col_acc = model.accessors[col_idx];
+				col_components = col_acc.type == TG3_TYPE_VEC4 ? 4u : (col_acc.type == TG3_TYPE_VEC3 ? 3u : 0u);
+				switch (col_acc.component_type) {
+					case TG3_COMPONENT_TYPE_FLOAT: col_component_size = 4; break;
+					case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: col_component_size = 1; break;
+					case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: col_component_size = 2; break;
+					default: col_component_size = 0; break;
+				}
+				// An integer COLOR_0 is normalised by the spec whether or not the flag says so
+				col_normalized = col_acc.component_type != TG3_COMPONENT_TYPE_FLOAT;
+
+				if (col_components == 0 || col_component_size == 0) {
+					TOAST_WARN(
+					    "AssetManager",
+					    "Mesh primitive {} of mesh {} stores COLOR_0 as an unsupported type/component ({}/{}); importing it "
+					    "without vertex colours",
+					    pi,
+					    i,
+					    col_acc.type,
+					    col_acc.component_type
+					);
+					col_data = nullptr;
+				}
+			}
+
+			const size_t col_stride = col_data != nullptr ? get_stride(col_idx, col_components * col_component_size) : 0;
+
 			for (uint32_t j = 0; j < vertex_count; j++) {
 				auto& v = vertices[j];
 				memcpy(&v.position, pos_data + (j * get_stride(pos_idx, sizeof(glm::vec3))), sizeof(glm::vec3));
@@ -373,7 +405,22 @@ auto generateIntermediates(const std::filesystem::path& path) {
 					v.tangent = glm::vec4(tangent_xyz, t.w);    // w is handedness
 				}
 				if (col_data) {
-					memcpy(&v.color, col_data + (j * get_stride(col_idx, sizeof(glm::vec3))), sizeof(glm::vec3));
+					// Alpha is read and dropped: Vertex::color is rgb, and nothing downstream blends on it
+					const uint8_t* element = col_data + (j * col_stride);
+					for (uint32_t c = 0; c < 3; ++c) {
+						const uint8_t* component = element + (c * col_component_size);
+						float value = 0.0f;
+						if (!col_normalized) {
+							memcpy(&value, component, sizeof(float));
+						} else if (col_component_size == 1) {
+							value = static_cast<float>(*component) / 255.0f;
+						} else {
+							uint16_t raw = 0;
+							memcpy(&raw, component, sizeof(raw));
+							value = static_cast<float>(raw) / 65535.0f;
+						}
+						v.color[static_cast<glm::length_t>(c)] = value;
+					}
 				}
 			}
 
@@ -936,10 +983,13 @@ auto generateIntermediates(const std::filesystem::path& path) {
 				for (size_t i = 0; i < entries; ++i) {
 					const float* v = values.data() + (i * 3);
 					const glm::vec3 value(v[0], v[1], v[2]);
-					// Scale is a magnitude per axis, so it gets the basis swap without the translation part
-					track.vec3_values.push_back(
-					    track.target == TrackTarget::translation ? to_engine_space_vec3(value) : to_engine_space_dir3(value)
-					);
+					if (track.target == TrackTarget::translation) {
+						track.vec3_values.push_back(to_engine_space_vec3(value));
+						continue;
+					}
+
+					const glm::mat4 converted = to_engine_space_mat4(glm::scale(glm::mat4(1.0F), value));
+					track.vec3_values.emplace_back(converted[0][0], converted[1][1], converted[2][2]);
 				}
 			}
 
