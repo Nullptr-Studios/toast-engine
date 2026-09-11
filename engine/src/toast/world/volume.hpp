@@ -49,6 +49,8 @@ public:
 	void blendDistance(float value);
 
 protected:
+	void updateInspectorMessages() override;
+
 	[[nodiscard]]
 	///< @brief Calculates the effect the volume should have on the object
 	auto calculateWeight(const VolumeTarget& target) -> float;

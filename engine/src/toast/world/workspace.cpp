@@ -1317,6 +1317,7 @@ void Workspace::tick() {
 
 	std::vector<event::InspectorContent::InspectorField> fields;
 	Node* node = &*m_focused_node;
+	node->updateInspectorMessages();
 
 	for (const NodeInfo* type = node->info(); type != nullptr; type = type->base_type) {
 		for (const auto& field : type->all_fields) {
@@ -1343,8 +1344,13 @@ void Workspace::tick() {
 		}
 	}
 
+	std::vector<NodeMessage> messages;
+	for (const auto& m : m_focused_node->m_messages) {
+		messages.push_back(m);
+	}
+
 	event::send<event::InspectorContent>(
-	    m_focused_node->uid().get(), m_focused_node->name(), m_focused_node->enabled(), std::move(fields)
+	    m_focused_node->uid().get(), m_focused_node->name(), m_focused_node->enabled(), std::move(fields), std::move(messages)
 	);
 
 	// The exported script variables travel in their own message so the editor can rebuild

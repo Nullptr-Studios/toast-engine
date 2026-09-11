@@ -20,12 +20,24 @@ class Simulator;
 class [[ToastNode, Hidden, Interface, Icon("PhysicsBody"), Color("Green")]] TOAST_API Rigidbody : public toast::Node3D {
 	friend class Simulator;
 
-public:
-
 protected:
 	explicit Rigidbody(BodyType type) : m_body_type(type) { }
 
+	[[Reflect, Name("Lock x position"), ReadOnly]]
+	bool lock_pos_x = false;
+	[[Reflect, Name("Lock y position"), ReadOnly]]
+	bool lock_pos_y = false;
+	[[Reflect, Name("Lock z position"), ReadOnly]]
+	bool lock_pos_z = false;
+	[[Reflect, Name("Lock x rotation"), ReadOnly]]
+	bool lock_rot_x = false;
+	[[Reflect, Name("Lock y rotation"), ReadOnly]]
+	bool lock_rot_y = false;
+	[[Reflect, Name("Lock z rotation"), ReadOnly]]
+	bool lock_rot_z = false;
+
 private:
+	void updateInspectorMessages() override;
 	void begin();
 	void end();
 

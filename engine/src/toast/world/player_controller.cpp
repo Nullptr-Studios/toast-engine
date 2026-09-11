@@ -4,9 +4,35 @@
 #include <toast/input/haptics_system.hpp>
 #include <toast/input/input_events.hpp>
 #include <toast/log.hpp>
+#include <algorithm>
 #include <typeinfo>
 
 namespace input {
+
+void PlayerController::updateInspectorMessages() {
+	static const toast::NodeMessage parent_message {
+		.severity = toast::NodeMessage::error,
+		.id = 21,
+		.text = "PlayerController must be a child of a Node3D",
+	};
+	static const toast::NodeMessage layout_message {
+		.severity = toast::NodeMessage::warning,
+		.id = 22,
+		.text = "PlayerController requires one valid layout",
+	};
+
+	if (parent().exists()) {
+		removeInspectorMessage(parent_message);
+	} else {
+		addInspectorMessage(parent_message);
+	}
+	const bool has_layout = std::ranges::any_of(layouts, [](const auto& layout) { return layout.hasValue(); });
+	if (has_layout) {
+		removeInspectorMessage(layout_message);
+	} else {
+		addInspectorMessage(layout_message);
+	}
+}
 
 void PlayerController::init() {
 	active_layout = default_layout;

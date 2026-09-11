@@ -16,6 +16,7 @@
 #include "box.hpp"
 #include "control_box.hpp"
 
+#include <list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -58,6 +59,19 @@ enum class NodeType : uint8_t {
 	child,         ///< This node is a regular node
 	root,          ///< This node is a root node
 	world_root,    ///< This node is the root that resides in the world
+};
+
+struct NodeMessage {
+	enum Severity : uint8_t {
+		warning,
+		error
+	} severity;
+	uint8_t id;
+	std::string text;
+
+	auto operator==(const NodeMessage& rhs) const noexcept -> bool {
+		return id == rhs.id;
+	}
 };
 
 class [[ToastNode, Icon("Circle")]] TOAST_API Node {
@@ -357,6 +371,21 @@ protected:
 	INodeOwner* m_owner = nullptr;
 
 	virtual void onReflectedFieldChanged(std::string_view /*field_name*/) { }
+	virtual void updateInspectorMessages() { }
+
+	void addInspectorMessage(const NodeMessage& message) {
+		for (auto& existing : m_messages) {
+			if (existing == message) {
+				existing = message;
+				return;
+			}
+		}
+		m_messages.emplace_back(message);
+	}
+
+	void removeInspectorMessage(const NodeMessage& message) {
+		m_messages.remove(message);
+	}
 
 private:
 	[[Reflect, Hidden]]
@@ -418,6 +447,8 @@ private:
 
 	/// Builds m_script_runtime from m_scripts
 	void loadScripts() noexcept;
+
+	std::list<NodeMessage> m_messages;
 };
 
 }

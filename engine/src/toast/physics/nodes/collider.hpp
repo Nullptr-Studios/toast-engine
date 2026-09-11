@@ -23,6 +23,7 @@ public:
 	bool debug_fill = true;
 
 private:
+	void updateInspectorMessages() override;
 	void init();
 	void destroy();
 	void onEnable();

@@ -4,9 +4,59 @@
 #include "capsule_collider.hpp"
 #include "sphere_collider.hpp"
 #include "rigidbody.hpp"
+#include <cmath>
 #include <toast/renderer/vulkan_renderer.hpp>
 
 namespace physics {
+void Collider::updateInspectorMessages() {
+	static const toast::NodeMessage parent_message {
+		.severity = toast::NodeMessage::error,
+		.id = 1,
+		.text = "Colliders need to be children of a Rigidbody",
+	};
+	static const toast::NodeMessage invalid_geometry_message {
+		.severity = toast::NodeMessage::error,
+		.id = 3,
+		.text = "Collider dimensions must be greater than zero",
+	};
+	static const toast::NodeMessage unsupported_shape_message {
+		.severity = toast::NodeMessage::warning,
+		.id = 4,
+		.text = "Only SphereCollider shapes are currently used by the physics simulation",
+	};
+
+	if (parent().as<Rigidbody>().exists()) {
+		removeInspectorMessage(parent_message);
+	} else {
+		addInspectorMessage(parent_message);
+	}
+
+	bool valid_geometry = true;
+	bool supported_shape = true;
+	if (const auto sphere = box().as<SphereCollider>(); sphere.exists()) {
+		valid_geometry = std::isfinite(sphere->radius) && sphere->radius > 0.0f;
+	} else if (const auto capsule = box().as<CapsuleCollider>(); capsule.exists()) {
+		valid_geometry = std::isfinite(capsule->radius) && capsule->radius > 0.0f &&
+		                 std::isfinite(capsule->height) && capsule->height > 0.0f;
+		supported_shape = false;
+	} else if (const auto cube = box().as<BoxCollider>(); cube.exists()) {
+		valid_geometry = std::isfinite(cube->size.x) && cube->size.x > 0.0f && std::isfinite(cube->size.y) &&
+		                 cube->size.y > 0.0f && std::isfinite(cube->size.z) && cube->size.z > 0.0f;
+		supported_shape = false;
+	}
+
+	if (valid_geometry) {
+		removeInspectorMessage(invalid_geometry_message);
+	} else {
+		addInspectorMessage(invalid_geometry_message);
+	}
+	if (supported_shape) {
+		removeInspectorMessage(unsupported_shape_message);
+	} else {
+		addInspectorMessage(unsupported_shape_message);
+	}
+}
+
 void Collider::init() {
 	m_debug_visible = enabled();
 	if (renderer::VulkanRenderer::instance) {

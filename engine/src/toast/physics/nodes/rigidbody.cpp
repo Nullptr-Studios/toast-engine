@@ -1,10 +1,31 @@
 #include "rigidbody.hpp"
 
+#include "collider.hpp"
 #include "sphere_collider.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <toast/physics/simulator.hpp>
 
 namespace physics {
+
+void Rigidbody::updateInspectorMessages() {
+	static const toast::NodeMessage message {
+		.severity = toast::NodeMessage::warning,
+		.id = 2,
+		.text = "Rigidbodies require a collider",
+	};
+
+	const bool has_collider = std::ranges::any_of(children(), [](const auto& child) {
+		const auto sphere = child.template as<SphereCollider>();
+		return sphere.exists() && !sphere->disabled && std::isfinite(sphere->radius) && sphere->radius > 0.0f;
+	});
+	if (has_collider) {
+		removeInspectorMessage(message);
+	} else {
+		addInspectorMessage(message);
+	}
+}
 
 void Rigidbody::begin() {
 	if (not m_registration_requested && participatesIn(toast::NodeOwnerParticipation::gameplay_tick)) {
