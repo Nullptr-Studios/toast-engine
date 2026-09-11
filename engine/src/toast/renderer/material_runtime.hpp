@@ -23,13 +23,7 @@ class VulkanCore;
 
 /**
  * @class MaterialRuntime
- * @brief GPU-facing view of one Material
- *
- * Merges the reflection of the material's shader vector, bakes the material's
- * DataValues into CPU bytes using reflection offsets, resolves texture handles
- * and owns the VulkanSamplers described by the material's sampler settings
- *
- * Owned by the render thread
+ * @brief GPU-facing view of one Material, owned by the render thread
  */
 class MaterialRuntime {
 public:
@@ -68,10 +62,7 @@ public:
 
 	auto uniformBlobs() -> const std::vector<UboBlob>&;
 
-	/**
-	 * @brief Gets the push-constant blob with material values baked in
-	 * @returns a reference to the push-constant blob
-	 */
+	/// @brief The push-constant blob with material values baked in
 	auto pushBlob() -> const std::vector<std::byte>&;
 
 	[[nodiscard]]
@@ -79,11 +70,25 @@ public:
 		return m_model_offset;
 	}
 
+	/// @returns byte offset of the push-constant jointOffset field
+	[[nodiscard]]
+	auto jointOffsetOffset() const -> std::optional<uint32_t> {
+		return m_joint_offset_offset;
+	}
+
+	/// @returns push-constant offset of instanceBase
+	[[nodiscard]]
+	auto instanceBaseOffset() const -> std::optional<uint32_t> {
+		return m_instance_base_offset;
+	}
+
 	struct TextureSlot {
 		uint32_t set = 0;
 		uint32_t binding = 0;
 		assets::Handle<assets::Texture> texture;
 		vk::Sampler sampler;
+		std::string default_fallback;
+		bool linear_data = false;
 	};
 
 	auto textureSlots() -> const std::vector<TextureSlot>&;
@@ -102,12 +107,16 @@ private:
 	const VulkanCore* m_core = nullptr;
 	assets::Material* m_material = nullptr;
 
+	assets::Handle<assets::Material> m_material_ref;
+
 	ShaderReflection m_merged;
 	std::vector<std::shared_ptr<const ShaderCache::Entry>> m_entries;
 
 	std::vector<UboBlob> m_ubo_blobs;
 	std::vector<std::byte> m_push_blob;
 	std::optional<uint32_t> m_model_offset;
+	std::optional<uint32_t> m_joint_offset_offset;
+	std::optional<uint32_t> m_instance_base_offset;
 	std::vector<TextureSlot> m_texture_slots;
 	bool m_values_dirty = true;
 	bool m_textures_dirty = true;

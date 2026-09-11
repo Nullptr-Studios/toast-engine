@@ -1,5 +1,6 @@
 #include "slang_vfs.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -42,7 +43,10 @@ public:
 		return refs;
 	}
 
-	SLANG_NO_THROW auto getBufferPointer() -> const void* SLANG_MCALL override { return m_data.data(); }
+	// SLANG_MCALL before the name, not after the return type: in a trailing-return declaration the latter
+	// applies to the pointer rather than the function, so the calling convention was silently dropped while
+	// the interface it overrides still declares one
+	SLANG_NO_THROW auto SLANG_MCALL getBufferPointer() -> const void* override { return m_data.data(); }
 
 	SLANG_NO_THROW auto SLANG_MCALL getBufferSize() -> size_t override { return m_data.size(); }
 
@@ -147,8 +151,29 @@ auto SlangVfs::loadFile(const char* path, ISlangBlob** out_blob) -> SlangResult 
 	}
 
 	TOAST_TRACE("Render", "SlangVfs resolved '{}' ({} bytes)", uri, bytes->size());
+	if (s_recorder != nullptr) {
+		s_recorder->record(uri);
+	}
+
 	*out_blob = new VfsBlob(std::move(*bytes));
 	return SLANG_OK;
+}
+
+SlangVfs::Recorder::Recorder() {
+	// Nesting one inside another would make the outer miss everything the inner recorded, so it is a bug
+	// rather than a case to handle
+	TOAST_ASSERT(s_recorder == nullptr, "Render", "A SlangVfs::Recorder is already active; shader compiles must not overlap");
+	s_recorder = this;
+}
+
+SlangVfs::Recorder::~Recorder() {
+	s_recorder = nullptr;
+}
+
+void SlangVfs::Recorder::record(std::string uri) {
+	if (std::ranges::find(m_resolved, uri) == m_resolved.end()) {
+		m_resolved.push_back(std::move(uri));
+	}
 }
 
 }

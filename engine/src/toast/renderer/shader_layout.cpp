@@ -19,6 +19,7 @@ auto toDescriptorType(ShaderBindingKind kind) -> vk::DescriptorType {
 		case ShaderBindingKind::sampled_image: return vk::DescriptorType::eSampledImage;
 		case ShaderBindingKind::sampler: return vk::DescriptorType::eSampler;
 		case ShaderBindingKind::storage_image: return vk::DescriptorType::eStorageImage;
+		case ShaderBindingKind::acceleration_structure: return vk::DescriptorType::eAccelerationStructureKHR;
 	}
 	return vk::DescriptorType::eUniformBuffer;
 }
@@ -54,9 +55,28 @@ void ShaderLayout::rebuild(const VulkanCore& core, const ShaderReflection& refle
 			bindings = it->second;
 		}
 
+		// Always partially bound: a tracing shader still has to run on a device with no ray query, where there
+		// is no structure to write. Without the flag an unwritten binding is undefined behaviour even when
+		// nothing reads it, and validation rejects the set at bind time
+		std::vector<vk::DescriptorBindingFlags> binding_flags(bindings.size(), vk::DescriptorBindingFlags {});
+		bool any_partially_bound = false;
+		for (size_t i = 0; i < bindings.size(); ++i) {
+			if (bindings[i].descriptorType == vk::DescriptorType::eAccelerationStructureKHR) {
+				binding_flags[i] = vk::DescriptorBindingFlagBits::ePartiallyBound;
+				any_partially_bound = true;
+			}
+		}
+
+		vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_ci {};
+		flags_ci.bindingCount = static_cast<uint32_t>(binding_flags.size());
+		flags_ci.pBindingFlags = binding_flags.data();
+
 		vk::DescriptorSetLayoutCreateInfo layout_ci {};
 		layout_ci.bindingCount = static_cast<uint32_t>(bindings.size());
 		layout_ci.pBindings = bindings.empty() ? nullptr : bindings.data();
+		if (any_partially_bound) {
+			layout_ci.pNext = &flags_ci;
+		}
 
 		m_descriptor_set_layouts.emplace_back(device, layout_ci);
 		raw_handles.push_back(*m_descriptor_set_layouts.back());
@@ -65,7 +85,12 @@ void ShaderLayout::rebuild(const VulkanCore& core, const ShaderReflection& refle
 
 	for (const auto& push : reflection.push_constants) {
 		vk::PushConstantRange range {};
-		range.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+		// eAll, matching the descriptor bindings above. Naming only vertex|fragment silently excluded every
+		// compute shader with a push constant: the layout declared no compute range, so vkCmdPushConstants
+		// with eCompute wrote nothing and the shader read undefined values. That is what
+		// ReflectionProbePass's SH projection was doing - its probe index and face size were never arriving,
+		// which the validation layer reported at pipeline creation and nothing downstream could detect
+		range.stageFlags = vk::ShaderStageFlagBits::eAll;
 		range.offset = 0;
 		range.size = push.size;
 		if (range.size > 0) {

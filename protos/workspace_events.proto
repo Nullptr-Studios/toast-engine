@@ -136,6 +136,11 @@ message SetGizmoTool {
   uint32 tool = 1;
 }
 
+// 0 Lit, 1 ClusterHeatmap (clustered forward+ light-count-per-pixel debug view)
+message SetRenderMode {
+  uint32 mode = 1;
+}
+
 message SetCoordinateSpace {
   bool world = 1;
 }
@@ -149,6 +154,32 @@ message SetSnapping {
 
 message SetCameraMode {
   bool game = 1;
+}
+
+message EditorCameraFlyMode {
+  bool active = 1;
+}
+
+// Requests a single RenderDoc frame capture around the next rendered frame; no-op if RenderDoc isn't attached
+message CaptureFrame {}
+
+message EditorCameraMoveState {
+  bool forward = 1;
+  bool back = 2;
+  bool left = 3;
+  bool right = 4;
+  bool up = 5;
+  bool down = 6;
+  bool boost = 7;
+}
+
+message EditorCameraLook {
+  float dx = 1;
+  float dy = 2;
+}
+
+message EditorCameraSpeedScroll {
+  float delta = 1;
 }
 
 message InspectorField {

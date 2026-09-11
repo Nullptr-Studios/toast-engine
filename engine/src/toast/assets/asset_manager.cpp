@@ -322,44 +322,21 @@ void AssetManager::reloadManifest() {
 			auto json = nlohmann::json::parse(raw_json->begin(), raw_json->end());
 
 			// an entry is a "uid": "virtual path" pair
-			auto load_collection = [&](std::string_view type) {
-				auto it = json.find(type);
-				if (it == json.end() || !it->is_object()) {
-					return;
+			// Every top-level object is a type collection keyed by uid -> virtual path; `version` and
+			// `generated_at` are scalars and skip themselves. This used to be a hardcoded list of type names,
+			// which meant a new asset type loaded fine, imported fine, wrote a correct manifest entry - and was
+			// then invisible here, surfacing as "not found in manifest" with nothing pointing at the cause
+			for (const auto& [type, collection] : json.items()) {
+				if (!collection.is_object()) {
+					continue;
 				}
-				for (const auto& [key, value] : it->items()) {
-					manifest[toast::UID::fromString(key)] = {value.get<std::string>(), std::string(type)};
+				for (const auto& [key, value] : collection.items()) {
+					if (!value.is_string()) {
+						continue;
+					}
+					manifest[toast::UID::fromString(key)] = {value.get<std::string>(), type};
 				}
-			};
-
-			load_collection("mesh");
-			load_collection("material");
-			load_collection("material_instance");
-			load_collection("texture");
-			load_collection("schema");
-			load_collection("data");
-			load_collection("node");
-			load_collection("curve");
-			load_collection("audio_bank");
-			load_collection("audio_bus");
-			load_collection("audio_event");
-			load_collection("audio_port");
-			load_collection("audio_snapshot");
-			load_collection("audio_strings");
-			load_collection("audio_vca");
-			load_collection("haptic");
-			load_collection("input_action");
-			load_collection("input_layout");
-			load_collection("input_settings");
-			load_collection("color_scheme");
-			load_collection("font");
-			load_collection("ui_image");
-			load_collection("ui_element");
-			load_collection("ui_style");
-			load_collection("localization");
-			load_collection("image_localization");
-			load_collection("script");
-			load_collection("shader");
+			}
 		} catch (const std::exception& e) { TOAST_ERROR("AssetManager", "Failed to parse manifest {}: {}", uri, e.what()); }
 	};
 

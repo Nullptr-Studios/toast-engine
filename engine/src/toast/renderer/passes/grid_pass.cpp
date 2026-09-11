@@ -37,7 +37,7 @@ GridPass::GridPass(const renderer::VulkanCore& core, vk::Format color_format, vk
 	config.extent = extent;
 	config.shader_spirv = shader->spirv;
 	config.pipeline_layout = *m_shader_layout.getPipelineLayout();
-	config.vertex_binding = position_only_binding;
+	config.vertex_bindings = {position_only_binding};
 	config.vertex_attributes = position_only_attributes;
 	config.topology = vk::PrimitiveTopology::eTriangleList;
 	config.cull_mode = vk::CullModeFlagBits::eNone;

@@ -1,6 +1,6 @@
 /// @file vulkan_texture.hpp
 /// @author dario
-/// @date 6/28/2026.
+/// @date 6/28/2026
 
 #pragma once
 #include "ktx.h"
@@ -37,18 +37,26 @@ public:
 		return *m_image_view;
 	}
 
+	/// @returns the VkFormat the KTX2 carried, which is what decides whether the GPU applies an sRGB decode
+	/// on sample - see MaterialPass's colour-space check
+	[[nodiscard]]
+	auto getFormat() const -> vk::Format {
+		return m_params.format;
+	}
+
 private:
 	std::optional<vma::raii::Image> m_image;
 	vk::raii::ImageView m_image_view = nullptr;
 	Params m_params;
 };
 
-// Upload Resource
 class TextureUpload : public PendingResourceUpload {
 public:
-	TextureUpload(VulkanTexture& texture, const std::vector<uint8_t>& data, std::string_view debug_name = {})
+	/// the encoded data has no reader once the GPU image exists, so the asset
+	/// hands them over rather than keeping a copy alive for the process lifetime
+	TextureUpload(VulkanTexture& texture, std::vector<uint8_t> data, std::string_view debug_name = {})
 	    : m_texture(&texture),
-	      m_data(data),
+	      m_data(std::move(data)),
 	      m_debug_name(debug_name) { }
 
 	~TextureUpload() override {
@@ -100,5 +108,16 @@ private:
 	std::string m_debug_name;
 	vma::raii::Buffer m_staging_buffer = nullptr;
 };
+
+/// @brief Decodes and uploads a KTX2 texture on the calling thread, returning once the GPU has the data
+///
+/// For renderer-owned textures that have to exist before the first frame. The asynchronous path is the right
+/// one for scene assets, but it needs a running render thread to flush its batches and a fully built
+/// VulkanRenderer to reclaim them - neither of which is true from inside the constructor
+///
+/// @returns false when the bytes could not be decoded or the device rejected them; @p texture is left
+///          unready and marked with the reason
+auto uploadTextureSync(const VulkanCore& core, VulkanTexture& texture, std::vector<uint8_t> data, std::string_view debug_name)
+    -> bool;
 
 }

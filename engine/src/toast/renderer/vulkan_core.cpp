@@ -1,8 +1,10 @@
 /// @file VulkanCore.cpp
 /// @author dario
-/// @date 14/05/2026.
+/// @date 14/05/2026
 
 #include "vulkan_core.hpp"
+
+#include "shader_compiler.hpp"
 
 #include <algorithm>
 #include <format>
@@ -13,9 +15,15 @@
 #if defined(__linux__)
 #include <dlfcn.h>
 #endif
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <external/inc/nsight/NGFX_GPUTrace_Vulkan.h>
+#include <external/inc/nsight/NGFX_GraphicsCapture_Vulkan.h>
+#endif
 
 namespace renderer {
 
@@ -246,6 +254,12 @@ VulkanCore::VulkanCore(
 	TOAST_TRACE("Render", "Required instance extensions: {}", joinRequiredExtensions(required_instance_extensions));
 	TOAST_TRACE("Render", "Required device extensions: {}", joinRequiredExtensions(required_device_extensions));
 
+	// Before the VkInstance: the injection libraries hook the Vulkan loader and see nothing that happened
+	// first. One activity per process, so the choice is an env var rather than a runtime toggle
+#if defined(_WIN32)
+	initializeNsightActivity();
+#endif
+
 	vk::ApplicationInfo app_info("SUPER DUPER TOASTY GAME", 1, "TOAST ENGINE", 1, VK_API_VERSION_1_4);
 
 	std::vector<const char*> layers;
@@ -253,15 +267,21 @@ VulkanCore::VulkanCore(
 		layers.push_back("VK_LAYER_KHRONOS_validation");
 	}
 
+	// Requested whenever the loader offers it, not only alongside validation. Object names are read by
+	// RenderDoc and Nsight without any layer loaded, and captures are taken against Release - gating this on
+	// validation is what left every pipeline unnamed there. Has to be queried first: asking for an absent
+	// instance extension fails vkCreateInstance outright
 	std::vector extensions(required_instance_extensions.begin(), required_instance_extensions.end());
-	if (m_validation_enabled) {
+	m_debug_utils_enabled = checkInstanceExtensionSupport(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	if (m_debug_utils_enabled) {
 		extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	}
+	TOAST_INFO("Render", "Debug object names: {}", m_debug_utils_enabled ? "enabled" : "disabled");
 
 	vk::InstanceCreateInfo instance_ci({}, &app_info, layers, extensions);
 	m_instance = vk::raii::Instance(m_context, instance_ci);
 
-	if (m_validation_enabled) {
+	if (m_validation_enabled && m_debug_utils_enabled) {
 		vk::DebugUtilsMessengerCreateInfoEXT debug_ci {};
 		debug_ci.messageSeverity =
 		    vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
@@ -293,7 +313,149 @@ VulkanCore::VulkanCore(
 		dlclose(mod);
 	}
 #endif
+
+	// NOT calling activateNsightGpuTrace() here: it blocks waiting for the Nsight host and hangs forever if
+	// nothing attaches. Deferred to the first F12 press instead
 }
+
+#if defined(_WIN32)
+namespace {
+
+/// @brief Human-readable NGFX_Result, so a failure says what went wrong rather than only that it did
+auto nsightResultName(NGFX_Result result) -> std::string_view {
+	switch (result) {
+		case NGFX_Result_Success: return "Success";
+		case NGFX_Result_NotImplemented: return "NotImplemented";
+		case NGFX_Result_LibNotFound: return "LibNotFound";
+		case NGFX_Result_InvalidLib: return "InvalidLib";
+		case NGFX_Result_DifferentActivityInjected: return "DifferentActivityInjected";
+		case NGFX_Result_InvalidParameter: return "InvalidParameter";
+		case NGFX_Result_InvalidState: return "InvalidState";
+		case NGFX_Result_UnspecifiedError: return "UnspecifiedError";
+		case NGFX_Result_Timeout: return "Timeout";
+		default: return "Unknown";
+	}
+}
+
+}
+
+void VulkanCore::initializeNsightActivity() {
+	// Injection/interception libraries are loaded directly off disk from the detected installation path, no
+	// signature verification - matches this codebase's general trust posture for local dev tooling (same as
+	// RenderDoc above, which is trusted purely by virtue of already being loaded into the process)
+	NGFX_SetLibraryLoadFn(NGFX_LoadLib_NoVerification);
+
+	// Always Graphics Capture, never GPU Trace: once GPU Trace initializes, its interception layer gates
+	// *every* subsequent queue submission on the host being attached - including ordinary uploads, which then
+	// block forever on a fence that never signals. A session that genuinely wants GPU Trace launches from the
+	// Nsight host, and the DifferentActivityInjected path below adapts to whatever it injected
+	std::array<NGFX_InstallationInfo, 8> installations {};
+	uint32_t num_installations = 0;
+	const NGFX_Result enumerate_result =
+	    NGFX_EnumerateInstallations(installations.data(), static_cast<uint32_t>(installations.size()), &num_installations);
+
+	if (enumerate_result != NGFX_Result_Success || num_installations == 0) {
+		TOAST_INFO("VulkanCore", "No Nsight Graphics installation found; Nsight capture/trace disabled");
+		NGFX_FreeInstallations(installations.data(), num_installations);
+		return;
+	}
+
+	// NGFX_EnumerateInstallations sorts by version descending, so [0] is the newest installation found
+	const NGFX_PathChar* install_path = installations[0].installationPath;
+
+	// Which installation was chosen matters when it goes wrong: injection fails outright if the host that
+	// eventually attaches is a different version from the libraries injected here, and with several Nsight
+	// versions installed "the newest" is not necessarily the one the user opened
+	TOAST_INFO(
+	    "VulkanCore",
+	    "Nsight Graphics {}.{} selected ({} installation(s) found)",
+	    installations[0].versionMajor,
+	    installations[0].versionMinor,
+	    num_installations
+	);
+
+	NGFX_GraphicsCapture_InjectionSettings settings {};
+	settings.version = NGFX_GraphicsCapture_InjectionSettings_VER;
+	// The SDK's validator rejects several of these at their C++ defaults despite the headers implying 0 is
+	// "unset": frameCount must be in [1,600], and 0 reads as "armed at time zero" rather than unused.
+	// captureDefaultHotkey stays OFF - anything else silently no-ops the StartCapture calls F12 makes
+	settings.frameCount = 1;
+	settings.captureDefaultHotkey = false;
+	settings.captureFrame = 0xFFFFFFFFu;
+	settings.captureCountdownTimer = 0xFFFFFFFFu;
+
+	NGFX_GraphicsCapture_Inject_Vulkan_Params inject_params {NGFX_GraphicsCapture_Inject_Vulkan_Params_VER};
+	inject_params.installationPath = install_path;
+	inject_params.settings = &settings;
+
+	const NGFX_Result inject_result = NGFX_GraphicsCapture_Inject_Vulkan(&inject_params);
+
+	// DifferentActivityInjected is not a failure: it means something else already injected, which is what
+	// happens when the editor is launched from the Nsight host. Bailing out here left m_nsight_mode unset,
+	// which is what "Nsight does not detect the API" and "F12 captures nothing" both were
+	const bool injected = inject_result == NGFX_Result_Success;
+	const bool already_injected = inject_result == NGFX_Result_DifferentActivityInjected;
+
+	if (!injected && !already_injected) {
+		TOAST_WARN(
+		    "VulkanCore",
+		    "Failed to inject Nsight Graphics Capture activity: {} - launch the editor from Nsight Graphics, or "
+		    "check that the attached host matches the installation logged above",
+		    nsightResultName(inject_result)
+		);
+	} else {
+		if (already_injected) {
+			TOAST_INFO("VulkanCore", "An Nsight activity is already injected (host-launched); using it rather than injecting");
+		}
+
+		NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params init_params {NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER};
+		const NGFX_Result init_result = NGFX_GraphicsCapture_InitializeActivity_Vulkan(&init_params);
+		if (init_result == NGFX_Result_Success) {
+			m_nsight_mode = NsightMode::graphics_capture;
+			TOAST_INFO("VulkanCore", "Nsight Graphics Capture activity initialized (F12 to capture a frame)");
+		} else if (init_result == NGFX_Result_DifferentActivityInjected) {
+			// Injected, but not Graphics Capture - in practice GPU Trace, from a host-launched session. This
+			// process cannot ask which activity the user picked, so match what actually got injected
+			NGFX_GPUTrace_InitializeActivity_Vulkan_Params trace_init {NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER};
+			const NGFX_Result trace_result = NGFX_GPUTrace_InitializeActivity_Vulkan(&trace_init);
+			if (trace_result == NGFX_Result_Success) {
+				m_nsight_mode = NsightMode::gpu_trace;
+				TOAST_INFO("VulkanCore", "Host injected GPU Trace rather than Graphics Capture; initialized that instead (F12 to trace)");
+			} else {
+				TOAST_WARN(
+				    "VulkanCore",
+				    "An Nsight activity is injected but neither Graphics Capture ({}) nor GPU Trace ({}) initializes against "
+				    "it - the host is running an activity this engine has no SDK path for. Relaunch Nsight with the Frame "
+				    "Debugger or GPU Trace activity",
+				    nsightResultName(init_result),
+				    nsightResultName(trace_result)
+				);
+			}
+		} else {
+			TOAST_WARN("VulkanCore", "Failed to initialize Nsight Graphics Capture activity: {}", nsightResultName(init_result));
+		}
+	}
+	NGFX_FreeInstallations(installations.data(), num_installations);
+}
+
+void VulkanCore::activateNsightGpuTraceIfNeeded() const {
+	if (m_nsight_mode != NsightMode::gpu_trace || m_nsight_gputrace_activated) {
+		return;
+	}
+	// Only reached from the render thread's F12 handler, on the first capture request - see the end of the
+	// constructor for why this cannot happen at startup. Blocks until the Nsight Graphics host attaches and
+	// builds trace resources on the queue; once only, subsequent StartTrace/StopTrace calls reuse them
+	NGFX_GPUTrace_ActivateTrace_Vulkan_Params params {NGFX_GPUTrace_ActivateTrace_Vulkan_Params_VER};
+	params.queue = m_graphics_queue;
+
+	if (NGFX_GPUTrace_ActivateTrace_Vulkan(&params) == NGFX_Result_Success) {
+		m_nsight_gputrace_activated = true;
+	} else {
+		TOAST_WARN("VulkanCore", "Failed to activate Nsight GPU Trace; F12 capture will not work this session");
+		m_nsight_mode = NsightMode::none;
+	}
+}
+#endif
 
 void VulkanCore::pickPhysicalDevice(std::span<const char* const> required_device_extensions) {
 	vk::raii::PhysicalDevices devices(m_instance);
@@ -350,7 +512,6 @@ void VulkanCore::pickPhysicalDevice(std::span<const char* const> required_device
 			TOAST_WARN("Render", "  Missing required extensions: {}", missing);
 		}
 
-		// Reject device if missing required extensions
 		if (!device_score.missing_extensions.empty()) {
 			TOAST_WARN("Render", "  Device rejected: missing required extensions");
 			continue;
@@ -456,6 +617,10 @@ void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> re
 	vk::PhysicalDeviceFeatures enabled_features {};
 	enabled_features.samplerAnisotropy = m_sampler_anisotropy_supported ? VK_TRUE : VK_FALSE;
 
+	// Without it every colour attachment shares one blend state, and the geometry buffer exists precisely to
+	// hold what the scene colour does not - a blended material blends colour and writes no normal at all
+	enabled_features.independentBlend = VK_TRUE;
+
 	vk::PhysicalDeviceFeatures2 supported_features {};
 	vk::PhysicalDeviceVulkan12Features supported_vulkan12 {};
 	vk::PhysicalDeviceVulkan13Features supported_vulkan13 {};
@@ -484,9 +649,107 @@ void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> re
 	);
 	require_feature(supported_vulkan12.bufferDeviceAddress == VK_TRUE, "Vulkan 1.2 bufferDeviceAddress");
 	require_feature(supported_vulkan11.shaderDrawParameters == VK_TRUE, "Vulkan 1.1 shaderDrawParameters");
+	// ShadowPass renders a cascade set (4 views) or a point light's cube (6 views) in one pass. Required
+	// rather than probed, like dynamicRendering above: the Vulkan 1.1 feature requirements make this mandatory
+	// for every 1.1 implementation, and this engine already asks for 1.4
+	require_feature(supported_vulkan11.multiview == VK_TRUE, "Vulkan 1.1 multiview");
+	require_feature(device_features.independentBlend == VK_TRUE, "independentBlend");
 
 	std::vector<const char*> device_extensions(required_device_extensions.begin(), required_device_extensions.end());
+
+	// VK_EXT_frame_boundary, optional. Debuggers delimit frames by vkQueuePresentKHR, and the editor target
+	// never presents - so a tool attaches and reports it sees no API, waiting for a frame that never ends.
+	// This lets the submit itself mark the end of frame N
+	{
+		const auto available = m_physical_device.enumerateDeviceExtensionProperties();
+		m_frame_boundary_supported = std::ranges::any_of(available, [](const vk::ExtensionProperties& ext) {
+			return std::string_view(ext.extensionName.data()) == VK_EXT_FRAME_BOUNDARY_EXTENSION_NAME;
+		});
+
+		if (m_frame_boundary_supported) {
+			device_extensions.push_back(VK_EXT_FRAME_BOUNDARY_EXTENSION_NAME);
+			TOAST_INFO("Render", "VK_EXT_frame_boundary available; frame delimiters will be emitted for graphics debuggers");
+		} else {
+			TOAST_INFO(
+			    "Render",
+			    "VK_EXT_frame_boundary not supported by this device - a debugger attached to the editor will see no frame "
+			    "boundaries, since the editor never presents"
+			);
+		}
+	}
+
+	// Ray tracing, optional and all-or-nothing - a device without it has to keep running, so this is probed
+	// rather than required
+	//
+	// Ray *query*, not ray tracing pipelines (Phase R1 in docs/rendering_roadmap.md): inline queries work
+	// inside the fragment and compute shaders that already exist, so there is no shader binding table and no
+	// second copy of the material system. deferred_host_operations has no feature struct - acceleration_
+	// structure just depends on it
+	{
+		const auto available = m_physical_device.enumerateDeviceExtensionProperties();
+		const auto has_extension = [&available](std::string_view name) {
+			return std::ranges::any_of(available, [name](const vk::ExtensionProperties& ext) {
+				return std::string_view(ext.extensionName.data()) == name;
+			});
+		};
+
+		const bool extensions_present = has_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+		                                has_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+		                                has_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
+		// Extension present does not mean feature enabled - both have to be checked, and a device advertising
+		// the extension while reporting the feature false is a real (if rare) configuration
+		bool features_present = false;
+		if (extensions_present) {
+			vk::PhysicalDeviceFeatures2 probe {};
+			vk::PhysicalDeviceAccelerationStructureFeaturesKHR as_probe {};
+			vk::PhysicalDeviceRayQueryFeaturesKHR rq_probe {};
+			as_probe.pNext = &rq_probe;
+			probe.pNext = &as_probe;
+			(*m_physical_device).getFeatures2(&probe);
+			features_present = as_probe.accelerationStructure == VK_TRUE && rq_probe.rayQuery == VK_TRUE;
+		}
+
+		m_ray_tracing_supported = extensions_present && features_present;
+
+		// Before the shader cache compiles anything: a module that declares ray-query capability is rejected at
+		// pipeline creation on a device without it, so this has to be a compile-time decision rather than a
+		// runtime branch
+		ShaderCompiler::setRayQueryAvailable(m_ray_tracing_supported);
+
+		if (m_ray_tracing_supported) {
+			device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+			device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+			device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
+			vk::PhysicalDeviceProperties2 props {};
+			vk::PhysicalDeviceAccelerationStructurePropertiesKHR as_props {};
+			props.pNext = &as_props;
+			(*m_physical_device).getProperties2(&props);
+			m_as_scratch_alignment = as_props.minAccelerationStructureScratchOffsetAlignment;
+
+			TOAST_INFO(
+			    "Render", "Ray query supported; acceleration structures available (scratch alignment {} bytes)", m_as_scratch_alignment
+			);
+		} else {
+			TOAST_INFO(
+			    "Render",
+			    "Ray query unavailable (extensions={}, features={}); every RT-backed feature keeps its raster path",
+			    extensions_present,
+			    features_present
+			);
+		}
+	}
+
 	vk::DeviceCreateInfo device_ci({}, queue_create_infos, {}, device_extensions, &enabled_features);
+
+	vk::PhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features {};
+	acceleration_structure_features.accelerationStructure = VK_TRUE;
+	vk::PhysicalDeviceRayQueryFeaturesKHR ray_query_features {};
+	ray_query_features.rayQuery = VK_TRUE;
+
+	vk::PhysicalDeviceFrameBoundaryFeaturesEXT frame_boundary_features {};
+	frame_boundary_features.frameBoundary = VK_TRUE;
 	vk::PhysicalDeviceVulkan12Features vulkan12_features {};
 	vk::PhysicalDeviceVulkan13Features vulkan13_features {};
 	vk::PhysicalDeviceVulkan11Features vulkan11_features {};
@@ -501,6 +764,21 @@ void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> re
 	vulkan12_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
 	vulkan12_features.bufferDeviceAddress = VK_TRUE;
 	vulkan11_features.shaderDrawParameters = VK_TRUE;
+	vulkan11_features.multiview = VK_TRUE;
+
+	// Chained only when the extension made it into device_extensions; enabling a feature whose extension was
+	// not requested is invalid. The chain is built back to front so each optional link points at whatever was
+	// already at the head, rather than assuming a fixed order
+	void** chain_tail = &vulkan11_features.pNext;
+	if (m_frame_boundary_supported) {
+		*chain_tail = &frame_boundary_features;
+		chain_tail = &frame_boundary_features.pNext;
+	}
+	if (m_ray_tracing_supported) {
+		*chain_tail = &acceleration_structure_features;
+		acceleration_structure_features.pNext = &ray_query_features;
+	}
+
 	device_ci.pNext = &vulkan13_features;
 
 	m_device = vk::raii::Device(m_physical_device, device_ci);
@@ -512,6 +790,10 @@ void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> re
 	vma::AllocatorCreateInfo allocator_ci {};
 	allocator_ci.vulkanApiVersion = VK_API_VERSION_1_4;
 	allocator_ci.physicalDevice = *m_physical_device;
+
+	// VMA asserts without this: it has to set VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT on the allocation and
+	// cannot retrofit it per buffer. Unconditional, matching the mesh buffers that always carry the usage
+	allocator_ci.flags = vma::AllocatorCreateFlagBits::eBufferDeviceAddress;
 
 #ifdef TRACY_ENABLE
 	static constexpr vma::DeviceMemoryCallbacks tracy_memory_callbacks {&tracyVmaAllocate, &tracyVmaFree, nullptr};
@@ -596,7 +878,6 @@ auto VulkanCore::calculateDeviceScore(const vk::PhysicalDevice& device, std::spa
 		feature_score += 400;
 	}
 
-	// Important features
 	if (features.multiDrawIndirect) {
 		feature_score += 500;
 	}
@@ -694,6 +975,13 @@ auto VulkanCore::calculateDeviceScore(const vk::PhysicalDevice& device, std::spa
 		extension_score += 25;
 	}
 
+	const bool supports_multiview = props.apiVersion >= VK_API_VERSION_1_1 && vulkan11_features.multiview == VK_TRUE;
+	if (!supports_multiview) {
+		required_missing_names.emplace_back("Vulkan 1.1 multiview");
+	} else {
+		extension_score += 25;
+	}
+
 	for (const auto* required : required_device_extensions) {
 		bool found = false;
 		for (const auto& available : extensions) {
@@ -773,6 +1061,18 @@ auto VulkanCore::calculateDeviceScore(const vk::PhysicalDevice& device, std::spa
 	score.missing_extensions = required_missing_names;
 
 	return score;
+}
+
+auto VulkanCore::checkInstanceExtensionSupport(std::string_view extension) -> bool {
+	uint32_t count = 0;
+	vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+
+	std::vector<VkExtensionProperties> available(count);
+	vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
+
+	return std::ranges::any_of(available, [extension](const VkExtensionProperties& e) {
+		return extension == static_cast<const char*>(e.extensionName);
+	});
 }
 
 auto VulkanCore::checkValidationLayerSupport() -> bool {

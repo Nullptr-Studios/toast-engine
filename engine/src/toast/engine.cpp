@@ -13,9 +13,20 @@
 #include "logger.hpp"
 #include "project_settings.hpp"
 #include "reflect/reflect.hpp"
+#include "renderer/passes/bloom_pass.hpp"
+#include "renderer/passes/cluster_lighting_pass.hpp"
 #include "renderer/passes/debug_pass.hpp"
+#include "renderer/passes/environment_pass.hpp"
+#include "renderer/passes/fxaa_pass.hpp"
 #include "renderer/passes/grid_pass.hpp"
+#include "renderer/passes/reflection_probe_pass.hpp"
+#include "renderer/passes/shadow_pass.hpp"
+#include "renderer/passes/ssao_pass.hpp"
+#include "renderer/passes/ssr_pass.hpp"
+#include "renderer/passes/tonemap_pass.hpp"
+#include "renderer/passes/traced_shadow_pass.hpp"
 #include "renderer/render_events.hpp"
+#include "renderer/renderer_settings.hpp"
 #include "renderer/sdl_output_target.hpp"
 #include "renderer/shader_cache.hpp"
 #include "renderer/shader_compiler.hpp"
@@ -24,6 +35,7 @@
 #include "renderer/vulkan_core.hpp"
 #include "renderer/vulkan_renderer.hpp"
 #include "scripting/lua_state.hpp"
+#include "settings/settings.hpp"
 #include "thread_pool.hpp"
 #include "time.hpp"
 #include "ui/render/ui_pass.hpp"
@@ -32,6 +44,7 @@
 #include "window/base_window.hpp"
 #include "window/sdl_window.hpp"
 #include "window/window_events.hpp"
+#include "world/camera.hpp"
 #include "world/play_workspace.hpp"
 #include "world/workspace.hpp"
 #include "world/workspace_events.hpp"
@@ -40,12 +53,16 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <print>
 #include <span>
 #include <sstream>
 
@@ -53,7 +70,6 @@ namespace toast {
 
 namespace {
 IApplication* active_application = nullptr;
-float total_time = 0.0;
 double clear_assets_timer = 0.0;
 double lua_memory_plot_timer = 0.0;
 double script_reload_timer = 0.0;
@@ -70,6 +86,7 @@ struct EnginePimpl {
 	std::unique_ptr<assets::AssetManager> asset_manager = nullptr;
 	std::unique_ptr<input::InputSystem> input_system = nullptr;
 	std::unique_ptr<input::HapticsSystem> haptics_system = nullptr;
+
 	std::unique_ptr<renderer::VulkanCore> vulkan_core = nullptr;
 	std::unique_ptr<renderer::VulkanRenderer> renderer = nullptr;
 	std::unique_ptr<audio::AudioSystem> audio_system = nullptr;
@@ -99,15 +116,9 @@ Engine::Engine() noexcept {
 	// clang-format on
 
 	/*
-	 *	IMPORTANT:
-	 *	If you are planning on initializing something here you should
-	 *	consider doing it on Engine::init() instead
-	 *
-	 *	This code runs before we even set our working directory and create our
-	 *	game project, so there's not a lot of reason something outside the logger
-	 *	and the thread pool (logger depends on it) to be here
-	 *
-	 *	Be smart like toast and initialize things on the init() function
+	 *	Initialize in Engine::init() instead, unless it genuinely cannot wait.
+	 *	This runs before the working directory is set and before the project exists,
+	 *	so only the logger and the thread pool it depends on belong here.
 	 *	- xein <3
 	 */
 }
@@ -150,10 +161,27 @@ void Engine::init() {
 		}
 	}
 
-	m->asset_manager = std::make_unique<assets::AssetManager>();
+	// User settings
+	{
+		auto& settings = settings::Settings::get();
+		const auto& proj_root = assets::AssetManager::projectRoot();
 
-	// Compile every stale shader up front
-	renderer::ShaderCache::get().compileAllAtStartup();
+		std::filesystem::path user_file;
+		const std::string app_name {ProjectSettings::name().empty() ? "Toast" : ProjectSettings::name()};
+		if (char* pref_path = SDL_GetPrefPath("Nullptr Studios", app_name.c_str())) {
+			user_file = std::filesystem::path(pref_path) / "settings.toml";
+			SDL_free(pref_path);
+		}
+
+		settings.setPaths(proj_root / "settings.toml", user_file);
+		settings.load();
+
+		// Before the renderer exists, ShadowPass reads its resolution when it allocates, so this cannot wait
+		// for the rest of the renderer settings
+		renderer::registerRendererStartupSettings();
+	}
+
+	m->asset_manager = std::make_unique<assets::AssetManager>();
 
 	renderer::registerRenderEvents();
 
@@ -205,19 +233,24 @@ void Engine::init() {
 
 Engine::~Engine() noexcept {
 	if (m) {
+		// Save settings before closing down
+		try {
+			settings::Settings::get().saveIfDirty();
+		} catch (const std::exception& e) { TOAST_ERROR("Engine", "Failed to save settings on shutdown: {}", e.what()); }
+
+		// Stops the render thread and waits for anything still building
 		if (m->renderer) {
 			m->renderer->stop();
 		}
 
-		// remove objects before closing
 		{
 			std::scoped_lock lock(m->owners_mutex);
 			m->owners.clear();
 		}
 		m->world.reset();
 		m->ui_system.reset();
-		m->asset_manager.reset();
 		m->renderer.reset();
+		m->asset_manager.reset();
 		m->vulkan_core.reset();
 
 		delete m;
@@ -272,7 +305,7 @@ void Engine::tick() {
 	{
 		std::scoped_lock lock(m->owners_mutex);
 		ZoneScopedN("NodeOwners::tick()");
-		for (const auto& [_, node_owner] : m->owners) {
+		for (const auto& node_owner : m->owners | std::views::values) {
 			node_owner->tick();
 		}
 	}
@@ -282,7 +315,6 @@ void Engine::tick() {
 		ZoneScopedN("GameLayer::tick()");
 		active_application->tick();
 	}
-	total_time += Time::delta();
 
 	if (m->audio_system) {
 		m->audio_system->tick();
@@ -293,14 +325,44 @@ void Engine::tick() {
 	}
 
 	// TODO MOVE THIS
+	// FIXME: @XEIN where should we move this??
 	clear_assets_timer += Time::delta();
 	if (clear_assets_timer > 30.0) {
 		m->asset_manager->clearUnusedAssets();
 		clear_assets_timer = 0.0;
 	}
 
+	// FIXME: move this to editor only scope
+	{
+		std::scoped_lock lock(m->owners_mutex);
+		auto it = m->owners.find(m->active_workspace);
+
+		// Proxies land in one global list whichever workspace owns them, so without this every open workspace
+		// draws into the one viewport. No active workspace means no filter, which is the standalone case
+		if (m->renderer) {
+			m->renderer->setRenderOwnerFilter(it != m->owners.end() ? it->second.get() : nullptr);
+		}
+
+		if (m->renderer && it != m->owners.end()) {
+			if (Workspace* ws = it->second->asWorkspace()) {
+				const auto gizmo = ws->gizmoRenderState();
+				m->renderer->setGizmoState(
+				    renderer::VulkanRenderer::GizmoState {
+				      .visible = gizmo.visible,
+				      .tool = gizmo.tool,
+				      .origin = gizmo.origin,
+				      .orientation = gizmo.orientation,
+				      .hover = gizmo.hover,
+				      .active = gizmo.active,
+				      .drag_scale_factor = gizmo.drag_scale_factor,
+				    }
+				);
+			}
+		}
+	}
+
 	if (m->renderer) {
-		m->renderer->tick(total_time);
+		m->renderer->tick(Time::uptime());
 	}
 
 	lua_memory_plot_timer += Time::delta();
@@ -311,6 +373,7 @@ void Engine::tick() {
 		}
 	}
 
+	// SHOULDNT THIS ALSO HAPPEN IN RELEASE EDITOR BUILDS?
 #ifdef DEBUG
 	// dev builds hot-reload scripts, shaders and materials edited on disk
 	script_reload_timer += Time::delta();
@@ -330,18 +393,18 @@ auto Engine::shouldClose() -> bool {
 }
 
 void Engine::createSDLWindow(const char* w_name) {
-	// create window
 	m->window = std::make_unique<SDLWindow>(w_name, 1080, 720, SDL_WINDOW_VULKAN);
 
-	// get window handle
 	auto* sdl_window = static_cast<SDL_Window*>(m->window->nativeHandle());
 	if (m->ui_system) {
 		m->ui_system->setSDLWindow(sdl_window);
 	}
 	auto instance_extensions = renderer::SDLOutputTarget::getRequiredInstanceExtensions(sdl_window);
 	auto device_extensions = renderer::SDLOutputTarget::getRequiredDeviceExtensions();
-	// create vulkan core
 	m->vulkan_core = std::make_unique<renderer::VulkanCore>(instance_extensions, device_extensions);
+
+	// Compile every stale shader up front
+	renderer::ShaderCache::get().compileAllAtStartup();
 
 	// create output texture
 	auto output_target = std::make_unique<renderer::SDLOutputTarget>(
@@ -353,12 +416,48 @@ void Engine::createSDLWindow(const char* w_name) {
 
 	m->renderer = std::make_unique<renderer::VulkanRenderer>(*m->vulkan_core, std::move(output_target));
 
+	// Constructed before any material pass so materials can bind the culled light buffers straight away
+	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
+	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
+	m->renderer->setClusterLightingPass(&cluster_lighting_pass_ref);
+	m->renderer->addComputePass(std::move(cluster_lighting_pass));
+
+	// Same ordering requirement as the lighting pass
+	auto shadow_pass = std::make_unique<renderer::ShadowPass>(*m->vulkan_core);
+	m->renderer->setShadowPass(shadow_pass.get());
+	m->renderer->addRenderPass(std::move(shadow_pass));
+
+	// Environment cubemaps
+	auto environment_pass =
+	    std::make_unique<renderer::EnvironmentPass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
+	m->renderer->setEnvironmentPass(environment_pass.get());
+	m->renderer->addRenderPass(std::move(environment_pass));
+
+	// Probe cubemaps
+	auto reflection_probe_pass =
+	    std::make_unique<renderer::ReflectionProbePass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
+	m->renderer->setReflectionProbePass(reflection_probe_pass.get());
+	m->renderer->addRenderPass(std::move(reflection_probe_pass));
+
 	// Mesh rendering runs through per-material passes
 
-	// m->renderer->addRenderPass(std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent));
+	// World-stage passes render into the HDR scene target
+	const auto scene_format = m->renderer->getSceneColorFormat();
 
-	// UI composites over everything else
-	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, color_format, depth_format, extent));
+	// World-space UI panels are scene content and get exposed with it, the screen-space UI does not
+	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, scene_format, depth_format, extent));
+
+	if (m->vulkan_core->isRayTracingSupported()) {
+		m->renderer->addPostProcessPass(std::make_unique<renderer::TracedShadowPass>(*m->vulkan_core, scene_format, extent));
+	}
+
+	// SSAO first
+	m->renderer->addPostProcessPass(std::make_unique<renderer::SsaoPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::SsrPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::BloomPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::TonemapPass>(*m->vulkan_core, color_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::FxaaPass>(*m->vulkan_core, color_format, extent));
+
 	m->renderer->addRenderPass(std::make_unique<ui::UIPass>(*m->vulkan_core, color_format, depth_format, extent));
 	if (m->ui_system) {
 		m->ui_system->initializeRenderer(*m->vulkan_core);
@@ -367,13 +466,17 @@ void Engine::createSDLWindow(const char* w_name) {
 		});
 	}
 
-	// capped to 240 for now
+	// FIXME: CAPPED AT 240 for now
 	m->renderer->setFrameRateLimit(240.0);
+
+	renderer::registerRendererSettings(*m->renderer);
 
 	m->renderer->start();
 }
 
 void Engine::createAvaloniaWindow() {
+	settings::Settings::get().setActiveLayer(settings::Layer::project);
+
 	m->vulkan_core = std::make_unique<renderer::VulkanCore>(std::span<const char* const> {}, std::span<const char* const> {});
 
 	auto output_target = std::make_unique<renderer::SharedTextureOutputTarget>(*m->vulkan_core, vk::Extent2D(1080, 720));
@@ -385,14 +488,56 @@ void Engine::createAvaloniaWindow() {
 
 	m->renderer = std::make_unique<renderer::VulkanRenderer>(*m->vulkan_core, std::move(output_target));
 
+	// Constructed before any material pass so materials can bind the culled light buffers straight away
+	auto cluster_lighting_pass = std::make_unique<renderer::ClusterLightingPass>(*m->vulkan_core);
+	const auto& cluster_lighting_pass_ref = *cluster_lighting_pass;
+	m->renderer->setClusterLightingPass(&cluster_lighting_pass_ref);
+	m->renderer->addComputePass(std::move(cluster_lighting_pass));
+
+	// Same ordering requirement as the lighting pass
+	auto shadow_pass = std::make_unique<renderer::ShadowPass>(*m->vulkan_core);
+	m->renderer->setShadowPass(shadow_pass.get());
+	m->renderer->addRenderPass(std::move(shadow_pass));
+
+	// Environment cubemaps
+	auto environment_pass =
+	    std::make_unique<renderer::EnvironmentPass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
+	m->renderer->setEnvironmentPass(environment_pass.get());
+	m->renderer->addRenderPass(std::move(environment_pass));
+
+	// Probe cubemaps
+	auto reflection_probe_pass =
+	    std::make_unique<renderer::ReflectionProbePass>(*m->vulkan_core, m->renderer->getSceneColorFormat(), depth_format);
+	m->renderer->setReflectionProbePass(reflection_probe_pass.get());
+	m->renderer->addRenderPass(std::move(reflection_probe_pass));
+
 	// Mesh rendering runs through per-material passes
 
-	// Editor viewport gets the ground grid / debug lines / gizmo overlay
-	m->renderer->addRenderPass(std::make_unique<renderer::GridPass>(*m->vulkan_core, color_format, depth_format, extent));
-	m->renderer->addRenderPass(std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent));
+	// World-stage passes render into the HDR scene target
+	const auto scene_format = m->renderer->getSceneColorFormat();
 
-	// In-game UI: world-space panels first, the viewport composite over everything else
-	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, color_format, depth_format, extent));
+	// World-space UI panels are scene content
+	m->renderer->addRenderPass(std::make_unique<ui::WorldUIPass>(*m->vulkan_core, scene_format, depth_format, extent));
+
+	if (m->vulkan_core->isRayTracingSupported()) {
+		m->renderer->addPostProcessPass(std::make_unique<renderer::TracedShadowPass>(*m->vulkan_core, scene_format, extent));
+	}
+
+	// SSAO first
+	m->renderer->addPostProcessPass(std::make_unique<renderer::SsaoPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::SsrPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::BloomPass>(*m->vulkan_core, scene_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::TonemapPass>(*m->vulkan_core, color_format, extent));
+	m->renderer->addPostProcessPass(std::make_unique<renderer::FxaaPass>(*m->vulkan_core, color_format, extent));
+
+	// Editor overlays, drawn after the tonemap in display space (see DebugPass::stage() / GridPass::stage())
+	m->renderer->addRenderPass(std::make_unique<renderer::GridPass>(*m->vulkan_core, color_format, depth_format, extent));
+	m->renderer->addRenderPass(
+	    std::make_unique<renderer::DebugPass>(*m->vulkan_core, color_format, depth_format, extent, &cluster_lighting_pass_ref)
+	);
+
+	// DebugPass is enabled on editor
+	m->renderer->setDebugDrawEnabled(true);
 	m->renderer->addRenderPass(std::make_unique<ui::UIPass>(*m->vulkan_core, color_format, depth_format, extent));
 	if (m->ui_system) {
 		m->ui_system->initializeRenderer(*m->vulkan_core);
@@ -401,7 +546,10 @@ void Engine::createAvaloniaWindow() {
 		});
 	}
 
+	// editor will always be capped
 	m->renderer->setFrameRateLimit(240.0);
+
+	renderer::registerRendererSettings(*m->renderer);
 
 	m->renderer->start();
 }
@@ -583,139 +731,6 @@ void Engine::startGame() {
 }
 }
 
-#ifdef TRACY_ENABLE
-// NOLINTBEGIN(cppcoreguidelines-no-malloc)
-
-#ifdef _WIN32
-#include <malloc.h>
-#else
-#include <cstdlib>
-#endif
-
-auto operator new(std::size_t count) -> void* {
-	auto* ptr = malloc(count);
-	tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	return ptr;
-}
-
-auto operator new[](std::size_t count) -> void* {
-	auto* ptr = malloc(count);
-	tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	return ptr;
-}
-
-auto operator new(std::size_t count, const std::nothrow_t&) noexcept -> void* {
-	auto* ptr = malloc(count);
-	if (ptr) {
-		tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	}
-	return ptr;
-}
-
-auto operator new[](std::size_t count, const std::nothrow_t&) noexcept -> void* {
-	auto* ptr = malloc(count);
-	if (ptr) {
-		tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	}
-	return ptr;
-}
-
-auto operator new(std::size_t count, std::align_val_t align) -> void* {
-	void* ptr = nullptr;
-	std::size_t alignment = static_cast<std::size_t>(align);
-#ifdef _WIN32
-	ptr = _aligned_malloc(count, alignment);
-#else
-	alignment = std::max(alignment, sizeof(void*));
-	posix_memalign(&ptr, alignment, count);
-#endif
-	tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	return ptr;
-}
-
-auto operator new[](std::size_t count, std::align_val_t align) -> void* {
-	void* ptr = nullptr;
-	std::size_t alignment = static_cast<std::size_t>(align);
-#ifdef _WIN32
-	ptr = _aligned_malloc(count, alignment);
-#else
-	alignment = std::max(alignment, sizeof(void*));
-	posix_memalign(&ptr, alignment, count);
-#endif
-	tracy::Profiler::MemAllocCallstack(ptr, count, TRACY_CALLSTACK, true);
-	return ptr;
-}
-
-// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
-void operator delete(void* ptr) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete[](void* ptr) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete(void* ptr, const std::nothrow_t&) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete[](void* ptr, const std::nothrow_t&) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete(void* ptr, std::size_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete[](void* ptr, std::size_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-	free(ptr);
-}
-
-void operator delete(void* ptr, std::align_val_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-#ifdef _WIN32
-	_aligned_free(ptr);
-#else
-	free(ptr);
-#endif
-}
-
-void operator delete[](void* ptr, std::align_val_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-#ifdef _WIN32
-	_aligned_free(ptr);
-#else
-	free(ptr);
-#endif
-}
-
-void operator delete(void* ptr, std::size_t, std::align_val_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-#ifdef _WIN32
-	_aligned_free(ptr);
-#else
-	free(ptr);
-#endif
-}
-
-void operator delete[](void* ptr, std::size_t, std::align_val_t) noexcept {
-	tracy::Profiler::MemFreeCallstack(ptr, TRACY_CALLSTACK, true);
-#ifdef _WIN32
-	_aligned_free(ptr);
-#else
-	free(ptr);
-#endif
-}
-
-// NOLINTEND(cppcoreguidelines-no-malloc)
-#endif
-
 // ffi stuff
 extern "C" {
 
@@ -851,7 +866,6 @@ void toast_rename_prefab_root(const char* path, const char* new_name) noexcept {
 void toast_create_tnode(const char* path, const char* node_type) noexcept {
 	const auto stem = std::filesystem::path(path).stem().string();
 
-	// temp workspace
 	toast::Workspace temp_ws(node_type, toast::UID(static_cast<uint64_t>(-1ULL)));
 
 	assets::Prefab prefab(temp_ws.rootNode());

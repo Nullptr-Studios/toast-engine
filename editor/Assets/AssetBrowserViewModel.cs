@@ -491,18 +491,23 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged, IDisposable {
 		AssetDatabase.RebuildAssetDatabase();
 	}
 
+	/// <summary>
+	/// Asset paths for the clipboard, from tracked assets only
+	/// </summary>
+	private static List<string> ClipboardPathsOf(IEnumerable<object> items) {
+		return items.OfType<AssetFile>().Where(IsEditable).Select(f => f.Filepath[..^5]).ToList();
+	}
+
 	private void Copy(object? param) {
 		if (!CanCopy(param)) return;
-		var items = GetTargets(param);
-		m_clipPaths = items.OfType<AssetFile>().Select(f => f.Filepath[..^5]).ToList();
+		m_clipPaths = ClipboardPathsOf(GetTargets(param));
 		m_clipMode = ClipMode.Copy;
 		NotifyActionStateChanged();
 	}
 
 	private void Cut(object? param) {
 		if (!CanCut(param)) return;
-		var items = GetTargets(param);
-		m_clipPaths = items.OfType<AssetFile>().Select(f => f.Filepath[..^5]).ToList();
+		m_clipPaths = ClipboardPathsOf(GetTargets(param));
 		m_clipMode = ClipMode.Cut;
 		NotifyActionStateChanged();
 	}
@@ -510,6 +515,9 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged, IDisposable {
 	private void Paste() {
 		if (!CanPaste()) return;
 		var dest = m_selectedFolder!.Filepath;
+
+		// Nothing is written into cache:// or core://
+		if (!ProjectContext.IsUnderContentDatabase(dest) && !ProjectContext.IsDatabaseRoot(dest)) return;
 
 		foreach (var src in m_clipPaths) {
 			if (!File.Exists(src)) continue;
@@ -853,6 +861,10 @@ public class AssetBrowserViewModel : Tool, INotifyPropertyChanged, IDisposable {
 
 			// core:// is always appended
 			roots.Add(new AssetFolder(ProjectContext.CorePath) { Name = "core://" });
+
+			// cache:// - everything the engine generates rather than the project authors
+			if (Directory.Exists(ProjectContext.CachePath))
+				roots.Add(new AssetFolder(ProjectContext.CachePath, listRawFiles: true) { Name = "cache://" });
 		} else {
 			// show a minimal placeholder
 			var fallbackFolder = new AssetFolder(@"C:\Users\Xein\Desktop\unnamed_project\assets") {

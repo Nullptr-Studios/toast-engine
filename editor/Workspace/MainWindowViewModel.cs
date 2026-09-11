@@ -41,6 +41,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 	[ObservableProperty] private bool m_inspectorVisible = true;
 	[ObservableProperty] private bool m_signalsVisible = true;
 	[ObservableProperty] private bool m_logsVisible = true;
+	[ObservableProperty] private bool m_rendererSettingsVisible;
 
 	[ObservableProperty] private IRootDock m_mainLayout;
 	[ObservableProperty] private bool m_schemaEditorVisible;
@@ -181,7 +182,6 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 	private void OpenProjectSettings() {
 		if (!ProjectContext.IsInitialized) return;
 
-		// Find the .toast project file in the project root
 		var toastFile = Directory.EnumerateFiles(ProjectContext.ProjectPath, "*.toast").FirstOrDefault();
 		if (toastFile is null) return;
 
@@ -215,6 +215,11 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 
 	partial void OnSchemaEditorVisibleChanged(bool value) {
 		ToggleMainTool("SchemaEditor", value);
+	}
+
+	partial void OnRendererSettingsVisibleChanged(bool value) {
+		if (value != m_dockFactory.IsToolVisible("RendererSettings"))
+			m_dockFactory.ToggleTool("RendererSettings");
 	}
 
 	partial void OnLogsVisibleChanged(bool value) {
@@ -536,6 +541,69 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 		if (m_dockFactory.ActiveWorkspace is { } ws) m_dockFactory.CloseDockable(ws);
 	}
 
+	/// <summary>
+	/// Deletes baked probe and irradiance files whose node no longer exists in the project
+	/// </summary>
+	/// <remarks>
+	/// Manual and confirmed, never automatic: this deletes minutes of baking, and the scan only sees scenes
+	/// under the project's databases - a level stored elsewhere would lose its lighting silently
+	/// </remarks>
+	[RelayCommand]
+	private async Task CleanBakedLightingCache() {
+		if (App.MainWindow is not { } owner) return;
+
+		if (!ProjectContext.IsInitialized) {
+			await new MessageModal(new ModalConfig(
+				"Clean Baked Lighting",
+				"No project is open.",
+				Icon: LucideIconKind.Info
+			)).ShowDialog<bool?>(owner);
+			return;
+		}
+
+		var orphans = await Task.Run(BakedLightingCache.FindOrphans);
+		if (orphans.Count == 0) {
+			await new MessageModal(new ModalConfig(
+				"Clean Baked Lighting",
+				"No orphaned bakes found - every cached probe and volume still belongs to a node in this project.",
+				Icon: LucideIconKind.Check
+			)).ShowDialog<bool?>(owner);
+			return;
+		}
+
+		var total = orphans.Sum(o => o.Bytes);
+		var probes = orphans.Count(o => o.Kind == "Reflection probe");
+		var volumes = orphans.Count - probes;
+
+		var breakdown = string.Join(", ", new[] {
+			probes > 0 ? $"{probes} reflection probe{(probes == 1 ? "" : "s")}" : null,
+			volumes > 0 ? $"{volumes} irradiance volume{(volumes == 1 ? "" : "s")}" : null
+		}.Where(s => s is not null));
+
+		var confirmed = await new MessageModal(new ModalConfig(
+			"Clean Baked Lighting",
+			$"Found {breakdown} with no node in this project, using {BakedLightingCache.FormatSize(total)}.\n\n" +
+			"Delete them? Any node that is restored later will have to be re-baked.",
+			ModalButtons.OkCancel,
+			LucideIconKind.Shredder,
+			new SolidColorBrush(Color.Parse("#d04040")),
+			"Delete",
+			OkIcon: LucideIconKind.Shredder
+		)).ShowDialog<bool?>(owner) == true;
+		if (!confirmed) return;
+
+		var (deleted, bytes, failed) = BakedLightingCache.Delete(orphans);
+
+		var message = $"Deleted {deleted} file{(deleted == 1 ? "" : "s")}, freeing {BakedLightingCache.FormatSize(bytes)}.";
+		if (failed.Count > 0) message += $"\n\n{failed.Count} could not be removed: {string.Join(", ", failed.Take(5))}";
+
+		await new MessageModal(new ModalConfig(
+			"Clean Baked Lighting",
+			message,
+			Icon: failed.Count > 0 ? LucideIconKind.TriangleAlert : LucideIconKind.Check
+		)).ShowDialog<bool?>(owner);
+	}
+
 	// saving is locked while any tab is in play mode
 	private static bool CanSave() {
 		return !WorkspaceViewModel.AnyPlayActive;
@@ -609,7 +677,6 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 			$"--include-root \"{libSrc}\" --register-fn registerGameTypes --attribute Game " +
 			$"--lua-stubs \"{gameLuaStubs}\""));
 
-		// Copy engine reflection database to cache
 		tasks.Add(LoaderTask.Do("Copy engine reflection", async log => {
 			var src = Path.Combine(ProjectContext.CorePath, "engine_reflect.json");
 			var dst = ProjectContext.Resolve("cache://engine_reflect.json");
@@ -801,7 +868,6 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable {
 			),
 			// Copy Engine libs
 			LoaderTask.Do("copy libraries", CopyDlls),
-			// Copy project.toast
 			LoaderTask.Do("copy project.toast", CopyProjectToast)
 		};
 

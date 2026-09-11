@@ -359,12 +359,98 @@
 				<Button Background="{StaticResource Bg3}"
 				        CornerRadius="6, 0, 0, 6"
 				        ToolTip.Tip="Change viewport mode">
+					<Button.Flyout>
+						<MenuFlyout>
+							<MenuItem Header="Lit"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="Lit" />
+							<MenuItem Header="Cluster Heatmap"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="ClusterHeatmap"
+							          ToolTip.Tip="Forward+ debug view: per-pixel clustered light count (blue=0, red=8+)" />
+							<Separator />
+							<MenuItem Header="Albedo"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="Albedo"
+							          ToolTip.Tip="Base colour as sampled, before any lighting" />
+							<MenuItem Header="Normal"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="Normal"
+							          ToolTip.Tip="World-space shading normal, remapped to 0..1" />
+							<MenuItem Header="Metallic / Roughness"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="MetallicRoughness"
+							          ToolTip.Tip="Red is metallic, green is roughness" />
+							<MenuItem Header="Ambient"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="Ambient"
+							          ToolTip.Tip="Ambient radiance reaching the surface, before albedo" />
+							<MenuItem Header="Specular IBL"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="SpecularIbl"
+							          ToolTip.Tip="Prefiltered environment along the reflection vector - the only thing lighting a metal in an unlit scene" />
+							<MenuItem Header="Specular IBL (mip 0)"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="SpecularIblMip0"
+							          ToolTip.Tip="Same lookup pinned to the sharpest mip - isolates whether the coarse mips are the problem" />
+							<MenuItem Header="Reflection Vector"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="Reflection"
+							          ToolTip.Tip="Reflection direction remapped to 0..1 - shows which patch of the cubemap a surface samples" />
+							<MenuItem Header="Reflection Probes"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="ReflectionProbes"
+							          ToolTip.Tip="Which probe owns each surface (hue) and how strongly (brightness); grey means the global environment" />
+							<MenuItem Header="Probe Capture"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="ProbeCapture"
+							          ToolTip.Tip="What the owning probe captured; magenta = no probe, yellow = unbaked, black = the capture itself is black" />
+							<MenuItem Header="Probe Cubemap"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="ProbeCubemap"
+							          ToolTip.Tip="The probe's cubemap along the view ray - look around inside the capture; roughness picks the mip" />
+							<Separator />
+							<MenuItem Header="Normal Buffer"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="NormalBuffer"
+							          ToolTip.Tip="The G-buffer's world normals, read back out of the buffer SSR traces against; black means nothing wrote there" />
+							<MenuItem Header="Roughness Buffer"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="RoughnessBuffer"
+							          ToolTip.Tip="The other half of the G-buffer - what SSR uses to decide how much a surface reflects" />
+							<MenuItem Header="SSR Only"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="SsrOnly"
+							          ToolTip.Tip="The traced reflection before it is weighted into the scene - separates a failed march from a discarded one" />
+							<MenuItem Header="Ambient Occlusion"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="AmbientOcclusion"
+							          ToolTip.Tip="The AO factor on its own - white is unoccluded, so a fully white image means the radius is too small for the scene's scale" />
+							<MenuItem Header="Irradiance Volumes"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="IrradianceVolumes"
+							          ToolTip.Tip="Interpolated volume irradiance; magenta = no volume covers this point, yellow = covered but never baked" />
+							<Separator />
+							<MenuItem Header="Traced Shadows (visibility)"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="TracedShadowsOnly"
+							          ToolTip.Tip="Ray-traced directional visibility on its own - white lit, black occluded. Needs ray query support" />
+							<MenuItem Header="Traced Shadows (applied)"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="TracedShadows"
+							          ToolTip.Tip="The lit scene multiplied by traced visibility, for comparing against the shadow-map result" />
+							<MenuItem Header="Shadow Term"
+							          Command="{Binding SetRenderModeCommand}"
+							          CommandParameter="ShadowTerm"
+							          ToolTip.Tip="The shadow factor every light resolved to, strongest occlusion wins - white lit, black fully shadowed. Toggle 'Traced shadows (all lights)' in the Toast Debug panel to swap a ray-traced reference under the same camera; wherever the two disagree is the shadow map's error" />
+						</MenuFlyout>
+					</Button.Flyout>
 					<StackPanel Orientation="Horizontal"
 					            Spacing="8">
 						<LucideIcon Kind="Eclipse"
 						            Size="18"
 						            StrokeWidth="2.5" />
-						<TextBlock Text="Mode" />
+						<TextBlock Text="{Binding ActiveRenderMode}" />
 					</StackPanel>
 				</Button>
 				<Button Background="{StaticResource Bg3}"

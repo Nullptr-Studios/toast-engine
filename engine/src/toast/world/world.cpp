@@ -159,12 +159,11 @@ void World::loadNode(std::string_view uri, bool activate_as_root) {
 	// just reroute to the actual loadNode() implementation
 	auto id = assets::resolveURI(uri);
 
-#ifndef NDEBUG
+	// an unresolvable URI leaves the engine dereferencing an empty optional
 	if (not id.has_value()) {
 		TOAST_WARN("World", "Couldn't load Node {}", uri);
 		return;
 	}
-#endif
 
 	loadNode(*id, activate_as_root);
 }
@@ -1083,6 +1082,14 @@ void WorldTestAccess::WorldDeleter::operator()(World* world) const noexcept {
 auto WorldTestAccess::createWorld() -> WorldPtr {
 	testNodeInfos().clear();
 	return WorldPtr(new World());
+}
+
+auto WorldTestAccess::activeRenderCamera(World& world) -> Camera* {
+	return world.activeRenderCamera();
+}
+
+auto WorldTestAccess::hasActiveCamera(World& world) -> bool {
+	return world.activeCamera().exists();
 }
 
 auto WorldTestAccess::createNode(World& world, std::string_view name, NodeState state) -> Box<Node> {

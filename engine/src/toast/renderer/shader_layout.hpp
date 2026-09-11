@@ -35,11 +35,6 @@ public:
 		return m_descriptor_set_layouts;
 	}
 
-	[[nodiscard]]
-	auto getPushConstantRanges() const -> const std::vector<vk::PushConstantRange>& {
-		return m_push_constant_ranges;
-	}
-
 private:
 	std::vector<vk::raii::DescriptorSetLayout> m_descriptor_set_layouts;
 	vk::raii::PipelineLayout m_pipeline_layout = nullptr;

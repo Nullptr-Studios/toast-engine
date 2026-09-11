@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <format>
+#include <limits>
 #include <toast/log.hpp>
 
 namespace renderer {
@@ -78,23 +79,39 @@ void VulkanTexture::destroy() {
 // Upload Functions
 
 void TextureUpload::build(const VulkanCore& core) {
+	// Every failure below marks a reason and returns rather than logging and walking on
+	if (m_data.empty()) {
+		TOAST_ERROR("Render", "Texture '{}' has no data to decode", m_debug_name);
+		m_texture->markFailed(IVulkanResource::UploadState::failed_load);
+		return;
+	}
+
 	auto result =
 	    ktxTexture2_CreateFromMemory(m_data.data(), m_data.size(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &m_ktx_texture);
-	if (result != KTX_SUCCESS) {
-		TOAST_CRITICAL("Render", "Failed to open KTX image data?!");
+	if (result != KTX_SUCCESS || m_ktx_texture == nullptr) {
+		TOAST_ERROR("Render", "Texture '{}' is not readable KTX2 data (ktx error {})", m_debug_name, static_cast<int>(result));
+		m_texture->markFailed(IVulkanResource::UploadState::failed_load);
+		return;
 	}
 
 	if (ktxTexture2_NeedsTranscoding(m_ktx_texture)) {
 		result = ktxTexture2_TranscodeBasis(m_ktx_texture, KTX_TTF_BC7_RGBA, 0);
 		if (result != KTX_SUCCESS) {
-			TOAST_CRITICAL("Render", "Failed to transcode BasisUniversal texture");
+			TOAST_ERROR(
+			    "Render", "Texture '{}' failed BasisUniversal transcode (ktx error {})", m_debug_name, static_cast<int>(result)
+			);
+			m_texture->markFailed(IVulkanResource::UploadState::failed_load);
+			return;
 		}
 	}
 
 	m_tex_params.format = static_cast<vk::Format>(m_ktx_texture->vkFormat);
 
+	// Decoded fine, so anything from here on is the GPU side
 	if (m_tex_params.format == vk::Format::eR8G8B8Unorm || m_tex_params.format == vk::Format::eR8G8B8Srgb) {
-		TOAST_CRITICAL("Render", "24bit format is not supported by ToastEngine, Please use RGBA format!!");
+		TOAST_ERROR("Render", "Texture '{}' is 24bit; ToastEngine needs an RGBA format", m_debug_name);
+		m_texture->markFailed(IVulkanResource::UploadState::failed_gpu);
+		return;
 	}
 
 	m_tex_params.extent = vk::Extent3D(m_ktx_texture->baseWidth, m_ktx_texture->baseHeight, m_ktx_texture->baseDepth);
@@ -108,7 +125,13 @@ void TextureUpload::build(const VulkanCore& core) {
 		m_tex_params.layer_count = 6 * std::max(1u, m_ktx_texture->numLayers);
 	}
 
-	m_texture->create(core, m_tex_params, m_debug_name);
+	try {
+		m_texture->create(core, m_tex_params, m_debug_name);
+	} catch (const std::exception& e) {
+		TOAST_ERROR("Render", "Texture '{}' could not be created on the device: {}", m_debug_name, e.what());
+		m_texture->markFailed(IVulkanResource::UploadState::failed_gpu);
+		return;
+	}
 	m_texture->markUploading();
 
 	const vk::DeviceSize total_size = m_ktx_texture->dataSize;
@@ -122,6 +145,8 @@ void TextureUpload::build(const VulkanCore& core) {
 	alloc_ci.flags = vma::AllocationCreateFlagBits::eMapped | vma::AllocationCreateFlagBits::eHostAccessSequentialWrite;
 
 	m_staging_buffer = core.getAllocator().createBuffer(staging_ci, alloc_ci);
+
+	host_bytes = total_size + m_data.size() + total_size;
 	if (!m_debug_name.empty()) {
 		setDebugName(core, *m_staging_buffer, m_debug_name + " StagingBuffer");
 	}
@@ -160,6 +185,10 @@ void TextureUpload::build(const VulkanCore& core) {
 }
 
 void TextureUpload::record(vk::CommandBuffer cmd) {
+	if (m_texture->hasFailed() || !*m_staging_buffer) {
+		return;
+	}
+
 	vk::Image image_handle = m_texture->getImage();
 
 	vk::ImageMemoryBarrier barrier {};
@@ -217,6 +246,7 @@ void RawTextureUpload::build(const VulkanCore& core) {
 	alloc_ci.usage = vma::MemoryUsage::eAuto;
 	alloc_ci.flags = vma::AllocationCreateFlagBits::eMapped | vma::AllocationCreateFlagBits::eHostAccessSequentialWrite;
 	m_staging_buffer = core.getAllocator().createBuffer(staging_ci, alloc_ci);
+	host_bytes = 2 * static_cast<vk::DeviceSize>(m_data.size());
 	if (!m_debug_name.empty()) {
 		setDebugName(core, *m_staging_buffer, m_debug_name + " StagingBuffer");
 	}
@@ -266,6 +296,38 @@ void RawTextureUpload::record(vk::CommandBuffer cmd) {
 	cmd.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eBottomOfPipe, {}, nullptr, nullptr, barrier
 	);
+}
+
+auto uploadTextureSync(const VulkanCore& core, VulkanTexture& texture, std::vector<uint8_t> data, std::string_view debug_name)
+    -> bool {
+	TextureUpload job(texture, std::move(data), debug_name);
+	job.build(core);
+	if (texture.hasFailed()) {
+		return false;
+	}
+
+	// Graphics family, not the transfer one the ring uses, this submits and waits on its own, so there is
+	// nothing to gain from the dedicated queue and the image ends up where the first draw needs it anyway
+	const auto& device = core.getDevice();
+	const vk::CommandPoolCreateInfo pool_ci(vk::CommandPoolCreateFlagBits::eTransient, core.getGraphicsQueueFamilyIndex());
+	const vk::raii::CommandPool pool(device, pool_ci);
+	auto buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 1));
+	const vk::raii::CommandBuffer cmd = std::move(buffers[0]);
+
+	cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+	job.record(*cmd);
+	cmd.end();
+
+	const vk::raii::Fence fence(device, vk::FenceCreateInfo {});
+	const vk::CommandBuffer raw_cmd = *cmd;
+	core.getGraphicsQueue().submit(vk::SubmitInfo(0, nullptr, nullptr, 1, &raw_cmd), *fence);
+	if (device.waitForFences(*fence, vk::True, std::numeric_limits<uint64_t>::max()) != vk::Result::eSuccess) {
+		texture.markFailed(IVulkanResource::UploadState::failed_gpu);
+		return false;
+	}
+
+	job.finished();
+	return texture.isReady();
 }
 
 }

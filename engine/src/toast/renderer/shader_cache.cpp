@@ -13,7 +13,13 @@ namespace renderer {
 
 namespace {
 
-constexpr int k_cache_format = 1;
+/// Bump whenever the *shape* of the cached reflection changes, not just the shader sources: entries are keyed
+/// on the source hash, so an extraction fix alone would keep serving entries written by the older extractor.
+/// v2 populated entry_points; v3 kept array bindings and their descriptor counts; v4 kept
+/// RaytracingAccelerationStructure bindings; v5 fixed their *serialization*, which had been round-tripping
+/// them to "uniform_buffer" - correct on a fresh compile, wrong on every cache hit; v6 reflects the *linked*
+/// program, so parameters an imported module declares are no longer missing from the pipeline layout
+constexpr int k_cache_format = 6;
 
 auto spirvUri(toast::UID uid) -> std::string {
 	return "cache://shaders/" + uid.get() + ".spv";
@@ -27,6 +33,13 @@ constexpr std::string_view k_hash_index_uri = "cache://shaders/hash.json";
 
 auto hashToHex(uint64_t hash) -> std::string {
 	return std::format("{:016x}", hash);
+}
+
+/// Cache key for a shader: its source *plus* the optional device features it was compiled against. The same
+/// source produces different SPIR-V depending on TOAST_RAY_QUERY, and serving the wrong one fails pipeline
+/// creation on a device that lacks the capability - a symptom that points at the shader, not at the cache
+auto sourceHash(const std::string& source) -> uint64_t {
+	return ShaderCache::fnv1a(source.data(), source.size()) ^ (ShaderCompiler::featureHash() * 0x100000001b3ull);
 }
 
 }
@@ -166,7 +179,7 @@ auto ShaderCache::compileLocked(toast::UID uid) -> std::shared_ptr<const Entry> 
 	auto entry = std::make_shared<Entry>();
 	entry->spirv = std::move(compiled.spirv);
 	entry->reflection = std::move(compiled.reflection);
-	entry->hash = fnv1a(source.data(), source.size());
+	entry->hash = sourceHash(source);
 	entry->source_uri = source_uri;
 	entry->dependencies = std::move(compiled.dependencies);
 
@@ -226,7 +239,7 @@ auto ShaderCache::loadOrCompileLocked(toast::UID uid) -> std::shared_ptr<const E
 	}
 
 	const std::string& source = source_handle->source();
-	const uint64_t source_hash = fnv1a(source.data(), source.size());
+	const uint64_t source_hash = sourceHash(source);
 
 	if (isDiskCacheFreshLocked(uid, source_hash)) {
 		if (auto entry = loadFromDiskLocked(uid)) {

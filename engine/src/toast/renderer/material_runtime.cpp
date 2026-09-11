@@ -201,7 +201,10 @@ auto stringField(const DataValue& obj, std::string_view key, std::string_view fa
 
 }
 
-MaterialRuntime::MaterialRuntime(const VulkanCore& core, assets::Material* material) : m_core(&core), m_material(material) {
+MaterialRuntime::MaterialRuntime(const VulkanCore& core, assets::Material* material)
+    : m_core(&core),
+      m_material(material),
+      m_material_ref(material) {
 	rebuild();
 }
 
@@ -279,6 +282,8 @@ void MaterialRuntime::bakeValues() {
 	m_ubo_blobs.clear();
 	m_push_blob.clear();
 	m_model_offset.reset();
+	m_joint_offset_offset.reset();
+	m_instance_base_offset.reset();
 
 	if (m_material == nullptr) {
 		return;
@@ -319,6 +324,14 @@ void MaterialRuntime::bakeValues() {
 		for (const auto& member : push.members) {
 			if (member.engine_semantic == "model_matrix") {
 				m_model_offset = member.offset;
+				continue;
+			}
+			if (member.engine_semantic == "joint_offset") {
+				m_joint_offset_offset = member.offset;
+				continue;
+			}
+			if (member.engine_semantic == "instance_base") {
+				m_instance_base_offset = member.offset;
 				continue;
 			}
 			if (!member.engine_semantic.empty() || !member.inspector.reflected) {
@@ -399,6 +412,8 @@ void MaterialRuntime::bakeTextures() {
 		TextureSlot slot;
 		slot.set = binding.set;
 		slot.binding = binding.binding;
+		slot.default_fallback = binding.inspector.default_fallback;
+		slot.linear_data = binding.inspector.linear_data;
 
 		const DataValue* v = m_material->value(binding.name);
 		if (v != nullptr) {

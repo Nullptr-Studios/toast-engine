@@ -1,6 +1,6 @@
 /// @file IRenderPass.hpp
 /// @author dario
-/// @date 07/06/2026.
+/// @date 07/06/2026
 
 #pragma once
 
@@ -9,6 +9,18 @@
 #include <atomic>
 #include <string_view>
 
+/// @brief Which of the renderer's two rendering scopes a pass records into
+///
+/// The scene is tonemapped once at the end, which splits passes in two: those exposed and tonemapped with
+/// it, and those authored in display space that must not be
+enum class RenderStage : uint8_t {
+	/// Into the HDR scene target, before tonemapping. Scene geometry, the grid, world-space UI panels
+	world,
+	/// Into the final output image, after tonemapping. UI and debug overlays, whose colours are the literal
+	/// values that should reach the screen
+	overlay,
+};
+
 /**
  * @brief Interface for custom rendering passes
  */
@@ -16,30 +28,19 @@ class IRenderPass {
 public:
 	virtual ~IRenderPass() = default;
 
-	/**
-	 * @brief Updates the render pass state for the current frame
-	 * @param frame_index The index of the current frame in flight
-	 * @param dt The delta time since the last frame
-	 */
+	/// @returns which rendering scope this pass belongs to; see RenderStage
+	[[nodiscard]]
+	virtual auto stage() const -> RenderStage {
+		return RenderStage::world;
+	}
+
 	virtual void update(uint32_t frame_index, float dt) { }
 
-	/**
-	 * @brief Records work that must run before the renderer's main scope opens
-	 * @param cmd The command buffer to record commands into
-	 * @param frame_index The index of the current frame in flight
-	 * @param image_index The index of the image to render to
-	 *
-	 * Runs outside beginRendering/endRendering, so passes can render to their own targets
-	 * and transition them for sampling
-	 */
+	/// @brief Records work that must run before the renderer's main scope opens
+	///
+	/// Outside any rendering scope, so a pass can render into its own targets and transition them
 	virtual void recordPre(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) { }
 
-	/**
-	 * @brief Records the render pass commands for the current frame
-	 * @param cmd The command buffer to record commands into
-	 * @param frameIndex The index of the current frame in flight
-	 * @param imageIndex The index of the image to render to
-	 */
 	virtual void record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) = 0;
 
 	/// @returns name shown in the editor's pass visibility popup
@@ -55,9 +56,6 @@ public:
 	auto isEnabled() const noexcept -> bool {
 		return m_enabled.load(std::memory_order_relaxed);
 	}
-
-protected:
-	std::vector<FrameResources> m_frame_resources;
 
 private:
 	std::atomic_bool m_enabled {true};

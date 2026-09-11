@@ -1,14 +1,18 @@
 /// @file VulkanPipeline.cpp
 /// @author dario
-/// @date 16/05/2026.
+/// @date 16/05/2026
 
 #include "vulkan_pipeline.hpp"
 
+#include "spirv_entry_points.hpp"
 #include "vulkan_core.hpp"
 #include "vulkan_debug.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <stdexcept>
+#include <string>
 #include <toast/log.hpp>
 
 namespace renderer {
@@ -34,25 +38,42 @@ auto createGraphicsPipelineImpl(
     const vk::PipelineLayout& pipeline_layout
 ) -> vk::raii::Pipeline {
 	const auto& device = core.getDevice();
-	const std::array shader_stages = {
-	  vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, *shader_module, config.vertex_entry.c_str()),
-	  vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, *shader_module, config.fragment_entry.c_str())
-	};
 
-	const std::array color_attachment_formats {config.color_format};
+	// Held in locals: the create infos below store raw pointers into these strings
+	const std::string vertex_entry =
+	    spirv::resolveEntryPoint(config.shader_spirv, spirv::ExecutionModel::vertex, config.vertex_entry, config.debug_name);
+	const std::string fragment_entry =
+	    config.depth_only ? config.fragment_entry
+	                      : spirv::resolveEntryPoint(
+	                            config.shader_spirv, spirv::ExecutionModel::fragment, config.fragment_entry, config.debug_name
+	                        );
+
+	const std::array shader_stages = {
+	  vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, *shader_module, vertex_entry.c_str()),
+	  vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, *shader_module, fragment_entry.c_str())
+	};
+	// A depth-only pipeline takes just the first (vertex) stage - see Config::depth_only
+	const uint32_t stage_count = config.depth_only ? 1u : static_cast<uint32_t>(shader_stages.size());
+
+	std::vector<vk::Format> color_attachment_formats {config.color_format};
+	color_attachment_formats.insert(
+	    color_attachment_formats.end(), config.extra_color_formats.begin(), config.extra_color_formats.end()
+	);
 	vk::PipelineRenderingCreateInfo rendering_ci {};
-	rendering_ci.colorAttachmentCount = static_cast<uint32_t>(color_attachment_formats.size());
-	rendering_ci.pColorAttachmentFormats = color_attachment_formats.data();
+	rendering_ci.colorAttachmentCount = config.depth_only ? 0u : static_cast<uint32_t>(color_attachment_formats.size());
+	rendering_ci.pColorAttachmentFormats = config.depth_only ? nullptr : color_attachment_formats.data();
 	if (config.depth_format.has_value()) {
 		rendering_ci.depthAttachmentFormat = *config.depth_format;
 	}
+	rendering_ci.viewMask = config.view_mask;
 
 	// No attributes means the shader generates its vertices
-	const uint32_t vertex_binding_count = config.vertex_attributes.empty() ? 0 : 1;
+	const uint32_t vertex_binding_count =
+	    config.vertex_attributes.empty() ? 0 : static_cast<uint32_t>(config.vertex_bindings.size());
 	const vk::PipelineVertexInputStateCreateInfo vertex_input_ci(
 	    {},
 	    vertex_binding_count,
-	    &config.vertex_binding,
+	    config.vertex_bindings.data(),
 	    static_cast<uint32_t>(config.vertex_attributes.size()),
 	    config.vertex_attributes.data()
 	);
@@ -67,8 +88,19 @@ auto createGraphicsPipelineImpl(
 	);
 
 	// Uses generic customizable flags passed from config definitions
+	const bool depth_bias_enable = config.depth_bias_constant != 0.0f || config.depth_bias_slope != 0.0f;
 	const vk::PipelineRasterizationStateCreateInfo rasterization_state_ci(
-	    {}, false, false, vk::PolygonMode::eFill, config.cull_mode, config.front_face, false, 0.0f, 0.0f, 0.0f, 1.0f
+	    {},
+	    false,
+	    false,
+	    vk::PolygonMode::eFill,
+	    config.cull_mode,
+	    config.front_face,
+	    depth_bias_enable,
+	    config.depth_bias_constant,
+	    0.0f,
+	    config.depth_bias_slope,
+	    1.0f
 	);
 
 	const vk::PipelineMultisampleStateCreateInfo multisample_state_ci({}, vk::SampleCountFlagBits::e1);
@@ -102,7 +134,11 @@ auto createGraphicsPipelineImpl(
 		case BlendPreset::none: break;
 	}
 
-	const vk::PipelineColorBlendAttachmentState color_blend_attachment(
+	const vk::ColorComponentFlags rgb_write =
+	    vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+
+	std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments;
+	color_blend_attachments.emplace_back(
 	    blend_preset != BlendPreset::none,
 	    src_factor,
 	    dst_factor,
@@ -110,20 +146,41 @@ auto createGraphicsPipelineImpl(
 	    vk::BlendFactor::eOne,
 	    vk::BlendFactor::eZero,
 	    vk::BlendOp::eAdd,
-	    vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB
-	);
-	const vk::PipelineColorBlendStateCreateInfo color_blend_state_ci(
-	    {}, false, vk::LogicOp::eCopy, 1, &color_blend_attachment, std::array {0.0f, 0.0f, 0.0f, 0.0f}
+	    rgb_write
 	);
 
-	// Create depth/stencil state if depth format is specified
+	// See Config::extra_color_formats and write_extra_color. Alpha is written along with RGB, because these
+	// attachments pack a scalar into .w rather than a coverage value
+	for ([[maybe_unused]]
+	     const vk::Format extra : config.extra_color_formats) {
+		color_blend_attachments.emplace_back(
+		    false,
+		    vk::BlendFactor::eOne,
+		    vk::BlendFactor::eZero,
+		    vk::BlendOp::eAdd,
+		    vk::BlendFactor::eOne,
+		    vk::BlendFactor::eZero,
+		    vk::BlendOp::eAdd,
+		    config.write_extra_color ? (rgb_write | vk::ColorComponentFlagBits::eA) : vk::ColorComponentFlags {}
+		);
+	}
+
+	const vk::PipelineColorBlendStateCreateInfo color_blend_state_ci(
+	    {},
+	    false,
+	    vk::LogicOp::eCopy,
+	    config.depth_only ? 0u : static_cast<uint32_t>(color_blend_attachments.size()),
+	    config.depth_only ? nullptr : color_blend_attachments.data(),
+	    std::array {0.0f, 0.0f, 0.0f, 0.0f}
+	);
+
 	vk::PipelineDepthStencilStateCreateInfo depth_stencil_state_ci {};
 	if (config.depth_format.has_value()) {
 		depth_stencil_state_ci = vk::PipelineDepthStencilStateCreateInfo(
 		    {},
 		    config.depth_test,
 		    config.depth_write,
-		    vk::CompareOp::eLess,    // depthCompareOp
+		    config.depth_compare,    // depthCompareOp
 		    false,                   // depthBoundsTestEnable
 		    false,                   // stencilTestEnable
 		    vk::StencilOpState(),    // front
@@ -135,7 +192,7 @@ auto createGraphicsPipelineImpl(
 
 	vk::GraphicsPipelineCreateInfo pipeline_ci {};
 	pipeline_ci.pNext = &rendering_ci;
-	pipeline_ci.stageCount = static_cast<uint32_t>(shader_stages.size());
+	pipeline_ci.stageCount = stage_count;
 	pipeline_ci.pStages = shader_stages.data();
 	pipeline_ci.pVertexInputState = &vertex_input_ci;
 	pipeline_ci.pInputAssemblyState = &input_assembly_ci;
@@ -159,8 +216,10 @@ auto createComputePipelineImpl(
     const vk::PipelineLayout& pipeline_layout
 ) -> vk::raii::Pipeline {
 	const auto& device = core.getDevice();
+	const std::string compute_entry =
+	    spirv::resolveEntryPoint(config.shader_spirv, spirv::ExecutionModel::compute, config.compute_entry, config.debug_name);
 	const vk::PipelineShaderStageCreateInfo shader_stage_ci(
-	    {}, vk::ShaderStageFlagBits::eCompute, *shader_module, config.compute_entry.c_str()
+	    {}, vk::ShaderStageFlagBits::eCompute, *shader_module, compute_entry.c_str()
 	);
 
 	// Use the explicitly passed layout
@@ -176,7 +235,6 @@ VulkanPipeline::VulkanPipeline(const VulkanCore& core, const Config& config) {
 
 auto VulkanPipeline::rebuild(const VulkanCore& core, const Config& config) -> void {
 	reset();
-	m_pipeline_type = config.pipeline_type;
 
 	if (!config.pipeline_layout) {
 		TOAST_CRITICAL("Render", "A valid pipeline_layout must be provided!");
@@ -186,8 +244,11 @@ auto VulkanPipeline::rebuild(const VulkanCore& core, const Config& config) -> vo
 		TOAST_CRITICAL("Render", "Pipeline depth format cannot be undefined!");
 	}
 	if (config.pipeline_type == PipelineType::graphics) {
-		if (config.color_format == vk::Format::eUndefined) {
+		if (config.color_format == vk::Format::eUndefined && !config.depth_only) {
 			TOAST_CRITICAL("Render", "Graphics pipeline requires a valid color format!");
+		}
+		if (config.depth_only && !config.depth_format.has_value()) {
+			TOAST_CRITICAL("Render", "Depth-only graphics pipeline requires a depth format!");
 		}
 		if (config.extent.width == 0 || config.extent.height == 0) {
 			TOAST_CRITICAL("Render", "Graphics pipeline requires a non-zero extent!");
