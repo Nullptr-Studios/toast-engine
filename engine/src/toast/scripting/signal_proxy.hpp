@@ -18,6 +18,12 @@ public:
 	[[nodiscard]]
 	auto disconnect(NodeProxy target, signals::ConnectionSource source, std::string_view function) -> bool;
 
+	[[nodiscard]]
+	auto connectSelf(std::string_view function, signals::ConnectionSource source, bool forwards_args = true) -> bool;
+
+	[[nodiscard]]
+	auto disconnectSelf(signals::ConnectionSource source, std::string_view function) -> bool;
+
 	void clear(signals::ConnectionSource source);
 
 	[[nodiscard]]

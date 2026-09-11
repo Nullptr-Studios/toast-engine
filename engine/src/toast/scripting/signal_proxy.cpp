@@ -141,6 +141,14 @@ auto SignalProxy::disconnect(NodeProxy target, signals::ConnectionSource source,
 	return true;
 }
 
+auto SignalProxy::connectSelf(std::string_view function, signals::ConnectionSource source, bool forwards_args) -> bool {
+	return connect(NodeProxy(m_source), function, source, forwards_args);
+}
+
+auto SignalProxy::disconnectSelf(signals::ConnectionSource source, std::string_view function) -> bool {
+	return disconnect(NodeProxy(m_source), source, function);
+}
+
 void SignalProxy::clear(signals::ConnectionSource source) {
 	if (m_source.exists() && m_info && m_info->clear) {
 		m_info->clear(&*m_source, source);

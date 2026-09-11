@@ -539,12 +539,25 @@ void LuaState::registerApi(lua_State* state) noexcept {
 	            +[](SignalProxy& signal, const NodeProxy& target, std::string function, bool forwards_args) {
 		            return signal.connect(target, function, signals::ConnectionSource::lua, forwards_args);
 	            }
+	        ),
+	        overload<SignalProxy&, const luabridge::LuaRef&, std::string>(
+	            +[](SignalProxy& signal, const luabridge::LuaRef& target, std::string function) {
+		            return target.isTable() && signal.connectSelf(function, signals::ConnectionSource::lua);
+	            }
+	        ),
+	        overload<SignalProxy&, const luabridge::LuaRef&, std::string, bool>(
+	            +[](SignalProxy& signal, const luabridge::LuaRef& target, std::string function, bool forwards_args) {
+		            return target.isTable() && signal.connectSelf(function, signals::ConnectionSource::lua, forwards_args);
+	            }
 	        )
 	    )
 	    .addFunction(
 	        "disconnect",
 	        [](SignalProxy& signal, const NodeProxy& target, std::string function) {
 		        return signal.disconnect(target, signals::ConnectionSource::lua, function);
+	        },
+	        [](SignalProxy& signal, const luabridge::LuaRef& target, std::string function) {
+		        return target.isTable() && signal.disconnectSelf(signals::ConnectionSource::lua, function);
 	        }
 	    )
 	    .addFunction("clear", [](SignalProxy& signal) { signal.clear(signals::ConnectionSource::lua); })

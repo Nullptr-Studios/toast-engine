@@ -107,6 +107,7 @@ void CameraController::setActiveCamera(Box<Camera> c) {
 	if (m_owner) {
 		m_owner->applyActiveCamera();
 	}
+	main_camera_changed.fire(c);
 
 	if (!do_transition || transition_time <= 0.0f || !has_outgoing_camera) {
 		return;

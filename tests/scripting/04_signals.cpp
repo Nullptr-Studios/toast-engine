@@ -18,15 +18,19 @@ M.value = 0
 
 function M:setup()
     -- forwards_args is intentionally omitted: it defaults to true.
-    M.connected = self.on_enable:connect(self:find("root"), "onSignal")
+    M.connected = self.on_enable:connect(self, "onEnabled") and self.on_disable:connect(self, "onDisabled")
 end
 
-function M:onSignal(source)
-    M.value = source:name()
+function M:onEnabled(source)
+    M.enabled_source = source:name()
+end
+
+function M:onDisabled(source)
+    M.disabled_source = source:name()
 end
 
 function M:disconnectSignal()
-    M.disconnected = self.on_enable:disconnect(self:find("root"), "onSignal")
+    M.disconnected = self.on_enable:disconnect(self, "onEnabled") and self.on_disable:disconnect(self, "onDisabled")
 end
 
 return M
@@ -39,9 +43,13 @@ return M
 	assert(node->on_enable.connections().front().source == signals::ConnectionSource::lua);
 
 	node->enabled(true);
-	assert(std::any_cast<std::string>(node->scriptRuntime()->getVar("value")) == "host");
+	assert(std::any_cast<std::string>(node->scriptRuntime()->getVar("enabled_source")) == "host");
+
+	node->enabled(false);
+	assert(std::any_cast<std::string>(node->scriptRuntime()->getVar("disabled_source")) == "host");
 
 	node->call("disconnectSignal");
 	assert(std::any_cast<bool>(node->scriptRuntime()->getVar("disconnected")));
 	assert(node->on_enable.connections().empty());
+	assert(node->on_disable.connections().empty());
 }
