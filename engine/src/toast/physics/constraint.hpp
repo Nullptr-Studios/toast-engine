@@ -13,13 +13,24 @@
 
 namespace physics {
 
-struct NormalConstraint {
+struct Constraint {
 	BodyID body_a;
 	BodyID body_b;
-	glm::vec3 normal;
-	float inverse_mass_a;
-	float inverse_mass_b;
-	float effective_mass;
+	glm::vec3 contact_point = {};
+	glm::vec3 normal = {};
+	glm::vec3 tangent = {};
+	glm::vec3 r_a = {};
+	glm::vec3 r_b = {};
+	float penetration = 0.0f;
+
+	float normal_mass = 0.0f;
+	float tangent_mass = 0.0f;
+	float restitution_bias = 0.0f;
+
+	float static_friction = 0.6f;
+	float dynamic_friction = 0.4f;
+	float accumulated_normal_impulse = 0.0f;
+	float accumulated_tangent_impulse = 0.0f;
 };
 
 }

@@ -57,6 +57,8 @@ struct Body {
 	glm::vec3 angular_velocity = {};
 	float inverse_mass = 1.0f;
 	float gravity_scale = 1.0f;
+	glm::mat3 inverse_inertia_local = {0.0f};
+	glm::mat3 inverse_inertia_world = {0.0f};
 };
 
 struct BodySlot {

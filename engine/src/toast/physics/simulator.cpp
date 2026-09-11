@@ -3,6 +3,7 @@
 #include "accumulator.hpp"
 #include "nodes/rigidbody.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <tracy/Tracy.hpp>
 
@@ -47,12 +48,9 @@ void Simulator::registerRigidbody(Rigidbody& node) {
 		if (registered_shape_count == 0) {
 			TOAST_WARN("Physics", "Rigidbody '{}' registered without an enabled sphere collider", node.name());
 		} else {
-			TOAST_TRACE(
-			    "Physics",
-			    "Registered rigidbody '{}' with {} sphere shape(s)",
-			    node.name(),
-			    registered_shape_count
-			);
+			// All shapes exist now so we can calculate their inertia
+			instance->rebuildMassProperties(body);
+			TOAST_TRACE("Physics", "Registered rigidbody '{}' with {} sphere shapes", node.name(), registered_shape_count);
 		}
 	}
 }
@@ -87,7 +85,7 @@ void Simulator::tick() {
 	sortManifolds();
 
 	// resolve
-	const auto constraints = prepareConstraints(m_manifolds);
+	auto constraints = prepareConstraints(m_manifolds);
 	solveConstraints(constraints);
 
 	// push poses after simulation settles
@@ -119,6 +117,81 @@ auto Simulator::publishTransform(NodeBinding& binding) -> bool {
 	if (body->type == BodyType::dynamic_body) {
 		binding.node->applyPhysicsTransform(body->position, body->rotation);
 	}
+	return true;
+}
+
+auto Simulator::velocityAtPoint(const Body& body, const glm::vec3& r) -> glm::vec3 {
+	return body.linear_velocity + glm::cross(body.angular_velocity, r);
+}
+
+auto Simulator::effectiveMassAlong(
+    const Body& body_a, const Body& body_b, const glm::vec3& r_a, const glm::vec3& r_b, const glm::vec3& direction
+) -> std::optional<float> {
+	glm::vec3 angular_a = body_a.inverse_inertia_world * glm::cross(r_a, direction);
+	glm::vec3 angular_b = body_b.inverse_inertia_world * glm::cross(r_b, direction);
+	float denominator = body_a.inverse_mass + body_b.inverse_mass + glm::dot(direction, glm::cross(angular_a, r_a) + glm::cross(angular_b, r_b));
+
+	if (not std::isfinite(denominator) || denominator <= 1.0e-8f) {
+		return std::nullopt;
+	}
+	
+	return 1.0f / denominator;
+}
+
+void Simulator::applyImpulse(Body& body_a, Body& body_b, const glm::vec3& r_a, const glm::vec3& r_b, const glm::vec3& impulse) {
+	body_a.linear_velocity -= impulse * body_a.inverse_mass;
+	body_a.angular_velocity -= body_a.inverse_inertia_world * glm::cross(r_a, impulse);
+	body_b.linear_velocity += impulse * body_b.inverse_mass;
+	body_b.angular_velocity += body_b.inverse_inertia_world * glm::cross(r_b, impulse);
+}
+
+auto Simulator::solveNormal(Constraint& constraint, Body& body_a, Body& body_b) -> bool {
+	glm::vec3 relative_velocity = velocityAtPoint(body_b, constraint.r_b) - velocityAtPoint(body_a, constraint.r_a);
+	float normal_speed = glm::dot(relative_velocity,  constraint.normal);
+	if (not std::isfinite(normal_speed)) {
+		return false;
+	}
+	
+	float impulse_delta = (constraint.restitution_bias - normal_speed) * constraint.normal_mass;
+	float old_impulse = constraint.accumulated_normal_impulse;
+	constraint.accumulated_normal_impulse = std::max(0.0f, old_impulse + impulse_delta);
+	float applied_impulse = constraint.accumulated_normal_impulse - old_impulse;
+	applyImpulse(body_a, body_b, constraint.r_a, constraint.r_b, constraint.normal * applied_impulse);
+	
+	return true;
+}
+
+auto Simulator::solveFriction(Constraint& constraint, Body& body_a, Body& body_b) -> bool {
+	if (constraint.tangent_mass <= 0.0f) {
+		return true;
+	}
+	
+	// recalcualte because the normal impulse changed velocity
+	glm::vec3 relative_velocity = velocityAtPoint(body_b, constraint.r_b) - velocityAtPoint(body_a, constraint.r_a);
+	float tangent_speed = glm::dot(relative_velocity, constraint.tangent);
+	if (not std::isfinite(tangent_speed)) {
+		return false;
+	}
+	
+	float impulse_delta = -tangent_speed * constraint.tangent_mass;
+	float old_impulse = constraint.accumulated_tangent_impulse;
+	float propsed_impulse = old_impulse + impulse_delta;
+	float static_limit = constraint.static_friction * constraint.accumulated_normal_impulse;
+	float new_impulse = 0.0f;
+	
+	if (std::abs(propsed_impulse) <= static_limit) {
+		// no slipping
+		new_impulse = propsed_impulse;
+	} else {
+		// slipping
+		float dynamic_limit = constraint.dynamic_friction * constraint.accumulated_normal_impulse;
+		new_impulse = std::clamp(propsed_impulse, -dynamic_limit, dynamic_limit);
+	}
+	
+	constraint.accumulated_tangent_impulse = new_impulse;
+	float applied_impulse = new_impulse - old_impulse;
+	applyImpulse(body_a, body_b, constraint.r_a, constraint.r_b, constraint.tangent * applied_impulse);
+	
 	return true;
 }
 
@@ -157,11 +230,27 @@ void Simulator::integrateBody(BodyID id, Body& body, const glm::vec3& gravity, f
 		return;
 	}
 
+	// linear integration
 	body.linear_velocity += gravity * body.gravity_scale * dt;
 	body.position += body.linear_velocity * dt;
+
+	// angular integration
+	glm::quat omega_q = { 0.0f, body.angular_velocity.x, body.angular_velocity.y, body.angular_velocity.z };
+	glm::quat rotation_derivative = 0.5f * omega_q * body.rotation;
+	glm::quat next_rotation = body.rotation + rotation_derivative * dt;
+	float length_sq = glm::dot(next_rotation, next_rotation);
+	if (std::isfinite(length_sq) && length_sq > 1.0e-10f) {
+		body.rotation = glm::normalize(next_rotation);
+	} else {
+		TOAST_WARN("Physics", "Body {} has an invalid orientation", id.slot);
+		body.angular_velocity = {};
+	}
+	// update the inertia matrix after rotating
+	glm::mat3 rot_matrix = glm::mat3_cast(body.rotation);
+	body.inverse_inertia_world = rot_matrix * body.inverse_inertia_local * glm::transpose(rot_matrix);
 }
 
-void Simulator::callTick() {
+void Simulator::callTick() { 
 	TOAST_ASSERT(instance, "Physics", "Simulator instance is null; cannot tick");
 	instance->tick();
 }
@@ -295,6 +384,63 @@ auto Simulator::tryGetShape(ShapeID shape) -> Shape* {
 
 auto Simulator::tryGetShape(ShapeID shape) const -> const Shape* {
 	return valid(shape) ? &m_shapes[shape.slot].shape : nullptr;
+}
+
+void Simulator::rebuildMassProperties(BodyID id) {
+	auto* body = tryGetBody(id);
+	if (not body) {
+		TOAST_WARN("Physics", "rebuildMassProperties() was aborted: invalid body");
+		return;
+	}
+
+	body->inverse_inertia_local = {0.0f};
+	body->inverse_inertia_world = {0.0f};
+	if (body->inverse_mass == 0.0f) {
+		// static and kinematic bodies we just set inertia to 0
+		// this is not a sanity check
+		return;
+	}
+
+	std::vector<ShapeID> shapes;
+	for (const auto& [index, slot] : m_shapes | std::views::enumerate) {
+		if (not slot.occupied) { continue; }
+		if (slot.shape.owner != id) { continue; }
+		shapes.emplace_back(ShapeID{
+			.slot = static_cast<uint32_t>(index),
+			.generation = slot.generation,
+		});
+	}
+
+	if (shapes.empty()) {
+		TOAST_WARN("Physics", "rebuildMassProperties() was aborted: no colliders");
+		return;
+	}
+
+	// TODO: Add support to multishapes
+	// right now just pick the first one
+	const auto* shape = tryGetShape(shapes[0]);
+	if (not shape) {
+		TOAST_WARN("Physics", "rebuildMassProperties() was aborted: invalid shape");
+		return;
+	}
+
+	// TODO: More shapes
+	switch (shape->type) {
+		case ShapeType::sphere: {
+			float radius_sq = shape->sphere.radius * shape->sphere.radius;
+	
+			// I = 2/5 m r2
+			// inv(I) = 5/(2 m r2)
+			float inverse_inertia = 2.5f * body->inverse_mass / radius_sq;
+			body->inverse_inertia_local = {inverse_inertia};
+			glm::mat3 rotation = glm::mat3_cast(body->rotation);
+			body->inverse_inertia_world = rotation * body->inverse_inertia_local * glm::transpose(rotation);
+			break;
+		}
+		default: {
+			TOAST_WARN("Physics", "rebuildMassProperties() was aborted: unknown shape");
+		}
+	}
 }
 
 auto Simulator::valid(BodyID body) const -> bool {
@@ -467,29 +613,37 @@ void Simulator::sortManifolds() {
 	});
 }
 
-auto Simulator::prepareConstraints(const std::vector<Manifold>& manifolds) const -> std::vector<NormalConstraint> {
+auto Simulator::prepareConstraints(const std::vector<Manifold>& manifolds) const -> std::vector<Constraint> {
 	ZoneScoped;
-	std::vector<NormalConstraint> constraints;
-	constraints.reserve(manifolds.size());
-	size_t rejected_manifold_count = 0;
+	std::vector<Constraint> constraints;
+	size_t contact_count = 0;
+	for (const Manifold& manifold : manifolds) {
+		contact_count += std::min<size_t>(manifold.contact_count, manifold.contacts.size());
+	}
+	constraints.reserve(contact_count);
+
+	size_t rejected_contact_count = 0;
 
 	for (const Manifold& manifold : manifolds) {
-		if (auto constraint = prepareConstraint(manifold)) {
-			constraints.emplace_back(*constraint);
-		} else {
-			++rejected_manifold_count;
+		const size_t valid_contact_count = std::min<size_t>(manifold.contact_count, manifold.contacts.size());
+		for (size_t contact_index = 0; contact_index < valid_contact_count; ++contact_index) {
+			if (auto constraint = prepareConstraint(manifold, manifold.contacts[contact_index])) {
+				constraints.emplace_back(*constraint);
+			} else {
+				++rejected_contact_count;
+			}
 		}
 	}
 
-	if (rejected_manifold_count > 0) {
-		TOAST_WARN("Physics", "Rejected {} invalid manifold(s) while preparing constraints", rejected_manifold_count);
+	if (rejected_contact_count > 0) {
+		TOAST_WARN("Physics", "Rejected {} invalid contact(s) while preparing constraints", rejected_contact_count);
 	}
 
 	ZoneValue(static_cast<uint64_t>(constraints.size()));
 	return constraints;
 }
 
-auto Simulator::prepareConstraint(const Manifold& manifold) const -> std::optional<NormalConstraint> {
+auto Simulator::prepareConstraint(const Manifold& manifold, const ContactPoint& contact) const -> std::optional<Constraint> {
 	ZoneScoped;
 	ZoneValue(
 	    (static_cast<uint64_t>(manifold.pair.a.body.slot) << 32) |
@@ -498,40 +652,77 @@ auto Simulator::prepareConstraint(const Manifold& manifold) const -> std::option
 
 	const Body* body_a = tryGetBody(manifold.pair.a.body);
 	const Body* body_b = tryGetBody(manifold.pair.b.body);
-	if (not body_a || not body_b || manifold.contact_count == 0) {
+	if (not body_a || not body_b) {
 		return std::nullopt;
 	}
 
-	const ContactPoint& contact = manifold.contacts[0];
 	const bool normal_is_finite = std::isfinite(manifold.normal.x) && std::isfinite(manifold.normal.y) &&
 	                              std::isfinite(manifold.normal.z);
-	if (not normal_is_finite || not std::isfinite(contact.penetration) || contact.penetration < 0.0f) {
+	const bool contact_is_finite = std::isfinite(contact.position.x) && std::isfinite(contact.position.y) &&
+	                               std::isfinite(contact.position.z);
+	if (not normal_is_finite || not contact_is_finite || not std::isfinite(contact.penetration) ||
+	    contact.penetration < 0.0f) {
 		return std::nullopt;
 	}
 
-	const float inverse_mass_sum = body_a->inverse_mass + body_b->inverse_mass;
-	if (not std::isfinite(inverse_mass_sum) || inverse_mass_sum <= 0.0f) {
+	const glm::vec3 r_a = contact.position - body_a->position;
+	const glm::vec3 r_b = contact.position - body_b->position;
+	const auto normal_mass = effectiveMassAlong(*body_a, *body_b, r_a, r_b, manifold.normal);
+	if (not normal_mass) {
 		return std::nullopt;
 	}
+	const glm::vec3 relative_velocity = velocityAtPoint(*body_b, r_b) - velocityAtPoint(*body_a, r_a);
+	const float initial_normal_speed = glm::dot(relative_velocity, manifold.normal);
+	constexpr float restitution = 0.5f;
+	constexpr float bounce_threshold = 1.0f;
+	float restitution_bias = 0.0f;
+	if (initial_normal_speed < -bounce_threshold) {
+		restitution_bias = -restitution * initial_normal_speed;
+	}
+	
+	const glm::vec3 tangent_velocity = relative_velocity - manifold.normal * initial_normal_speed;
+	const float tangent_length_sq = glm::dot(tangent_velocity, tangent_velocity);
+	glm::vec3 tangent = {};
+	float tangent_mass = 0.0f;
+	
+	if (tangent_length_sq > 1.0e-10f) {
+		tangent = tangent_velocity/sqrt(tangent_length_sq);
+		const auto calculated_tangent_mass = effectiveMassAlong(*body_a, *body_b, r_a, r_b, tangent);
+		if (calculated_tangent_mass.has_value()) {
+			tangent_mass = calculated_tangent_mass.value();
+		}
+	}
 
-	return NormalConstraint {
+	return Constraint {
 	  .body_a = manifold.pair.a.body,
 	  .body_b = manifold.pair.b.body,
+	  .contact_point = contact.position,
 	  .normal = manifold.normal,
-	  .inverse_mass_a = body_a->inverse_mass,
-	  .inverse_mass_b = body_b->inverse_mass,
-	  .effective_mass = 1.0f / inverse_mass_sum,
+		.tangent = tangent,
+	  .r_a = r_a,
+	  .r_b = r_b,
+	  .penetration = contact.penetration,
+		.normal_mass = normal_mass.value_or(0.0f),
+	  .tangent_mass = tangent_mass,
+		.restitution_bias = restitution_bias,
+		.static_friction = 0.6f,
+		.dynamic_friction = 0.4f,
 	};
 }
 
-void Simulator::solveConstraints(const std::vector<NormalConstraint>& constraints) {
+void Simulator::solveConstraints(std::vector<Constraint>& constraints) {
 	ZoneScoped;
 	ZoneValue(static_cast<uint64_t>(constraints.size()));
-
+	constexpr uint32_t solver_iterations = 8; // try 4 or 16
 	size_t invalid_constraint_count = 0;
-	for (const NormalConstraint& constraint : constraints) {
-		if (not solveConstraint(constraint)) {
-			++invalid_constraint_count;
+
+	for (uint32_t iteration = 0; iteration < solver_iterations; ++iteration) {
+		ZoneScopedN("Simulator::solveConstraints()::iteration#%i");
+		ZoneValue(static_cast<uint64_t>(iteration));
+		for (Constraint& constraint : constraints) {
+			if (not solveConstraint(constraint)) {
+				++invalid_constraint_count;
+			}
 		}
 	}
 
@@ -540,30 +731,21 @@ void Simulator::solveConstraints(const std::vector<NormalConstraint>& constraint
 	}
 }
 
-auto Simulator::solveConstraint(const NormalConstraint& constraint) -> bool {
+auto Simulator::solveConstraint(Constraint& constraint) -> bool {
 	ZoneScoped;
-	ZoneValue((static_cast<uint64_t>(constraint.body_a.slot) << 32) | static_cast<uint64_t>(constraint.body_b.slot));
 
 	Body* body_a = tryGetBody(constraint.body_a);
 	Body* body_b = tryGetBody(constraint.body_b);
-	if (not body_a || not body_b) {
+
+	if (!body_a || !body_b) {
 		return false;
 	}
 
-	const glm::vec3 relative_velocity = body_b->linear_velocity - body_a->linear_velocity;
-	const float relative_normal_speed = glm::dot(relative_velocity, constraint.normal);
-	if (not std::isfinite(relative_normal_speed)) {
+	if (!solveNormal(constraint,*body_a,*body_b)) {
 		return false;
 	}
-	if (relative_normal_speed >= 0.0f) {
-		return true;
-	}
 
-	const float impulse_magnitude = -relative_normal_speed * constraint.effective_mass;
-	const glm::vec3 impulse = constraint.normal * impulse_magnitude;
-	body_a->linear_velocity -= impulse * constraint.inverse_mass_a;
-	body_b->linear_velocity += impulse * constraint.inverse_mass_b;
-	return true;
+	return solveFriction(constraint, *body_a, *body_b);
 }
 
 void Simulator::collide(BroadPhasePair pair) {

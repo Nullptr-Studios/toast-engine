@@ -9,15 +9,16 @@
 
 #include "body.hpp"
 #include "collision.hpp"
-#include "shape.hpp"
-#include "manifold.hpp"
 #include "constraint.hpp"
+#include "manifold.hpp"
+#include "shape.hpp"
 
 #include <deque>
 #include <optional>
 #include <toast/export.hpp>
 #include <toast/log.hpp>
 #include <toast/world/box.hpp>
+#include <toml++/impl/preprocessor.hpp>
 #include <vector>
 
 namespace physics {
@@ -66,6 +67,8 @@ private:
 	[[nodiscard]]
 	auto tryGetShape(ShapeID shape) const -> const Shape*;
 
+	void rebuildMassProperties(BodyID id);
+
 	[[nodiscard]]
 	auto tryGetBody(BodyID body) -> Body*;
 	[[nodiscard]]
@@ -84,16 +87,22 @@ private:
 	void sortManifolds();
 
 	[[nodiscard]]
-	auto prepareConstraints(const std::vector<Manifold>& manifolds) const -> std::vector<NormalConstraint>;
+	auto prepareConstraints(const std::vector<Manifold>& manifolds) const -> std::vector<Constraint>;
 	[[nodiscard]]
-	auto prepareConstraint(const Manifold& manifold) const -> std::optional<NormalConstraint>;
-	void solveConstraints(const std::vector<NormalConstraint>& constraints);
+	auto prepareConstraint(const Manifold& manifold, const ContactPoint& contact) const -> std::optional<Constraint>;
+	void solveConstraints(std::vector<Constraint>& constraints);
 	[[nodiscard]]
-	auto solveConstraint(const NormalConstraint& constraint) -> bool;
+	auto solveConstraint(Constraint& constraint) -> bool;
 	void publishTransforms();
 	[[nodiscard]]
 	auto publishTransform(NodeBinding& binding) -> bool;
-
+	
+	static auto velocityAtPoint(const Body& body, const glm::vec3& r) -> glm::vec3;
+	static auto effectiveMassAlong(const Body& body_a, const Body& body_b, const glm::vec3& r_a, const glm::vec3& r_b, const glm::vec3& direction) -> std::optional<float>;
+	static void applyImpulse(Body& body_a, Body& body_b, const glm::vec3& r_a, const glm::vec3& r_b, const glm::vec3& impulse);
+	static auto solveNormal(Constraint& constraint, Body& body_a, Body& body_b) -> bool;
+	static auto solveFriction(Constraint& constraint, Body& body_a, Body& body_b) -> bool;
+	
 	void collide(BroadPhasePair pair);
 
 	[[nodiscard]]
