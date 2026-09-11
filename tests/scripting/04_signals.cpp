@@ -15,6 +15,7 @@ TOAST_TEST_NAMED("Scripting", "scripting/04_signals", test_scripting_04_signals)
 	toast::_detail::WorldTestAccess::attachScript(*node, makeScript(R"lua(
 local M = {}
 M.value = 0
+M.lua_signal = Signal:create()
 
 function M:setup()
     -- forwards_args is intentionally omitted: it defaults to true.
@@ -31,6 +32,18 @@ end
 
 function M:disconnectSignal()
     M.disconnected = self.on_enable:disconnect(self, "onEnabled") and self.on_disable:disconnect(self, "onDisabled")
+end
+
+function M:setupLuaSignal()
+    M.lua_connected = self.lua_signal:connect(self, "onLuaSignal")
+end
+
+function M:onLuaSignal()
+    M.lua_fired = true
+end
+
+function M:fireLuaSignal()
+    self.lua_signal:fire()
 end
 
 return M
@@ -52,4 +65,9 @@ return M
 	assert(std::any_cast<bool>(node->scriptRuntime()->getVar("disconnected")));
 	assert(node->on_enable.connections().empty());
 	assert(node->on_disable.connections().empty());
+
+	node->call("setupLuaSignal");
+	assert(std::any_cast<bool>(node->scriptRuntime()->getVar("lua_connected")));
+	node->call("fireLuaSignal");
+	assert(std::any_cast<bool>(node->scriptRuntime()->getVar("lua_fired")));
 }

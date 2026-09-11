@@ -1,6 +1,7 @@
 #include "lua_state.hpp"
 
 #include "asset_proxy.hpp"
+#include "lua_signal.hpp"
 #include "lua_types.hpp"
 #include "lua_util.hpp"
 #include "node_proxy.hpp"
@@ -563,6 +564,35 @@ void LuaState::registerApi(lua_State* state) noexcept {
 	    .addFunction("clear", [](SignalProxy& signal) { signal.clear(signals::ConnectionSource::lua); })
 	    .addFunction("fire", &SignalProxy::fire)
 	    .endClass()
+
+	    .beginClass<LuaSignal>("LuaSignal")
+	    .addFunction(
+	        "connect",
+	        [](LuaSignal& signal, const NodeProxy& target, std::string function) {
+		        return signal.connect(target, function, signals::ConnectionSource::lua);
+	        },
+	        [](LuaSignal& signal, const luabridge::LuaRef& target, std::string function) {
+		        return target.isTable() && signal.connectSelf(function, signals::ConnectionSource::lua);
+	        }
+	    )
+	    .addFunction(
+	        "disconnect",
+	        [](LuaSignal& signal, const NodeProxy& target, std::string function) {
+		        return signal.disconnect(target, function, signals::ConnectionSource::lua);
+	        },
+	        [](LuaSignal& signal, const luabridge::LuaRef& target, std::string function) {
+		        return target.isTable() && signal.disconnectSelf(function, signals::ConnectionSource::lua);
+	        }
+	    )
+	    .addFunction("clear", [](LuaSignal& signal) { signal.clear(signals::ConnectionSource::lua); })
+	    .addFunction("fire", &LuaSignal::fire)
+	    .endClass()
+
+	    .beginNamespace("Signal")
+	    .addFunction(
+	        "create", +[](const luabridge::LuaRef&) { return LuaSignal {}; }
+	    )
+	    .endNamespace()
 
 	    // UIBindsProxy
 	    .beginClass<UIBindsProxy>("UIBinds")

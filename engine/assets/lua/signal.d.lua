@@ -1,20 +1,20 @@
--- TODO: implement later
---
--- ---@class Signal
--- ---@param target Node
--- ---@param function_name string
--- ---@param forwards_args? boolean
--- ---@return boolean
--- function Signal:connect(target, function_name, forwards_args) end
---
--- ---@param target Node
--- ---@param function_name string
--- ---@return boolean
--- function Signal:disconnect(target, function_name) end
---
--- function Signal:clear() end
---
--- function Signal:fire() end
+---@class Signal
+---@param target Node
+---@param function_name string
+---@param forwards_args? boolean
+---@return boolean
+function Signal:connect(target, function_name, forwards_args) end
+
+---@param target Node
+---@param function_name string
+---@return boolean
+function Signal:disconnect(target, function_name) end
+
+function Signal:clear() end
+
+function Signal:fire() end
+
+function Signal:create() end
 
 ---@class Signal0
 ---@param target Node
