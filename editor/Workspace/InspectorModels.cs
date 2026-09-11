@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
@@ -541,7 +542,47 @@ public partial class FieldVM : ObservableObject {
 	}
 
 	internal string JoinArrayValues(IEnumerable<string> values) {
-		return string.Join(ArrayElementKind == WidgetKind.String ? "\x1f" : " ", values);
+		return ArrayElementKind == WidgetKind.String
+			? string.Join(' ', values.Select(EscapeArrayString))
+			: string.Join(' ', values);
+	}
+
+	private static string EscapeArrayString(string value) {
+		return $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
+	}
+
+	private static bool TryParseStringArray(string text, out List<string> values) {
+		values = [];
+		for (var i = 0; i < text.Length;) {
+			while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+			if (i == text.Length) return true;
+
+			if (text[i] != '\"') {
+				var start = i;
+				while (i < text.Length && !char.IsWhiteSpace(text[i])) i++;
+				values.Add(text[start..i]);
+				continue;
+			}
+
+			i++;
+			var value = new StringBuilder();
+			var closed = false;
+			while (i < text.Length) {
+				if (text[i] == '\\' && i + 1 < text.Length && (text[i + 1] == '\"' || text[i + 1] == '\\')) {
+					value.Append(text[i + 1]);
+					i += 2;
+				} else if (text[i] == '\"') {
+					i++;
+					closed = true;
+					break;
+				} else {
+					value.Append(text[i++]);
+				}
+			}
+			if (!closed || (i < text.Length && !char.IsWhiteSpace(text[i]))) return false;
+			values.Add(value.ToString());
+		}
+		return true;
 	}
 
 	internal bool TryEnumEngineValue(string label, out string value) {
@@ -599,9 +640,7 @@ public partial class FieldVM : ObservableObject {
 			WidgetKind.Vec4 or WidgetKind.Color4 =>
 				$"{InspectorFormat.Float(X)} {InspectorFormat.Float(Y)} {InspectorFormat.Float(Z)} {InspectorFormat.Float(W)}",
 			WidgetKind.AssetRef or WidgetKind.NodeRef => Ref ?? InspectorFormat.NullUid,
-			WidgetKind.Array => string.Join(
-				ArrayElementKind == WidgetKind.String ? "\x1f" : " ",
-				ArrayItems.Select(c => c.ToEngineString())),
+			WidgetKind.Array => JoinArrayValues(ArrayItems.Select(c => c.ToEngineString())),
 			_ => ReadOnlyText
 		};
 	}
@@ -671,10 +710,13 @@ public partial class FieldVM : ObservableObject {
 
 					if (string.Equals(s, ToEngineString(), StringComparison.Ordinal)) break;
 
-					var isStr = ArrayElementKind == WidgetKind.String;
-					var tokens = isStr
-						? s.Split('\x1f')
-						: s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+					string[] tokens;
+					if (ArrayElementKind == WidgetKind.String) {
+						if (!TryParseStringArray(s, out var strings)) break;
+						tokens = strings.ToArray();
+					} else {
+						tokens = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+					}
 					var stride = InspectorFormat.ArrayElementStride(ArrayElementKind);
 					var elementCount = tokens.Length / stride;
 

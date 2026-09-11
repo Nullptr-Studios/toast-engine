@@ -53,6 +53,16 @@ pub struct Field {
 }
 
 #[derive(Serialize, Clone)]
+pub struct Signal {
+    pub name: String,
+    pub typename: String,
+    pub arguments: Vec<String>,
+    pub attrs_list: Vec<Attribute>,
+    #[serde(rename = "attributes")]
+    pub attrib_json: json_t,
+}
+
+#[derive(Serialize, Clone)]
 pub struct Parameter {
     pub name: String,
     #[serde(rename = "type")]
@@ -84,6 +94,7 @@ pub struct Class {
     pub functions: Vec<String>,
     pub methods: Vec<Function>,
     pub fields: Vec<Field>,
+    pub signals: Vec<Signal>,
     pub source_file: String,
 }
 
