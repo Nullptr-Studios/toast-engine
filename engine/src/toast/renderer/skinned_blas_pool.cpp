@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <format>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -27,6 +28,7 @@ void SkinnedBlasPool::beginFrame() {
 }
 
 auto SkinnedBlasPool::ensureEntry(uint64_t node_uid, const VulkanMesh& mesh) -> Entry* {
+	ZoneScoped;
 	auto& entry = m_entries[node_uid];
 	entry.last_used_frame = m_frame;
 
@@ -125,6 +127,7 @@ auto SkinnedBlasPool::ensureEntry(uint64_t node_uid, const VulkanMesh& mesh) -> 
 auto SkinnedBlasPool::recordFor(
     vk::CommandBuffer cmd, uint64_t node_uid, const VulkanMesh& mesh, vk::Buffer posed_vertices, uint32_t posed_vertex_offset
 ) -> vk::DeviceAddress {
+	ZoneScoped;
 	if (m_core == nullptr || m_build_acceleration_structures == nullptr || !posed_vertices) {
 		return 0;
 	}

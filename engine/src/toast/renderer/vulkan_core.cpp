@@ -18,6 +18,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <tracy/Tracy.hpp>
 #include <vector>
 
 #if defined(_WIN32)
@@ -32,12 +33,17 @@ constexpr std::size_t k_gigabyte_bytes = 1024ull * 1024ull * 1024ull;
 constexpr uint32_t k_invalid_queue_family = std::numeric_limits<uint32_t>::max();
 
 #ifdef TRACY_ENABLE
+// Tracy keys a named memory pool by the name's address, not its text. MSVC Debug builds don't pool string literals
+// (no /GF), so a separate "VRAM" literal per callback was two different pools: every free (mostly on the render
+// thread) hit a pool that never saw the allocation, and the profiler aborted the capture on it
+constexpr char k_tracy_vram_pool[] = "VRAM";
+
 void tracyVmaAllocate(VmaAllocator, uint32_t, VkDeviceMemory memory, VkDeviceSize size, void*) {
-	TracyAllocN(reinterpret_cast<void*>(memory), size, "VRAM");
+	TracyAllocN(reinterpret_cast<void*>(memory), size, k_tracy_vram_pool);
 }
 
 void tracyVmaFree(VmaAllocator, uint32_t, VkDeviceMemory memory, VkDeviceSize, void*) {
-	TracyFreeN(reinterpret_cast<void*>(memory), "VRAM");
+	TracyFreeN(reinterpret_cast<void*>(memory), k_tracy_vram_pool);
 }
 #endif
 
@@ -244,6 +250,7 @@ auto DeviceScore::toString() const noexcept -> std::string {
 VulkanCore::VulkanCore(
     std::span<const char* const> required_instance_extensions, std::span<const char* const> required_device_extensions
 ) noexcept {
+	ZoneScoped;
 #ifdef DEBUG
 	m_validation_enabled = checkValidationLayerSupport();
 #else
@@ -340,6 +347,7 @@ auto nsightResultName(NGFX_Result result) -> std::string_view {
 }
 
 void VulkanCore::initializeNsightActivity() {
+	ZoneScoped;
 	// Injection/interception libraries are loaded directly off disk from the detected installation path, no
 	// signature verification - matches this codebase's general trust posture for local dev tooling (same as
 	// RenderDoc above, which is trusted purely by virtue of already being loaded into the process)
@@ -439,6 +447,7 @@ void VulkanCore::initializeNsightActivity() {
 }
 
 void VulkanCore::activateNsightGpuTraceIfNeeded() const {
+	ZoneScoped;
 	if (m_nsight_mode != NsightMode::gpu_trace || m_nsight_gputrace_activated) {
 		return;
 	}
@@ -458,6 +467,7 @@ void VulkanCore::activateNsightGpuTraceIfNeeded() const {
 #endif
 
 void VulkanCore::pickPhysicalDevice(std::span<const char* const> required_device_extensions) {
+	ZoneScoped;
 	vk::raii::PhysicalDevices devices(m_instance);
 	if (devices.empty()) {
 		TOAST_CRITICAL("Render", "Toast Engine Error: Failed to find GPUs with Vulkan support!");
@@ -563,6 +573,7 @@ void VulkanCore::pickPhysicalDevice(std::span<const char* const> required_device
 }
 
 void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> required_device_extensions) {
+	ZoneScoped;
 	if (m_graphics_queue_family_index == k_invalid_queue_family) {
 		TOAST_CRITICAL("Render", "Failed to find a graphics queue family for the selected device!");
 	}
@@ -805,6 +816,7 @@ void VulkanCore::createLogicalDeviceAndAllocator(std::span<const char* const> re
 
 auto VulkanCore::calculateDeviceScore(const vk::PhysicalDevice& device, std::span<const char* const> required_device_extensions)
     -> DeviceScore {
+	ZoneScoped;
 	DeviceScore score {};
 
 	const auto props = device.getProperties();

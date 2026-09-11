@@ -4,6 +4,7 @@
 #include <fstream>
 #include <ktx.h>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <vector>
 
 namespace {
@@ -20,6 +21,7 @@ constexpr uint32_t k_vk_format_r8g8b8a8_srgb = 43;
 extern "C" {
 
 int toast_ktx2_decode_thumbnail(const char* path, uint8_t* dst, uint32_t thumb_size) noexcept {
+	ZoneScoped;
 	try {
 		std::ifstream file(path, std::ios::binary | std::ios::ate);
 		if (!file) {

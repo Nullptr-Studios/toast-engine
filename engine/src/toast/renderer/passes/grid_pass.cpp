@@ -11,10 +11,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 GridPass::GridPass(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/grid.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -50,6 +52,7 @@ GridPass::GridPass(const renderer::VulkanCore& core, vk::Format color_format, vk
 }
 
 void GridPass::createResources(const renderer::VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -109,6 +112,7 @@ void GridPass::createResources(const renderer::VulkanCore& core) {
 }
 
 void GridPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)image_index;
 
 	if (!m_pipeline.isReady() || frame_index >= m_frame_descriptor_sets.size()) {

@@ -9,6 +9,7 @@
 
 #include <format>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <type_traits>
 
 namespace renderer {
@@ -43,6 +44,7 @@ void VulkanMesh::create(
     const renderer::VulkanCore& core, UploadData data, uint32_t graphics_queue_family_index, uint32_t transfer_queue_family_index,
     std::string_view debug_name
 ) {
+	ZoneScoped;
 	if (data.vertices.empty()) {
 		TOAST_CRITICAL("Render", "Mesh has no vertices");
 	}
@@ -169,6 +171,7 @@ void VulkanMesh::recordUpload(
     vk::CommandBuffer cmd, vk::Buffer staging_buffer, vk::DeviceSize vertex_offset, vk::DeviceSize index_offset,
     vk::DeviceSize skin_vertex_offset
 ) const {
+	ZoneScoped;
 	if (!m_vertex_buffer || !m_index_buffer) {
 		TOAST_CRITICAL("Render", "Mesh buffers were not created before upload");
 	}
@@ -218,6 +221,7 @@ MeshUpload::MeshUpload(VulkanMesh& mesh, VulkanMesh::UploadData data, assets::Ha
 }
 
 auto VulkanMesh::createAccelerationStructure(const VulkanCore& core) -> std::optional<vma::raii::Buffer> {
+	ZoneScoped;
 	if (!core.isRayTracingSupported() || !m_vertex_buffer.has_value() || !m_index_buffer.has_value()) {
 		return std::nullopt;
 	}
@@ -298,6 +302,7 @@ auto VulkanMesh::createAccelerationStructure(const VulkanCore& core) -> std::opt
 }
 
 void VulkanMesh::recordBuildAccelerationStructure(vk::CommandBuffer cmd) const {
+	ZoneScoped;
 	if (*m_blas == VK_NULL_HANDLE || m_blas_scratch_address == 0 || m_build_acceleration_structures == nullptr) {
 		return;
 	}
@@ -321,6 +326,7 @@ void VulkanMesh::recordBuildAccelerationStructure(vk::CommandBuffer cmd) const {
 }
 
 void MeshUpload::build(const VulkanCore& core) {
+	ZoneScoped;
 	mesh->create(core, data, core.getGraphicsQueueFamilyIndex(), core.getTransferQueueFamilyIndex(), debug_name);
 	mesh->markUploading();
 
@@ -360,6 +366,7 @@ void MeshUpload::build(const VulkanCore& core) {
 }
 
 void MeshUpload::record(vk::CommandBuffer cmd) {
+	ZoneScoped;
 	const vk::DeviceSize vertex_size = mesh->m_vertex_size;
 	const vk::DeviceSize index_size = mesh->m_index_size;
 

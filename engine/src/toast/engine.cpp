@@ -65,6 +65,7 @@
 #include <print>
 #include <span>
 #include <sstream>
+#include <tracy/Tracy.hpp>
 
 namespace toast {
 
@@ -130,6 +131,7 @@ auto Engine::get() noexcept -> Engine* {
 }
 
 void Engine::init() {
+	ZoneScoped;
 	TracySetProgramName("ToastEngine");
 #ifdef TRACY_ENABLE
 	tracy::SetThreadName("Main Thread");
@@ -232,6 +234,7 @@ void Engine::init() {
 }
 
 Engine::~Engine() noexcept {
+	ZoneScoped;
 	if (m) {
 		// Save settings before closing down
 		try {
@@ -261,6 +264,7 @@ Engine::~Engine() noexcept {
 }
 
 void Engine::reloadSettings() {
+	ZoneScoped;
 	// Find the .toast project file in the project root
 	std::filesystem::path toast_path;
 	const auto& proj_root = assets::AssetManager::projectRoot();
@@ -393,6 +397,7 @@ auto Engine::shouldClose() -> bool {
 }
 
 void Engine::createSDLWindow(const char* w_name) {
+	ZoneScoped;
 	m->window = std::make_unique<SDLWindow>(w_name, 1080, 720, SDL_WINDOW_VULKAN);
 
 	auto* sdl_window = static_cast<SDL_Window*>(m->window->nativeHandle());
@@ -475,6 +480,7 @@ void Engine::createSDLWindow(const char* w_name) {
 }
 
 void Engine::createAvaloniaWindow() {
+	ZoneScoped;
 	settings::Settings::get().setActiveLayer(settings::Layer::project);
 
 	m->vulkan_core = std::make_unique<renderer::VulkanCore>(std::span<const char* const> {}, std::span<const char* const> {});
@@ -564,6 +570,7 @@ auto Engine::createWorkspace(std::string_view type) -> std::pair<UID, std::strin
 }
 
 auto Engine::openWorkspace(UID uid) -> std::pair<UID, std::string> {
+	ZoneScoped;
 	std::scoped_lock lock(m->owners_mutex);
 	if (m->owners.contains(uid)) {
 		TOAST_ERROR("Engine", "Trying to open workspace {} which is already open", uid);
@@ -584,6 +591,7 @@ auto Engine::openWorkspace(UID uid) -> std::pair<UID, std::string> {
 }
 
 auto Engine::openWorkspace(UID uid, std::string_view source_uri) -> std::pair<UID, std::string> {
+	ZoneScoped;
 	std::scoped_lock lock(m->owners_mutex);
 	if (m->owners.contains(uid)) {
 		TOAST_ERROR("Engine", "Trying to open workspace {} which is already open", uid);
@@ -604,6 +612,7 @@ auto Engine::openWorkspace(UID uid, std::string_view source_uri) -> std::pair<UI
 }
 
 auto Engine::playWorkspace(UID source_handle) -> std::pair<UID, std::string> {
+	ZoneScoped;
 	std::scoped_lock lock(m->owners_mutex);
 	auto source_it = m->owners.find(source_handle);
 	if (source_it == m->owners.end()) {
@@ -700,6 +709,7 @@ void Engine::beginApplication() {
 }
 
 void Engine::startGame() {
+	ZoneScoped;
 	{
 		std::scoped_lock lock(m->owners_mutex);
 		// Use a well-known sentinel UID (-1) so the world can be found/removed if needed
@@ -912,6 +922,7 @@ void toast_pop_application() noexcept {
 }
 
 void toast_bake_asset(const char* uid_str, const char* out_path) noexcept {
+	ZoneScoped;
 	if (!uid_str || !out_path) {
 		return;
 	}

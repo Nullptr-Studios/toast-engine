@@ -11,6 +11,7 @@
 #include <toast/assets/asset_manager.hpp>
 #include <toast/assets/core_types.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace {
 
@@ -70,6 +71,7 @@ auto guidToString(const FMOD_GUID& guid) -> std::string {
 namespace audio {
 
 AudioSystem::AudioSystem() noexcept {
+	ZoneScoped;
 	TOAST_ASSERT(not instance, "Audio", "An AudioSystem class already exists");
 
 	instance = this;
@@ -158,6 +160,7 @@ auto AudioSystem::get() noexcept -> AudioSystem& {
 }
 
 auto AudioSystem::loadBankData(const std::vector<uint8_t>& data) const -> FMOD_STUDIO_BANK* {
+	ZoneScoped;
 	FMOD_STUDIO_BANK* fmod_bank = nullptr;
 	FMOD_Studio_System_LoadBankMemory(
 	    m_system,
@@ -171,6 +174,7 @@ auto AudioSystem::loadBankData(const std::vector<uint8_t>& data) const -> FMOD_S
 }
 
 void AudioSystem::tick() noexcept {
+	ZoneScoped;
 	FMOD_Studio_System_Update(m_system);
 
 	for (auto it = m_active_instances.begin(); it != m_active_instances.end();) {
@@ -195,6 +199,7 @@ void AudioSystem::tick() noexcept {
 }
 
 void AudioSystem::generateIntermediates(const std::filesystem::path& path) {
+	ZoneScoped;
 	FMOD_STUDIO_BANK* bank = nullptr;
 
 	FMOD_Studio_System_LoadBankFile(m_system, path.string().c_str(), FMOD_STUDIO_LOAD_BANK_NORMAL, &bank);
@@ -268,6 +273,7 @@ void AudioSystem::generateIntermediates(const std::filesystem::path& path) {
 
 auto AudioSystem::loadBank(assets::Handle<assets::AudioBank> bank) const
     -> std::pair<FMOD_STUDIO_BANK*, std::vector<std::string>> {
+	ZoneScoped;
 	if (not bank.hasValue() || bank->get().empty()) {
 		TOAST_WARN("Audio", "Tried to load empty bank");
 		return {nullptr, {}};

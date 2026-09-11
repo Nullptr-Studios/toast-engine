@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -209,6 +210,7 @@ MaterialRuntime::MaterialRuntime(const VulkanCore& core, assets::Material* mater
 }
 
 void MaterialRuntime::rebuild() {
+	ZoneScoped;
 	m_merged = {};
 	m_entries.clear();
 	m_values_dirty = true;
@@ -278,6 +280,7 @@ auto MaterialRuntime::pushBlob() -> const std::vector<std::byte>& {
 }
 
 void MaterialRuntime::bakeValues() {
+	ZoneScoped;
 	m_values_dirty = false;
 	m_ubo_blobs.clear();
 	m_push_blob.clear();
@@ -395,6 +398,7 @@ auto MaterialRuntime::textureSlots() -> const std::vector<TextureSlot>& {
 }
 
 void MaterialRuntime::bakeTextures() {
+	ZoneScoped;
 	m_textures_dirty = false;
 	m_texture_slots.clear();
 

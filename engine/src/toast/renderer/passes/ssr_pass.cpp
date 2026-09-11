@@ -17,12 +17,14 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 SsrPass::SsrPass(const VulkanCore& core, vk::Format scene_format, vk::Extent2D extent)
     : m_core(&core),
       m_scene_format(scene_format) {
+	ZoneScoped;
 	// Checked rather than assumed: 128 bytes is all Vulkan guarantees, and this block is 176. Desktop parts
 	// report 256 and are fine, but a device that cannot take it would otherwise fail inside pipeline creation
 	// with an error about a limit rather than about reflections
@@ -69,6 +71,7 @@ SsrPass::SsrPass(const VulkanCore& core, vk::Format scene_format, vk::Extent2D e
 }
 
 void SsrPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -113,6 +116,7 @@ void SsrPass::onResize(vk::Extent2D extent) {
 }
 
 auto SsrPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size() || !source_view || !m_target.isReady()) {
 		return source_view;
 	}

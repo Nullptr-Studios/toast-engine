@@ -13,12 +13,14 @@
 #include <algorithm>
 #include <format>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 void SceneDescriptorSets::create(
     const VulkanCore& core, const ShaderReflection& reflection, vk::DescriptorSetLayout layout, std::string_view owner
 ) {
+	ZoneScoped;
 	m_core = &core;
 	m_owner = owner;
 
@@ -188,6 +190,7 @@ void SceneDescriptorSets::create(
 }
 
 void SceneDescriptorSets::updateTlas(uint32_t frame_index) {
+	ZoneScoped;
 	if (m_core == nullptr || !m_scene_binding.has_value() || frame_index >= m_bound_tlas.size()) {
 		return;
 	}

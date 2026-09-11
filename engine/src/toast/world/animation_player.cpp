@@ -4,6 +4,7 @@
 
 #include <toast/log.hpp>
 #include <toast/time.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace toast {
 
@@ -86,6 +87,7 @@ auto AnimationPlayer::resolveNode(const std::string& node_name) -> Node3D* {
 }
 
 void AnimationPlayer::tick() {
+	ZoneScoped;
 	if (!m_playing || m_paused || m_active_clip == nullptr) {
 		return;
 	}

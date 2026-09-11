@@ -5,6 +5,7 @@
 
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace toast {
 
@@ -76,6 +77,7 @@ void PlayWorkspace::unregisterDependency(Node& from, Node& to) {
 }
 
 void PlayWorkspace::tick() {
+	ZoneScoped;
 	if (participatesIn(NodeOwnerParticipation::gameplay_tick) && !m_paused && m_root_node.exists()) {
 		if (m_schedule_dirty) {
 			computeSchedule();

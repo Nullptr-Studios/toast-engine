@@ -16,12 +16,14 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 TonemapPass::TonemapPass(const VulkanCore& core, vk::Format ldr_format, vk::Extent2D extent)
     : m_core(&core),
       m_ldr_format(ldr_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/tonemap.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -53,6 +55,7 @@ TonemapPass::TonemapPass(const VulkanCore& core, vk::Format ldr_format, vk::Exte
 }
 
 void TonemapPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -105,6 +108,7 @@ void TonemapPass::onResize(vk::Extent2D extent) {
 }
 
 auto TonemapPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size() || !source_view || !m_target.isReady()) {
 		return source_view;
 	}

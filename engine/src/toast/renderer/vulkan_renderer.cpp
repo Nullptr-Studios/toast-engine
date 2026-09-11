@@ -46,6 +46,7 @@
 #include <toast/world/reflection_probe.hpp>
 #include <toast/world/spotlight.hpp>
 #include <toast/world/workspace_events.hpp>
+#include <tracy/Tracy.hpp>
 #include <tuple>
 
 #if defined(_WIN32)
@@ -529,6 +530,7 @@ auto VulkanRenderer::selectDepthFormat(const VulkanCore& core) -> vk::Format {
 VulkanRenderer::VulkanRenderer(const VulkanCore& core, std::unique_ptr<IOutputTarget> output_target) noexcept
     : m_core(&core),
       m_output_target(std::move(output_target)) {
+	ZoneScoped;
 	instance = this;
 	if (!m_output_target) {
 		TOAST_CRITICAL("Render", "Toast Engine Error: VulkanRenderer requires an output target!");
@@ -696,6 +698,7 @@ auto VulkanRenderer::createUploadRing() -> void {
 }
 
 auto VulkanRenderer::createFrameContexts() -> void {
+	ZoneScoped;
 	m_frames.clear();
 	m_frames.resize(k_frames_in_flight);
 
@@ -758,6 +761,7 @@ auto VulkanRenderer::createPerImageSync() -> void {
 }
 
 auto VulkanRenderer::createDepthResources() -> void {
+	ZoneScoped;
 	if (m_depth_format == vk::Format::eUndefined) {
 		TOAST_CRITICAL("Render", "Toast Engine Error: VulkanRenderer requires a valid depth format!");
 	}
@@ -806,6 +810,7 @@ auto VulkanRenderer::createDepthResources() -> void {
 }
 
 void VulkanRenderer::createSceneColorResources() {
+	ZoneScoped;
 	const auto extent = m_output_target->getExtent();
 	if (extent.width == 0 || extent.height == 0) {
 		TOAST_CRITICAL("Render", "Toast Engine Error: VulkanRenderer requires a non-zero output extent for the scene target!");
@@ -892,6 +897,7 @@ auto VulkanRenderer::materialUsesCutout(assets::Material* material) const -> boo
 }
 
 void VulkanRenderer::publishCompletedFrames() {
+	ZoneScoped;
 	// Drained by fence status, not slot reuse - the latter gates publication on three *future* frames, so
 	// intermittent production showed irregular intervals even when rendering was regular
 	while (!m_pending_publish.empty()) {
@@ -942,6 +948,7 @@ auto isTraceable(const VulkanRenderer::MeshInstanceProxy& proxy) -> bool {
 }
 
 void VulkanRenderer::recordAccelerationStructureBuilds(FrameContext& frame) {
+	ZoneScoped;
 	if (!m_core->isRayTracingSupported()) {
 		return;
 	}
@@ -1622,6 +1629,7 @@ auto VulkanRenderer::recordFrame(FrameContext& frame, uint32_t image_index) noex
 }
 
 void VulkanRenderer::createPresentResources() {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/present.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -1671,6 +1679,7 @@ void VulkanRenderer::createPresentResources() {
 }
 
 void VulkanRenderer::createFrameResources() {
+	ZoneScoped;
 	m_frame_ubo_res.resize(k_frames_in_flight);
 	m_frame_ubos.resize(k_frames_in_flight);
 
@@ -1743,8 +1752,7 @@ void VulkanRenderer::createFrameResources() {
 void VulkanRenderer::createDefaultTexture() {
 	const auto& device = m_core->getDevice();
 
-	// Fallbacks for a material's unbound Sampler2D slots, picked per-slot by [Default(...)]: white for
-	// colour, black for metallic, flat tangent-space up for normals
+	// Fallbacks for a material unbound Sampler2D slots
 	uploadSinglePixelTexture(*m_core, m_default_texture, {255, 255, 255, 255}, "VulkanRenderer DefaultWhiteTexture");
 	uploadSinglePixelTexture(*m_core, m_default_black_texture, {0, 0, 0, 255}, "VulkanRenderer DefaultBlackTexture");
 	uploadSinglePixelTexture(*m_core, m_default_normal_texture, {128, 128, 255, 255}, "VulkanRenderer DefaultNormalTexture");
@@ -1810,12 +1818,13 @@ auto VulkanRenderer::getFailsafeTextureView(bool has_reference, const VulkanText
 		case IVulkanResource::UploadState::failed_gpu:
 			return m_fail_gpu_texture.isReady() ? m_fail_gpu_texture.getView() : vk::ImageView {};
 		default:
-			// Still uploading, or ready - neither is something to shout about
-			return nullptr;
+			// IF STILL UPLADING THE TEXTURE SHOW MISSING TEXTURE
+			return m_missing_texture.isReady() ? m_missing_texture.getView() : vk::ImageView {};
 	}
 }
 
 void VulkanRenderer::createDefaultShadowMap() {
+	ZoneScoped;
 	const auto& device = m_core->getDevice();
 
 	// Depth format, not the 1x1 white colour texture the other fallbacks use: the shader declares the shadow
@@ -1874,6 +1883,7 @@ void VulkanRenderer::createDefaultShadowMap() {
 }
 
 void VulkanRenderer::createDefaultCubemap() {
+	ZoneScoped;
 	const auto& device = m_core->getDevice();
 
 	vk::ImageCreateInfo image_ci {};
@@ -2444,6 +2454,7 @@ void VulkanRenderer::fitShadowViews(
     RenderFrame& frame, float aspect, int32_t shadow_caster_index, const glm::vec3& shadow_caster_direction,
     std::vector<PunctualShadowCandidate>& spot_candidates, std::vector<PunctualShadowCandidate>& point_candidates
 ) {
+	ZoneScoped;
 	// Shadow fitting, here rather than in ShadowPass so the render thread never touches Camera or Light state.
 	// Everything stays zeroed (no shadows) when the pass was never registered
 	if (m_shadow_pass == nullptr) {
@@ -3663,6 +3674,7 @@ void drawOrientedBox(const glm::mat4& transform, const glm::vec3& extents, const
 }
 
 auto VulkanRenderer::blendPostProcessVolumes(const glm::vec3& camera_position) -> PostProcessSettings {
+	ZoneScoped;
 	PostProcessSettings result = m_post_process_settings;
 
 	auto& volumes = m_tick_post_volumes;
@@ -3752,6 +3764,7 @@ void VulkanRenderer::unregisterCameraNodeProxy(toast::Camera* node) {
 }
 
 void VulkanRenderer::stop() {
+	ZoneScoped;
 	const bool was_running = m_running.exchange(false, std::memory_order_acq_rel);
 	if (!was_running) {
 		return;
@@ -3794,6 +3807,7 @@ auto VulkanRenderer::applyResize(vk::Extent2D extent) -> void {
 }
 
 auto VulkanRenderer::applyResizeInternal(vk::Extent2D extent) -> void {
+	ZoneScoped;
 	m_core->getDevice().waitIdle();
 	// Everything is idle, so every queued frame has completed - drain in order rather than iterating the
 	// contexts, which would publish them in slot order instead of submission order

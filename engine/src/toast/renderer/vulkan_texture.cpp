@@ -10,10 +10,12 @@
 #include <format>
 #include <limits>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 void VulkanTexture::create(const VulkanCore& core, Params params, std::string_view debug_name) {
+	ZoneScoped;
 	m_params = params;
 
 	const std::string name =
@@ -79,6 +81,7 @@ void VulkanTexture::destroy() {
 // Upload Functions
 
 void TextureUpload::build(const VulkanCore& core) {
+	ZoneScoped;
 	// Every failure below marks a reason and returns rather than logging and walking on
 	if (m_data.empty()) {
 		TOAST_ERROR("Render", "Texture '{}' has no data to decode", m_debug_name);
@@ -185,6 +188,7 @@ void TextureUpload::build(const VulkanCore& core) {
 }
 
 void TextureUpload::record(vk::CommandBuffer cmd) {
+	ZoneScoped;
 	if (m_texture->hasFailed() || !*m_staging_buffer) {
 		return;
 	}
@@ -225,6 +229,7 @@ void TextureUpload::record(vk::CommandBuffer cmd) {
 }
 
 void RawTextureUpload::build(const VulkanCore& core) {
+	ZoneScoped;
 	if (m_width == 0 || m_height == 0 || m_data.empty()) {
 		TOAST_CRITICAL("Render", "Cannot upload raw texture with empty dimensions/data");
 	}
@@ -259,6 +264,7 @@ void RawTextureUpload::build(const VulkanCore& core) {
 }
 
 void RawTextureUpload::record(vk::CommandBuffer cmd) {
+	ZoneScoped;
 	const vk::Image image = m_texture->getImage();
 
 	vk::ImageMemoryBarrier barrier {};
@@ -300,6 +306,7 @@ void RawTextureUpload::record(vk::CommandBuffer cmd) {
 
 auto uploadTextureSync(const VulkanCore& core, VulkanTexture& texture, std::vector<uint8_t> data, std::string_view debug_name)
     -> bool {
+	ZoneScoped;
 	TextureUpload job(texture, std::move(data), debug_name);
 	job.build(core);
 	if (texture.hasFailed()) {

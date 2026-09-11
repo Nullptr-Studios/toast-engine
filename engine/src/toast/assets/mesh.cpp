@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <toast/renderer/vulkan_renderer.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace assets {
 
@@ -47,6 +48,7 @@ auto Mesh::gpuMesh() -> renderer::VulkanMesh& {
 }
 
 void generateTangents(std::vector<renderer::Vertex>& vertices, const std::vector<uint32_t>& indices) {
+	ZoneScoped;
 	if (vertices.empty() || indices.size() < 3) {
 		return;
 	}
@@ -108,6 +110,7 @@ void generateTangents(std::vector<renderer::Vertex>& vertices, const std::vector
 }
 
 auto Mesh::boundingSphere() const -> const glm::vec4& {
+	ZoneScoped;
 	if (m_bounding_sphere.has_value()) {
 		return *m_bounding_sphere;
 	}
@@ -143,6 +146,7 @@ auto Mesh::boundingSphere() const -> const glm::vec4& {
 }
 
 Mesh::Mesh(const std::vector<uint8_t>& data) : m_gpu_mesh(std::make_unique<renderer::VulkanMesh>()) {
+	ZoneScoped;
 	TOAST_ASSERT(data.size() >= sizeof(_detail::MeshFileHeader), "AssetManager", "Mesh data is too small to contain header");
 
 	_detail::MeshFileHeader header;
@@ -242,6 +246,7 @@ Mesh::Mesh(const std::vector<uint8_t>& data) : m_gpu_mesh(std::make_unique<rende
 }
 
 auto Mesh::toBinary() const -> std::vector<uint8_t> {
+	ZoneScoped;
 	std::vector<uint8_t> buffer;
 
 	_detail::MeshFileHeader header;

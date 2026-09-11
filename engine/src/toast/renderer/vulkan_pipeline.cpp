@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -37,6 +38,7 @@ auto createGraphicsPipelineImpl(
     const VulkanCore& core, const VulkanPipeline::Config& config, const vk::raii::ShaderModule& shader_module,
     const vk::PipelineLayout& pipeline_layout
 ) -> vk::raii::Pipeline {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 
 	// Held in locals: the create infos below store raw pointers into these strings
@@ -215,6 +217,7 @@ auto createComputePipelineImpl(
     const VulkanCore& core, const VulkanPipeline::Config& config, const vk::raii::ShaderModule& shader_module,
     const vk::PipelineLayout& pipeline_layout
 ) -> vk::raii::Pipeline {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const std::string compute_entry =
 	    spirv::resolveEntryPoint(config.shader_spirv, spirv::ExecutionModel::compute, config.compute_entry, config.debug_name);
@@ -234,6 +237,7 @@ VulkanPipeline::VulkanPipeline(const VulkanCore& core, const Config& config) {
 }
 
 auto VulkanPipeline::rebuild(const VulkanCore& core, const Config& config) -> void {
+	ZoneScoped;
 	reset();
 
 	if (!config.pipeline_layout) {

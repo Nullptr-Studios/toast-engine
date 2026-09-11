@@ -20,6 +20,7 @@
 #include <string>
 #include <toast/assets/texture.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <unordered_set>
 
 namespace renderer {
@@ -120,6 +121,7 @@ auto MaterialPass::resolvedAlphaCutoffOf(MaterialRuntime& runtime) -> float {
 }
 
 void MaterialPass::rebuildPipeline() {
+	ZoneScoped;
 	m_instances.clear();
 
 	m_pipeline.reset();
@@ -209,6 +211,7 @@ void MaterialPass::rebuildPipeline() {
 }
 
 auto MaterialPass::ensureInstanceResources(assets::Material* material) -> InstanceResources* {
+	ZoneScoped;
 	auto [it, inserted] = m_instances.try_emplace(material);
 	InstanceResources& res = it->second;
 	if (!inserted) {
@@ -289,6 +292,7 @@ auto MaterialPass::ensureInstanceResources(assets::Material* material) -> Instan
 }
 
 void MaterialPass::updateInstanceDescriptors(InstanceResources& res, uint32_t frame_index) {
+	ZoneScoped;
 	const auto& device = m_core->getDevice();
 	const auto& blobs = res.runtime->uniformBlobs();
 	for (const auto& blob : blobs) {
@@ -330,8 +334,10 @@ void MaterialPass::updateInstanceDescriptors(InstanceResources& res, uint32_t fr
 		if (gpu_texture != nullptr && gpu_texture->isReady() && gpu_texture->getView()) {
 			view = gpu_texture->getView();
 			warnIfWrongColorSpace(slot, *gpu_texture);
-		} else if (const vk::ImageView failsafe =
-		               VulkanRenderer::instance->getFailsafeTextureView(slot.texture.uid().data() != 0, gpu_texture)) {
+		} else if (
+		    const vk::ImageView failsafe =
+		        VulkanRenderer::instance->getFailsafeTextureView(slot.texture.uid().data() != 0, gpu_texture)
+		) {
 			view = failsafe;
 			sampler = VulkanRenderer::instance->getFailsafeSampler();
 		}
@@ -354,6 +360,7 @@ void MaterialPass::updateInstanceDescriptors(InstanceResources& res, uint32_t fr
 }
 
 void MaterialPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)image_index;
 
 	if (m_rebuild_pending.exchange(false, std::memory_order_acq_rel)) {

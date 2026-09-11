@@ -12,6 +12,7 @@
 #include <toast/renderer/vulkan_renderer.hpp>
 #include <toast/thread_pool.hpp>
 #include <toast/uri_handler.hpp>
+#include <tracy/Tracy.hpp>
 #include <utility>
 
 namespace toast {
@@ -19,6 +20,7 @@ namespace toast {
 using namespace _detail;
 
 World::World() {
+	ZoneScoped;
 	instance = this;
 
 	m.listener.subscribe<event::LoadNode>("load_node", [](event::LoadNode& e) {
@@ -599,6 +601,7 @@ auto World::findCached(std::string_view name) -> Box<Node> {
 }
 
 void World::hotReload() {
+	ZoneScoped;
 	if (!instance) {
 		return;
 	}
@@ -840,6 +843,7 @@ auto World::moveToCached(Node& node) -> Box<Node> {
 }
 
 auto World::moveToGlobal(Node& node) -> Box<Node> {
+	ZoneScoped;
 	switch (node.m_state) {
 		case NodeState::root: TOAST_WARN("World", "Tried to move root to cached, consider using swapRoot() instead"); return {};
 		case NodeState::global: TOAST_WARN("World", "Tried to move to global a Node that is already in global"); return {};
@@ -871,6 +875,7 @@ auto World::moveToGlobal(Node& node) -> Box<Node> {
 }
 
 auto World::moveToChild(Node& node, Node& parent) -> Box<Node> {
+	ZoneScoped;
 	if (parent.m_state != NodeState::root) {
 		TOAST_WARN("World", "You can only move a node into one that is on the root");
 		return {};

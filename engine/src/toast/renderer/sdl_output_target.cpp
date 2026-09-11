@@ -6,6 +6,7 @@
 
 #include <stdexcept>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -99,6 +100,7 @@ auto SDLOutputTarget::present(uint32_t image_index, vk::Semaphore render_finishe
 }
 
 auto SDLOutputTarget::recordFinalize(vk::CommandBuffer command_buffer, uint32_t image_index) -> void {
+	ZoneScoped;
 	// Transition the rendered image from color-attachment to present-source for the swapchain
 	const vk::ImageMemoryBarrier barrier(
 	    vk::AccessFlagBits::eColorAttachmentWrite,

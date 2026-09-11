@@ -17,10 +17,12 @@
 #define STBI_NO_STDIO
 #include <stb_image.h>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace assets {
 
 auto decodeHdr(std::span<const uint8_t> bytes) -> HdrImage {
+	ZoneScoped;
 	HdrImage image;
 	if (bytes.empty()) {
 		return image;

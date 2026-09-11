@@ -2,6 +2,8 @@
 
 #include "types.hpp"
 
+#include <tracy/Tracy.hpp>
+
 namespace assets {
 
 std::unordered_map<std::string, AssetRegistry::RawLoader> AssetRegistry::s_raw;
@@ -10,6 +12,7 @@ std::unordered_map<std::string, AssetRegistry::SchemaTomlLoader> AssetRegistry::
 std::unordered_map<std::string, std::string> AssetRegistry::s_lua_names;
 
 void AssetRegistry::init() {
+	ZoneScoped;
 	static bool initialized = false;
 	if (initialized) {
 		return;

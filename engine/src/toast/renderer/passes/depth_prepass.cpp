@@ -18,10 +18,12 @@
 // Explicit: this reads Material::settings().blend_mode, and had been getting the definition transitively
 #include <toast/assets/material.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 DepthPrepass::DepthPrepass(const VulkanCore& core, vk::Format depth_format, vk::Extent2D extent) : m_core(&core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/depth_prepass.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -56,6 +58,7 @@ DepthPrepass::DepthPrepass(const VulkanCore& core, vk::Format depth_format, vk::
 }
 
 void DepthPrepass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
 		return;
@@ -98,6 +101,7 @@ void DepthPrepass::createResources(const VulkanCore& core) {
 }
 
 void DepthPrepass::record(vk::CommandBuffer cmd, uint32_t frame_index) {
+	ZoneScoped;
 	m_drawn = 0;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size()) {
 		return;

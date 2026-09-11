@@ -205,6 +205,7 @@ auto LuaState::nextIndex() noexcept -> size_t {
 }
 
 auto LuaState::runString(std::string_view lua_code) noexcept -> bool {
+	ZoneScoped;
 	Lock guard = lock(0);
 	if (!guard) {
 		return false;
@@ -229,6 +230,7 @@ auto LuaState::runString(std::string_view lua_code) noexcept -> bool {
 }
 
 LuaState::LuaState() {
+	ZoneScoped;
 	LuaState::instance = this;
 
 	for (Entry& entry : m_entries) {
@@ -262,6 +264,7 @@ LuaState::~LuaState() noexcept {
 }
 
 void LuaState::registerApi(lua_State* state) noexcept {
+	ZoneScoped;
 	using namespace luabridge;
 
 	getGlobalNamespace(state)

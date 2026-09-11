@@ -115,8 +115,8 @@ protected:
 	[[nodiscard]]
 	auto isActiveWorkspace() const noexcept -> bool;
 
-	// Translate-gizmo interaction, driven directly off event::WindowMousePosition/WindowMouseButton
-	// (see gizmoUpdateHover()/gizmoBeginDrag()/gizmoUpdateDrag()/gizmoEndDrag() in workspace.cpp)
+	/// @brief The gizmo's current state
+	// Translate-gizmo interaction
 	glm::vec2 m_gizmo_mouse_pos {0.0f, 0.0f};
 	GizmoHandle m_gizmo_hover = GizmoHandle::none;
 	GizmoHandle m_gizmo_drag = GizmoHandle::none;
@@ -128,6 +128,8 @@ protected:
 	glm::vec3 m_gizmo_drag_plane_normal {0.0f};    ///< world-space plane normal, for plane/center/ring drags
 	float m_gizmo_drag_start_angle = 0.0f;         ///< radians, for rotate drags
 	float m_gizmo_drag_current_factor = 1.0f;      ///< live scale factor, for the scale feedback stretch
+	/// dragged field's value at drag start, set while the drag owns the open history transaction
+	std::optional<std::string> m_gizmo_history_start;
 
 	[[nodiscard]]
 	auto gizmoOrigin() const -> glm::vec3;

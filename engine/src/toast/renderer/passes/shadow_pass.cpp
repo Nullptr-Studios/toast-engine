@@ -19,6 +19,7 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -71,6 +72,7 @@ auto ShadowPass::selectShadowFormat(const VulkanCore& core) -> vk::Format {
 }
 
 ShadowPass::ShadowPass(const VulkanCore& core) : m_core(&core) {
+	ZoneScoped;
 	m_format = selectShadowFormat(core);
 	if (m_format == vk::Format::eUndefined) {
 		TOAST_ERROR("Render", "No sampleable depth format available, shadows are disabled");
@@ -155,6 +157,7 @@ void ShadowPass::createShadowMap(
     const VulkanCore& core, ShadowMap& map, uint32_t resolution, std::span<const uint32_t> group_layers,
     std::string_view debug_name
 ) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 
 	uint32_t layer_count = 0;
@@ -221,6 +224,7 @@ void ShadowPass::createShadowMap(
 }
 
 void ShadowPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -322,6 +326,7 @@ auto ShadowPass::getPunctualMapView(uint32_t frame_index) const -> vk::ImageView
 }
 
 void ShadowPass::recordMap(vk::CommandBuffer cmd, ShadowMap& map, uint32_t frame_index, bool directional) {
+	ZoneScoped;
 	const auto* frame = VulkanRenderer::instance->renderingFrame();
 	if (frame == nullptr || !map.image.has_value()) {
 		return;
@@ -538,6 +543,7 @@ void ShadowPass::recordMap(vk::CommandBuffer cmd, ShadowMap& map, uint32_t frame
 }
 
 void ShadowPass::recordPre(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)image_index;
 
 	// Every mask, not just one - a missing cascade pipeline leaves the directional map clearing itself and

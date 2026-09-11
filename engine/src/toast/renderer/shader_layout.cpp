@@ -6,6 +6,7 @@
 #include <format>
 #include <map>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -27,6 +28,7 @@ auto toDescriptorType(ShaderBindingKind kind) -> vk::DescriptorType {
 }
 
 void ShaderLayout::rebuild(const VulkanCore& core, const ShaderReflection& reflection, std::string_view debug_name) {
+	ZoneScoped;
 	m_descriptor_set_layouts.clear();
 	m_push_constant_ranges.clear();
 	m_pipeline_layout = nullptr;

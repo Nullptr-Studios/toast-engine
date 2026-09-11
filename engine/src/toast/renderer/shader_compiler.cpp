@@ -11,6 +11,7 @@
 #include <slang-com-ptr.h>
 #include <slang.h>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -48,6 +49,7 @@ auto ShaderCompiler::featureHash() -> uint64_t {
 }
 
 static auto createSession() -> Slang::ComPtr<slang::ISession> {
+	ZoneScoped;
 	ensureSlangGlobalSession();
 
 	slang::TargetDesc target {};
@@ -136,6 +138,7 @@ void logDiagnostics(const Slang::ComPtr<slang::IBlob>& diagnostics, std::string_
 }
 
 auto compileModule(std::string_view module_name, std::string_view source_path, std::string_view source) -> CompiledShaderCode {
+	ZoneScoped;
 	auto slang_session = createSession();
 
 	Slang::ComPtr<slang::IModule> slang_module;

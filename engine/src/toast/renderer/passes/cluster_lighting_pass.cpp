@@ -15,6 +15,7 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -50,6 +51,7 @@ auto ClusterLightingPass::createBuffer(
 }
 
 ClusterLightingPass::ClusterLightingPass(const renderer::VulkanCore& core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/cluster_lighting.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -76,6 +78,7 @@ ClusterLightingPass::ClusterLightingPass(const renderer::VulkanCore& core) {
 }
 
 void ClusterLightingPass::createResources(const renderer::VulkanCore& core) {
+	ZoneScoped;
 	using namespace clustered_lighting;
 
 	const auto& device = core.getDevice();
@@ -154,6 +157,7 @@ void ClusterLightingPass::createResources(const renderer::VulkanCore& core) {
 }
 
 void ClusterLightingPass::update(uint32_t frame_index, float dt) {
+	ZoneScoped;
 	(void)dt;
 
 	if (frame_index >= m_frame_buffers.size()) {
@@ -191,6 +195,7 @@ void ClusterLightingPass::update(uint32_t frame_index, float dt) {
 }
 
 void ClusterLightingPass::dispatch(vk::CommandBuffer cmd, uint32_t frame_index) {
+	ZoneScoped;
 	if (frame_index >= m_descriptor_sets.size() || !m_build_clusters_pipeline.isReady() || !m_cull_lights_pipeline.isReady()) {
 		return;
 	}

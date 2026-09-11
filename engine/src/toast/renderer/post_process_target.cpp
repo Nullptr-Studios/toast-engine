@@ -11,10 +11,12 @@
 
 #include <array>
 #include <format>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 void PostProcessTarget::create(const VulkanCore& core, vk::Extent2D extent, vk::Format format, std::string_view debug_name) {
+	ZoneScoped;
 	// View before image: it is a view *onto* that memory, and releasing the image first leaves it dangling
 	m_view.reset();
 	m_image.reset();

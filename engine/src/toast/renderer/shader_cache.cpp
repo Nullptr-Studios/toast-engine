@@ -8,6 +8,7 @@
 #include <toast/assets/asset_manager.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -70,6 +71,7 @@ auto ShaderCache::fnv1a(const void* data, size_t size) -> uint64_t {
 }
 
 void ShaderCache::loadHashIndexLocked() {
+	ZoneScoped;
 	if (m_hash_index_loaded) {
 		return;
 	}
@@ -131,6 +133,7 @@ auto ShaderCache::isDiskCacheFreshLocked(toast::UID uid, uint64_t source_hash) -
 }
 
 auto ShaderCache::loadFromDiskLocked(toast::UID uid) -> std::shared_ptr<const Entry> {
+	ZoneScoped;
 	auto& manager = assets::AssetManager::get();
 
 	auto spirv_bytes = manager.tryLoadBytes(spirvUri(uid));
@@ -161,6 +164,7 @@ auto ShaderCache::loadFromDiskLocked(toast::UID uid) -> std::shared_ptr<const En
 }
 
 auto ShaderCache::compileLocked(toast::UID uid) -> std::shared_ptr<const Entry> {
+	ZoneScoped;
 	auto& source_handle = sourceHandleLocked(uid);
 	if (!source_handle.hasValue()) {
 		TOAST_ERROR("Render", "Cannot compile shader {}: asset not found", uid.get());
@@ -232,6 +236,7 @@ auto ShaderCache::compileLocked(toast::UID uid) -> std::shared_ptr<const Entry> 
 }
 
 auto ShaderCache::loadOrCompileLocked(toast::UID uid) -> std::shared_ptr<const Entry> {
+	ZoneScoped;
 	auto& source_handle = sourceHandleLocked(uid);
 	if (!source_handle.hasValue()) {
 		TOAST_ERROR("Render", "Unknown shader asset {}", uid.get());
@@ -252,6 +257,7 @@ auto ShaderCache::loadOrCompileLocked(toast::UID uid) -> std::shared_ptr<const E
 }
 
 void ShaderCache::compileAllAtStartup() {
+	ZoneScoped;
 	const auto shader_uids = assets::listByType("shader");
 
 	std::lock_guard lock(m_mutex);
@@ -272,6 +278,7 @@ void ShaderCache::compileAllAtStartup() {
 }
 
 auto ShaderCache::acquire(toast::UID uid) -> std::shared_ptr<const Entry> {
+	ZoneScoped;
 	std::lock_guard lock(m_mutex);
 
 	if (const auto it = m_entries.find(uid.data()); it != m_entries.end()) {
@@ -290,6 +297,7 @@ auto ShaderCache::ensureCompiled(toast::UID uid) -> bool {
 }
 
 auto ShaderCache::onShaderSourceReloaded(toast::UID uid) -> bool {
+	ZoneScoped;
 	std::lock_guard lock(m_mutex);
 
 	auto entry = compileLocked(uid);

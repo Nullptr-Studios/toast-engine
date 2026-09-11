@@ -18,6 +18,7 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -29,6 +30,7 @@ constexpr uint32_t k_group_size = 64;
 }
 
 SkinningPass::SkinningPass(const VulkanCore& core) : m_core(&core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/skinning.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -81,6 +83,7 @@ auto SkinningPass::getPosedVertexBuffer(uint32_t frame_index) const -> vk::Buffe
 }
 
 auto SkinningPass::ensureMeshResources(const VulkanMesh* mesh) -> MeshResources* {
+	ZoneScoped;
 	auto [it, inserted] = m_mesh_resources.try_emplace(mesh);
 	if (!inserted) {
 		return &it->second;
@@ -130,6 +133,7 @@ auto SkinningPass::ensureMeshResources(const VulkanMesh* mesh) -> MeshResources*
 }
 
 void SkinningPass::record(vk::CommandBuffer cmd, uint32_t frame_index) {
+	ZoneScoped;
 	m_posed_instances = 0;
 
 	if (!m_pipeline.isReady() || frame_index >= m_posed_buffers.size()) {

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <toast/log.hpp>
 #include <toml++/toml.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace toast::settings {
 namespace {
@@ -348,6 +349,7 @@ void Settings::setActiveLayer(Layer layer) {
 }
 
 auto Settings::loadFile(const std::filesystem::path& path, Layer layer) -> bool {
+	ZoneScoped;
 	if (path.empty() || !std::filesystem::exists(path)) {
 		return false;
 	}
@@ -400,6 +402,7 @@ void Settings::load() {
 }
 
 auto Settings::save() -> bool {
+	ZoneScoped;
 	std::scoped_lock lock(m_mutex);
 
 	const auto& path = m_active_layer == Layer::project ? m_project_path : m_user_path;

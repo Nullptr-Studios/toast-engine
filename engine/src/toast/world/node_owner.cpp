@@ -440,6 +440,7 @@ void INodeOwner::applyFields(Node& node, const assets::Prefab::BasicNode& data) 
 }
 
 void INodeOwner::applyLuaOverrides(Node& node, const assets::Prefab::BasicNode& data, const scripting::NodeResolver& find_node) {
+	ZoneScoped;
 	if (data.lua_vars.empty()) {
 		return;
 	}
@@ -699,6 +700,7 @@ void INodeOwner::reapTombstones() noexcept {
 }
 
 void INodeOwner::reloadScriptsUsing(UID script_uid) noexcept {
+	ZoneScoped;
 	std::scoped_lock lock(nodes_mutex);
 	forEachNode([&](const _detail::ControlBox& control) {
 		if (control.node == nullptr) {

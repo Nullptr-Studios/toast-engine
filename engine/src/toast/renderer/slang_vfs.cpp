@@ -6,6 +6,7 @@
 #include <string>
 #include <toast/assets/asset_manager.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <vector>
 
 namespace renderer {
@@ -134,6 +135,7 @@ auto SlangVfs::makeBlob(const void* data, size_t size) -> ISlangBlob* {
 }
 
 auto SlangVfs::loadFile(const char* path, ISlangBlob** out_blob) -> SlangResult {
+	ZoneScoped;
 	if (path == nullptr || out_blob == nullptr) {
 		return SLANG_E_INVALID_ARG;
 	}

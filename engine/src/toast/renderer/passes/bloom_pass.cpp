@@ -16,6 +16,7 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -33,6 +34,7 @@ constexpr uint32_t k_min_mip_size = 8;
 }
 
 BloomPass::BloomPass(const VulkanCore& core, vk::Format hdr_format, vk::Extent2D extent) : m_core(&core), m_format(hdr_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/bloom.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -53,6 +55,7 @@ BloomPass::BloomPass(const VulkanCore& core, vk::Format hdr_format, vk::Extent2D
 }
 
 void BloomPass::createPipelines(const VulkanCore& core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/bloom.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -92,6 +95,7 @@ void BloomPass::createPipelines(const VulkanCore& core) {
 }
 
 void BloomPass::createTargets(const VulkanCore& core, vk::Extent2D extent) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 
 	m_mips.clear();
@@ -252,6 +256,7 @@ void BloomPass::drawInto(
 }
 
 auto BloomPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	(void)frame_index;
 
 	if (m_mips.empty() || !m_composite.view.has_value() || !m_composite_pipeline.isReady() || !source_view) {

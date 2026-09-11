@@ -20,6 +20,7 @@
 #include <toast/assets/asset_manager.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -55,6 +56,7 @@ ReflectionProbePass::ReflectionProbePass(const VulkanCore& core, vk::Format colo
     : m_core(&core),
       m_format(color_format),
       m_depth_format(depth_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/environment.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -100,6 +102,7 @@ ReflectionProbePass::ReflectionProbePass(const VulkanCore& core, vk::Format colo
 }
 
 void ReflectionProbePass::createPipelines(const VulkanCore& core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/environment.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -155,6 +158,7 @@ void ReflectionProbePass::createPipelines(const VulkanCore& core) {
 }
 
 void ReflectionProbePass::createDescriptors(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty() || !m_staging.cube.isReady()) {
 		return;
@@ -369,6 +373,7 @@ auto gridMatches(const ShFileHeader& header, const ShGridKey& key) -> bool {
 }
 
 auto ReflectionProbePass::loadShRange(uint32_t base, uint32_t count, std::string_view uri, const ShGridKey& key) -> bool {
+	ZoneScoped;
 	if (!m_sh_buffer.has_value() || count == 0 || m_core == nullptr) {
 		return false;
 	}
@@ -435,6 +440,7 @@ auto ReflectionProbePass::loadShRange(uint32_t base, uint32_t count, std::string
 }
 
 void ReflectionProbePass::createShResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/sh_project.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -534,6 +540,7 @@ void ReflectionProbePass::renderFace(
 }
 
 void ReflectionProbePass::prefilterInto(vk::CommandBuffer cmd, uint32_t probe) {
+	ZoneScoped;
 	auto& cube = m_probes[probe];
 	if (!cube.cube.isReady() || !m_prefilter_pipeline.isReady() || !*m_staging_source_set) {
 		TOAST_WARN(
@@ -573,6 +580,7 @@ void ReflectionProbePass::prefilterInto(vk::CommandBuffer cmd, uint32_t probe) {
 }
 
 void ReflectionProbePass::convolveIrradianceInto(vk::CommandBuffer cmd, uint32_t probe) {
+	ZoneScoped;
 	auto& cube = m_probe_irradiance[probe];
 	if (!cube.cube.isReady() || !m_irradiance_pipeline.isReady() || !*m_staging_source_set) {
 		return;
@@ -604,6 +612,7 @@ auto ReflectionProbePass::getProbeIrradianceView(uint32_t probe) const -> vk::Im
 }
 
 void ReflectionProbePass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)frame_index;
 	(void)image_index;
 
@@ -682,6 +691,7 @@ auto ReflectionProbePass::cubeByteSize(const ProbeCube& cube) -> vk::DeviceSize 
 }
 
 auto ReflectionProbePass::readbackCube(ProbeCube& cube, std::vector<uint8_t>& out) -> bool {
+	ZoneScoped;
 	if (!cube.cube.isReady() || m_core == nullptr) {
 		return false;
 	}
@@ -760,6 +770,7 @@ auto ReflectionProbePass::readbackCube(ProbeCube& cube, std::vector<uint8_t>& ou
 }
 
 auto ReflectionProbePass::uploadCube(ProbeCube& cube, const std::vector<uint8_t>& bytes, size_t offset) -> bool {
+	ZoneScoped;
 	if (!cube.cube.isReady() || m_core == nullptr) {
 		return false;
 	}
@@ -828,6 +839,7 @@ void ReflectionProbePass::queueSave(uint32_t probe, std::string_view uri) {
 }
 
 void ReflectionProbePass::recordPre(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)cmd;
 	(void)frame_index;
 	(void)image_index;
@@ -933,6 +945,7 @@ void ReflectionProbePass::recordPre(vk::CommandBuffer cmd, uint32_t frame_index,
 }
 
 auto ReflectionProbePass::loadProbe(uint32_t probe, std::string_view uri) -> bool {
+	ZoneScoped;
 	if (probe >= m_probes.size() || m_core == nullptr) {
 		return false;
 	}
@@ -980,6 +993,7 @@ auto ReflectionProbePass::loadProbe(uint32_t probe, std::string_view uri) -> boo
 }
 
 void ReflectionProbePass::setProbeResolution(uint32_t probe, uint32_t face_size) {
+	ZoneScoped;
 	if (probe >= m_probes.size() || m_core == nullptr) {
 		return;
 	}

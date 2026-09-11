@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <utility>
 
 namespace renderer {
@@ -75,6 +76,7 @@ auto VulkanSwapchain::recreate(vk::Extent2D preferred_extent) -> void {
 }
 
 auto VulkanSwapchain::create(vk::Extent2D preferred_extent) -> void {
+	ZoneScoped;
 	if (!m_core || !m_surface) {
 		TOAST_CRITICAL("Render", "VulkanSwapchain requires a valid core and surface!");
 	}
@@ -247,6 +249,7 @@ auto VulkanSwapchain::acquireNextImage(uint64_t timeout, vk::Semaphore image_ava
 }
 
 auto VulkanSwapchain::present(uint32_t image_index, vk::Semaphore render_finished) const -> vk::Result {
+	ZoneScoped;
 	const VkSwapchainKHR swapchain_handle = static_cast<VkSwapchainKHR>(*m_swapchain);
 	const VkSemaphore wait_semaphore = static_cast<VkSemaphore>(render_finished);
 

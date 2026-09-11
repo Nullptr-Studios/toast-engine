@@ -10,6 +10,7 @@
 #include <cstring>
 #include <format>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <utility>
 
 namespace renderer {
@@ -27,6 +28,7 @@ SharedTextureOutputTarget::SharedTextureOutputTarget(const VulkanCore& core, vk:
 }
 
 void SharedTextureOutputTarget::allocateResources(vk::Extent2D extent) {
+	ZoneScoped;
 	m_extent = extent;
 	if (m_extent.width == 0 || m_extent.height == 0) {
 		TOAST_CRITICAL("Render", "Toast Engine Error: Shared texture output target needs a non-zero extent!");
@@ -96,6 +98,7 @@ auto SharedTextureOutputTarget::getColorAttachment(uint32_t index) const -> cons
 }
 
 auto SharedTextureOutputTarget::acquireNextImage(uint64_t, vk::Semaphore, vk::Fence) -> vk::ResultValue<uint32_t> {
+	ZoneScoped;
 	// Never hand back the image copyLatestFrame() publishes to the consumer. There are as many images as
 	// frames in flight, so a plain round-robin lands every frame slot on the index it just published one
 	// step earlier - and the consumer reads that staging buffer straight out of mapped memory, on its own
@@ -122,6 +125,7 @@ auto SharedTextureOutputTarget::present(uint32_t, vk::Semaphore) -> vk::Result {
 }
 
 void SharedTextureOutputTarget::recordFinalize(vk::CommandBuffer command_buffer, uint32_t image_index) {
+	ZoneScoped;
 	const auto& shared = m_images.at(image_index);
 	const vk::Image image = **shared.image;
 	const vk::Buffer staging = **shared.staging;
@@ -166,6 +170,7 @@ void SharedTextureOutputTarget::recordFinalize(vk::CommandBuffer command_buffer,
 }
 
 void SharedTextureOutputTarget::onImageRenderComplete(uint32_t image_index) {
+	ZoneScoped;
 	if (image_index >= m_images.size()) {
 		return;
 	}
@@ -185,6 +190,7 @@ void SharedTextureOutputTarget::onImageRenderComplete(uint32_t image_index) {
 }
 
 auto SharedTextureOutputTarget::copyLatestFrame(void* dst, uint32_t dst_capacity, ViewportFrameDesc* out) -> int {
+	ZoneScoped;
 	std::scoped_lock lock(m_frame_mutex);
 
 	const int32_t index = m_latest_ready.load(std::memory_order_acquire);

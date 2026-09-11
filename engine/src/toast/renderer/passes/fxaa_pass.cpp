@@ -16,10 +16,12 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 FxaaPass::FxaaPass(const VulkanCore& core, vk::Format ldr_format, vk::Extent2D extent) : m_core(&core), m_ldr_format(ldr_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/fxaa.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -50,6 +52,7 @@ FxaaPass::FxaaPass(const VulkanCore& core, vk::Format ldr_format, vk::Extent2D e
 }
 
 void FxaaPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -88,6 +91,7 @@ void FxaaPass::onResize(vk::Extent2D extent) {
 }
 
 auto FxaaPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size() || !source_view || !m_target.isReady()) {
 		return source_view;
 	}

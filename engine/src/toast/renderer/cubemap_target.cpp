@@ -11,6 +11,7 @@
 
 #include <format>
 #include <string>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -18,6 +19,7 @@ void CubemapTarget::create(
     const VulkanCore& core, vk::Format format, uint32_t size, uint32_t mip_levels, std::string_view debug_name,
     vk::ImageUsageFlags extra_usage, bool with_face_views
 ) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 
 	// Views before the image they are onto, so nothing is left dangling while it is released

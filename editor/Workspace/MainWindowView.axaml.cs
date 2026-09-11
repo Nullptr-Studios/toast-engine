@@ -147,6 +147,12 @@ public partial class MainWindowView : Window {
 			var margin = (Thickness)change.NewValue!;
 			MenuBorder.Margin = new Thickness(margin.Left, 0, 0, 0);
 		}
+		
+		// Window state change
+		if (change.Property == WindowStateProperty) {
+			if (DataContext is not MainWindowViewModel vm) return;
+			// vm.WindowState = WindowState;
+		}
 	}
 
 	private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e) {

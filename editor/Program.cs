@@ -24,10 +24,7 @@ internal sealed class Program {
 #endif
 			.WithInterFont();
 
-		// RenderDoc hooks the first graphics API it sees process-wide; if it's already attached (editor
-		// launched through RenderDoc), Avalonia's own hardware-accelerated renderer creating a second,
-		// unrelated context is what crashes on startup. Software rendering sidesteps that entirely.
-		// When RenderDoc isn't attached, use the normal hardware-accelerated path
+		// Force software when renderdoc
 		if (RenderDocDetector.IsAttached) {
 			builder = builder
 				.With(new Win32PlatformOptions {

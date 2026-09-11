@@ -18,6 +18,7 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -49,6 +50,7 @@ constexpr uint32_t k_mode_applied = 18;
 TracedShadowPass::TracedShadowPass(const VulkanCore& core, vk::Format scene_format, vk::Extent2D extent)
     : m_core(&core),
       m_scene_format(scene_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/traced_shadows.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -79,6 +81,7 @@ TracedShadowPass::TracedShadowPass(const VulkanCore& core, vk::Format scene_form
 }
 
 void TracedShadowPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -119,6 +122,7 @@ void TracedShadowPass::onResize(vk::Extent2D extent) {
 }
 
 auto TracedShadowPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size() || !source_view || !m_target.isReady()) {
 		return source_view;
 	}

@@ -31,6 +31,7 @@
 #include <string>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -201,6 +202,7 @@ DebugPass::DebugPass(
     const ClusterLightingPass* cluster_lighting_pass
 )
     : m_cluster_lighting_pass(cluster_lighting_pass) {
+	ZoneScoped;
 	const auto shape_shader = acquireShader("core://shaders/debug_shape.slang");
 	if (!shape_shader) {
 		TOAST_ERROR("Render", "DebugPass has no usable shaders, the pass will draw nothing");
@@ -371,6 +373,7 @@ auto clusterHeatmapColorImGui(uint32_t light_count) -> ImVec4 {
 }    // namespace
 
 void DebugPass::update(uint32_t frame_index, float dt) {
+	ZoneScoped;
 	const auto* frame = VulkanRenderer::instance->renderingFrame();
 	if (frame == nullptr || frame_index >= m_line_vertex_buffers.size()) {
 		return;
@@ -658,6 +661,7 @@ void DebugPass::update(uint32_t frame_index, float dt) {
 }
 
 void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)image_index;
 
 	if (frame_index >= m_frame_descriptor_sets.size()) {
@@ -868,6 +872,7 @@ void DebugPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t ima
 }
 
 void DebugPass::createResources(const renderer::VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -914,6 +919,7 @@ void DebugPass::createResources(const renderer::VulkanCore& core) {
 void DebugPass::createBillboardResources(
     const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format, vk::Extent2D extent
 ) {
+	ZoneScoped;
 	const auto shader = acquireShader("core://shaders/debug_billboard.slang");
 	if (!shader) {
 		TOAST_ERROR("Render", "DebugPass billboard shader unavailable, debug billboards will not draw");
@@ -1002,6 +1008,7 @@ auto DebugPass::billboardTextureSet(const renderer::VulkanCore& core, vk::ImageV
 }
 
 void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_format, vk::Format depth_format) {
+	ZoneScoped;
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();
@@ -1041,6 +1048,7 @@ void DebugPass::initImGui(const renderer::VulkanCore& core, vk::Format color_for
 }
 
 void DebugPass::createGizmoGeometry(const renderer::VulkanCore& core) {
+	ZoneScoped;
 	constexpr float k_shaft_length = 0.8f;
 	constexpr float k_shaft_half_size = 0.02f;
 	constexpr float k_head_length = 0.25f;

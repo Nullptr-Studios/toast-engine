@@ -12,10 +12,12 @@
 #include <cstring>
 #include <format>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 RayTracingScene::RayTracingScene(const VulkanCore& core, uint32_t frames_in_flight) : m_core(&core) {
+	ZoneScoped;
 	if (!core.isRayTracingSupported()) {
 		return;
 	}
@@ -66,6 +68,7 @@ auto RayTracingScene::getAccelerationStructure(uint32_t frame_index) const -> vk
 }
 
 void RayTracingScene::build(vk::CommandBuffer cmd, uint32_t frame_index) {
+	ZoneScoped;
 	if (m_core == nullptr || frame_index >= m_frames.size() || m_build_acceleration_structures == nullptr) {
 		return;
 	}

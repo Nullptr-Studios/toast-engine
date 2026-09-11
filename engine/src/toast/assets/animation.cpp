@@ -6,6 +6,7 @@
 #include <cstring>
 #include <glm/gtc/quaternion.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 #include <utility>
 
 namespace assets {
@@ -209,6 +210,7 @@ auto AnimationTrack::sampleQuat(float time) const -> glm::quat {
 }
 
 auto Skin::jointMatrices(std::span<const glm::mat4> joint_world_transforms) const -> std::vector<glm::mat4> {
+	ZoneScoped;
 	std::vector<glm::mat4> matrices(joints.size(), glm::mat4(1.0f));
 
 	for (size_t i = 0; i < joints.size(); ++i) {
@@ -222,6 +224,7 @@ auto Skin::jointMatrices(std::span<const glm::mat4> joint_world_transforms) cons
 }
 
 auto AnimationClip::sample(float time) const -> std::unordered_map<std::string, NodePose> {
+	ZoneScoped;
 	std::unordered_map<std::string, NodePose> poses;
 
 	for (const auto& track : tracks) {
@@ -250,6 +253,7 @@ auto AnimationClip::sample(float time) const -> std::unordered_map<std::string, 
 }
 
 Animation::Animation(std::span<const uint8_t> data) {
+	ZoneScoped;
 	Reader reader(data);
 
 	const auto magic = reader.read<std::array<uint8_t, 4>>();
@@ -319,6 +323,7 @@ auto Animation::findClip(std::string_view name) const -> const AnimationClip* {
 }
 
 auto Animation::toBinary(const std::vector<AnimationClip>& clips, const std::vector<Skin>& skins) -> std::vector<uint8_t> {
+	ZoneScoped;
 	Writer writer;
 	writer.write(k_magic);
 	writer.write(_detail::animation_format_version);

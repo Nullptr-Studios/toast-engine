@@ -32,6 +32,7 @@
 #include <toast/scripting/script_runtime.hpp>
 #include <toast/time.hpp>
 #include <toast/window/window_events.hpp>
+#include <tracy/Tracy.hpp>
 #include <tuple>
 #include <unordered_map>
 
@@ -296,6 +297,16 @@ static auto inspectorValue(Node& node, const FieldInfo& field) -> std::string {
 	return assets::Prefab::stringifyValue(field.value_type, field.is_array, value);
 }
 
+// The transform field each gizmo tool drags, so a drag's undo step reads like the equivalent inspector edit
+static auto gizmoField(GizmoTool tool, Node& node) -> const FieldInfo* {
+	switch (tool) {
+		case GizmoTool::translate: return node.info()->getField("world_position");
+		case GizmoTool::rotate: return node.info()->getField("world_rotation");
+		case GizmoTool::scale: return node.info()->getField("world_scale");
+		default: return nullptr;
+	}
+}
+
 Workspace::Workspace(UID handle, EmptyTag) : m_handle(handle) {
 	m_editor_camera = std::make_unique<Camera>();
 	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
@@ -333,6 +344,7 @@ Workspace::Workspace(std::string_view type, UID handle) : m_handle(handle) {
 }
 
 Workspace::Workspace(UID uid) : m_handle(uid) {
+	ZoneScoped;
 	m_editor_camera = std::make_unique<Camera>();
 	m_editor_camera->position = {0.0f, -10.0f, 10.0f};
 	eventSubscriptions();
@@ -351,6 +363,7 @@ Workspace::Workspace(UID uid) : m_handle(uid) {
 }
 
 Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
+	ZoneScoped;
 	m_editor_camera = std::make_unique<Camera>();
 	eventSubscriptions();
 
@@ -374,6 +387,7 @@ Workspace::Workspace(UID uid, std::string_view source_uri) : m_handle(uid) {
 }
 
 void Workspace::initFromPrefab(const assets::Handle<assets::Prefab>& file) {
+	ZoneScoped;
 	INodeOwner::InstantiateContext ctx;
 	ctx.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
 	Box<Node> node = instantiate(file, ctx);
@@ -411,6 +425,7 @@ void Workspace::initializeHistory(bool available, bool initially_saved) {
 }
 
 void Workspace::destroyOwnedTree(Box<Node>& root) {
+	ZoneScoped;
 	if (!root.exists()) {
 		return;
 	}
@@ -446,6 +461,7 @@ void Workspace::destroyOwnedTree(Box<Node>& root) {
 }
 
 auto Workspace::restoreHistorySnapshot(const assets::Prefab& snapshot) -> bool {
+	ZoneScoped;
 	assets::Handle<assets::Prefab> handle(const_cast<assets::Prefab*>(&snapshot), toast::UID(0), "");
 	INodeOwner::InstantiateContext context;
 	context.resolver = [](toast::UID id) { return assets::load<assets::Prefab>(id); };
@@ -487,6 +503,7 @@ void Workspace::applyActiveCamera() {
 }
 
 Workspace::~Workspace() {
+	ZoneScoped;
 	if (!m_root_node.exists()) {
 		return;
 	}
@@ -656,6 +673,17 @@ void Workspace::gizmoBeginDrag(GizmoHandle handle) {
 	m_gizmo_drag_start_scale = node3d->world_scale;
 	m_gizmo_drag_current_factor = 1.0f;
 
+	// The undo step before snapshot has to be taken now, before anything moves, gizmoEndDrag() commits it
+	if (const auto* field = gizmoField(m_gizmo_tool, *m_focused_node); field && m_history) {
+		std::string start = inspectorValue(*m_focused_node, *field);
+		auto context = historyContext(
+		    event::HistoryOperation::change_value, m_focused_node, std::format("{} changed", field->name), start, start
+		);
+		if (m_history->beginAtomic(std::move(context))) {
+			m_gizmo_history_start = std::move(start);
+		}
+	}
+
 	const glm::vec3 origin = m_gizmo_drag_start_world_pos;
 	const glm::quat orientation = gizmoOrientation();
 	const bool is_axis = handle == GizmoHandle::axis_x || handle == GizmoHandle::axis_y || handle == GizmoHandle::axis_z;
@@ -803,7 +831,27 @@ void Workspace::gizmoUpdateDrag() {
 }
 
 void Workspace::gizmoEndDrag() {
+	if (m_gizmo_drag == GizmoHandle::none) {
+		return;
+	}
 	m_gizmo_drag = GizmoHandle::none;
+
+	auto start = std::exchange(m_gizmo_history_start, std::nullopt);
+	if (not start || not m_history) {
+		return;
+	}
+	// The transaction opened in gizmoBeginDrag() is still open, so this beginAtomic() only records the final value. The
+	// commit then diffs the tree against the drag-start snapshot, making the whole drag a single undo step
+	if (const auto* field = m_focused_node.exists() ? gizmoField(m_gizmo_tool, *m_focused_node) : nullptr) {
+		m_history->beginAtomic(historyContext(
+		    event::HistoryOperation::change_value,
+		    m_focused_node,
+		    std::format("{} changed", field->name),
+		    *start,
+		    inspectorValue(*m_focused_node, *field)
+		));
+	}
+	m_history->finishAtomic(true);
 }
 
 void Workspace::eventSubscriptions() {
@@ -1686,7 +1734,7 @@ void Workspace::eventSubscriptions() {
 		if (e.game) {
 			// entering play, drop any in-progress gizmo interaction
 			m_gizmo_hover = GizmoHandle::none;
-			m_gizmo_drag = GizmoHandle::none;
+			gizmoEndDrag();
 		}
 		applyActiveCamera();
 		return true;
@@ -1724,6 +1772,9 @@ void Workspace::eventSubscriptions() {
 	m_listener.subscribe<event::SetActiveWorkspace>([this](const auto& e) {
 		if (e.handle == m_handle.data()) {
 			applyActiveCamera();
+		} else {
+			// losing focus mid-drag
+			gizmoEndDrag();
 		}
 		return false;
 	});
@@ -1801,6 +1852,7 @@ void Workspace::tickAnimationPreviews(const Node& node) {
 }
 
 void Workspace::tick() {
+	ZoneScoped;
 	if (!participatesIn(NodeOwnerParticipation::gameplay_tick)) {
 		tickActiveCameraController();
 		if (m_root_node.exists()) {

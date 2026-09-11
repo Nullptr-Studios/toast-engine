@@ -16,12 +16,14 @@
 #include <format>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
 SsaoPass::SsaoPass(const VulkanCore& core, vk::Format scene_format, vk::Extent2D extent)
     : m_core(&core),
       m_scene_format(scene_format) {
+	ZoneScoped;
 	const uint32_t push_constant_limit = core.getPhysicalDevice().getProperties().limits.maxPushConstantsSize;
 	if (push_constant_limit < sizeof(Params)) {
 		TOAST_ERROR(
@@ -64,6 +66,7 @@ SsaoPass::SsaoPass(const VulkanCore& core, vk::Format scene_format, vk::Extent2D
 }
 
 void SsaoPass::createResources(const VulkanCore& core) {
+	ZoneScoped;
 	const auto& device = core.getDevice();
 	const auto& layouts = m_shader_layout.getDescriptorSetLayouts();
 	if (layouts.empty()) {
@@ -104,6 +107,7 @@ void SsaoPass::onResize(vk::Extent2D extent) {
 }
 
 auto SsaoPass::record(vk::CommandBuffer cmd, uint32_t frame_index, vk::ImageView source_view) -> vk::ImageView {
+	ZoneScoped;
 	if (!m_pipeline.isReady() || frame_index >= m_descriptor_sets.size() || !source_view || !m_target.isReady()) {
 		return source_view;
 	}

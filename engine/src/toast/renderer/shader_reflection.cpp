@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <slang-com-ptr.h>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -263,6 +264,7 @@ void extractModuleEntryPoints(slang::IModule* module, ShaderReflection& reflecti
 }
 
 auto extractReflection(slang::ProgramLayout* layout) -> ShaderReflection {
+	ZoneScoped;
 	ShaderReflection reflection;
 	if (layout == nullptr) {
 		return reflection;
@@ -549,6 +551,7 @@ auto membersFromJson(const nlohmann::json& json) -> std::vector<ShaderBlockMembe
 }
 
 auto ShaderReflection::toJson() const -> nlohmann::json {
+	ZoneScoped;
 	nlohmann::json json;
 
 	auto entry_points_json = nlohmann::json::array();
@@ -594,6 +597,7 @@ auto ShaderReflection::toJson() const -> nlohmann::json {
 }
 
 auto ShaderReflection::fromJson(const nlohmann::json& json) -> std::optional<ShaderReflection> {
+	ZoneScoped;
 	if (!json.is_object()) {
 		return std::nullopt;
 	}

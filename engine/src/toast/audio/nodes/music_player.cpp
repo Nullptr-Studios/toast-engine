@@ -8,6 +8,7 @@
 #include <fmod/fmod_studio.h>
 #include <toast/log.hpp>
 #include <toast/time.hpp>
+#include <tracy/Tracy.hpp>
 #include <utility>
 
 namespace toast {
@@ -78,6 +79,7 @@ auto F_CALL musicPlayerCallback(FMOD_STUDIO_EVENT_CALLBACK_TYPE type, FMOD_STUDI
 }
 
 void MusicPlayer::startTrack(int track_index, float fade_in) {
+	ZoneScoped;
 	if (track_index < 0 || static_cast<size_t>(track_index) >= m_tracks.size()) {
 		TOAST_WARN("MusicPlayer", "Track index {} out of range", track_index);
 		return;
@@ -283,6 +285,7 @@ void MusicPlayer::destroy() {
 }
 
 void MusicPlayer::tick() {
+	ZoneScoped;
 	// Drain FMOD callback queue under lock, process on main thread
 	std::vector<QueuedCb> local_cbs;
 	{

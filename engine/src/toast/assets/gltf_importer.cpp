@@ -27,6 +27,7 @@
 #define TINYGLTF3_ENABLE_FS
 #include <tiny_gltf_v3.h>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 using namespace tinygltf3;
 
@@ -36,6 +37,7 @@ namespace {
 
 /// @brief Decodes a standard (RFC 4648) base64 payload, e.g. the part of a data: URI after the comma
 auto decodeBase64(std::string_view input) -> std::vector<uint8_t> {
+	ZoneScoped;
 	static constexpr std::string_view k_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 	std::array<int8_t, 256> lookup {};
@@ -93,6 +95,7 @@ auto isKtx2(std::span<const uint8_t> data) -> bool {
 /// @returns empty when none of the three produced data, so callers must check
 auto loadImageBytes(const tg3_model& model, const tg3_image& img, const std::filesystem::path& base_dir, size_t index)
     -> std::vector<uint8_t> {
+	ZoneScoped;
 	if (img.buffer_view != -1) {
 		const auto& bv = model.buffer_views[img.buffer_view];
 		const auto& buf = model.buffers[bv.buffer];
@@ -155,6 +158,7 @@ auto findExtensionInt(const tg3_extras_ext& ext, std::string_view ext_name, std:
 }    // namespace
 
 auto generateIntermediates(const std::filesystem::path& path) {
+	ZoneScoped;
 	const glm::mat4 gltf_y_up_to_engine_z_up = glm::rotate(glm::mat4(1.0F), glm::radians(90.0F), glm::vec3(1.0F, 0.0F, 0.0F));
 	const glm::mat4 engine_z_up_to_gltf_y_up = glm::transpose(gltf_y_up_to_engine_z_up);
 
@@ -1374,6 +1378,7 @@ auto generateIntermediates(const std::filesystem::path& path) {
 }
 
 static void jsonToTnode(const nlohmann::json& scene_json, const std::filesystem::path& out) {
+	ZoneScoped;
 	Prefab prefab;
 
 	std::function<void(const nlohmann::json&, const std::string&)> walk = [&](const nlohmann::json& n,

@@ -20,6 +20,7 @@
 #include <toast/assets/asset_manager.hpp>
 #include <toast/assets/assets.hpp>
 #include <toast/log.hpp>
+#include <tracy/Tracy.hpp>
 
 namespace renderer {
 
@@ -41,6 +42,7 @@ EnvironmentPass::EnvironmentPass(const VulkanCore& core, vk::Format hdr_format, 
     : m_core(&core),
       m_format(hdr_format),
       m_depth_format(depth_format) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/environment.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -70,6 +72,7 @@ EnvironmentPass::EnvironmentPass(const VulkanCore& core, vk::Format hdr_format, 
 }
 
 void EnvironmentPass::createPipelines(const VulkanCore& core) {
+	ZoneScoped;
 	const auto uid = assets::resolveURI("core://shaders/environment.slang");
 	const auto shader = uid.has_value() ? ShaderCache::get().acquire(*uid) : nullptr;
 	if (!shader) {
@@ -150,6 +153,7 @@ void EnvironmentPass::createEquirectPlaceholder(const VulkanCore& core) {
 }
 
 auto EnvironmentPass::uploadEquirect(const assets::HdrImage& image) -> bool {
+	ZoneScoped;
 	if (m_core == nullptr || !image.valid()) {
 		return false;
 	}
@@ -234,6 +238,7 @@ auto EnvironmentPass::uploadEquirect(const assets::HdrImage& image) -> bool {
 }
 
 auto EnvironmentPass::setEnvironmentMap(std::string_view uri) -> bool {
+	ZoneScoped;
 	if (uri.empty()) {
 		m_environment_uri.clear();
 		m_has_equirect = false;
@@ -372,6 +377,7 @@ void EnvironmentPass::renderFace(
 }
 
 void EnvironmentPass::recordPre(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)frame_index;
 	(void)image_index;
 
@@ -464,6 +470,7 @@ void EnvironmentPass::recordPre(vk::CommandBuffer cmd, uint32_t frame_index, uin
 }
 
 void EnvironmentPass::record(vk::CommandBuffer cmd, uint32_t frame_index, uint32_t image_index) {
+	ZoneScoped;
 	(void)frame_index;
 	(void)image_index;
 
