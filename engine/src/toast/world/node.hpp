@@ -358,7 +358,6 @@ public:
 	signals::Signal<Box<Node>> on_disable;
 	signals::Signal<Box<Node>> on_begin;
 	signals::Signal<Box<Node>> on_end;
-	signals::Signal<> on_rename;
 
 protected:
 	INodeOwner* m_owner = nullptr;

@@ -62,10 +62,8 @@ void Node::enabled(bool value) noexcept {
 
 	if (value) {
 		callTick(m_info, TickFunctionList::on_enable);
-		on_enable.fire(this->box());
 	} else {
 		callTick(m_info, TickFunctionList::on_disable);
-		on_disable.fire(this->box());
 	}
 
 	for (auto& c : m_children) {
@@ -316,6 +314,14 @@ void Node::callTick(const NodeInfo* info, TickFunctionList func_type) noexcept {
 	if (invoker) {
 		ZoneScopedN("Function call");
 		invoker(this);
+	}
+
+	switch (func_type) {
+		case TickFunctionList::on_enable: on_enable.fire(this->box()); break;
+		case TickFunctionList::on_disable: on_disable.fire(this->box()); break;
+		case TickFunctionList::begin: on_begin.fire(this->box()); break;
+		case TickFunctionList::end: on_end.fire(this->box()); break;
+		default: break;
 	}
 
 	// After the C++ chain fire Lua scripts at the most-derived level
