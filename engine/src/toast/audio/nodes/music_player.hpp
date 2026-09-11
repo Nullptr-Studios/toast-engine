@@ -7,6 +7,7 @@
  */
 #pragma once
 #include "../assets.hpp"
+#include "toast/events/signals.hpp"
 
 #include <mutex>
 #include <string>
@@ -89,6 +90,10 @@ public:
 	};
 
 	void queueCallback(const QueuedCb& cb);
+
+	signals::Signal<std::string_view> audio_started;
+	signals::Signal<std::string_view> audio_stopped;
+	signals::Signal<bool> audio_paused;
 
 private:
 	void startTrack(int track_index, float fade_in);

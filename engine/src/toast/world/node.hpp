@@ -12,6 +12,7 @@
  */
 
 #pragma once
+#include <locale>
 #define NODEFILE
 #include "box.hpp"
 #include "control_box.hpp"
@@ -352,6 +353,11 @@ public:
 		}
 		_detail::setNodeScriptVar(this, name, std::any(value));
 	}
+
+	signals::Signal<Box<Node>> on_enable;
+	signals::Signal<Box<Node>> on_disable;
+	signals::Signal<Box<Node>> on_begin;
+	signals::Signal<Box<Node>> on_end;
 
 protected:
 	INodeOwner* m_owner = nullptr;
