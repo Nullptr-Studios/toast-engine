@@ -258,7 +258,7 @@ public partial class MainWindowView : Window {
 	}
 
 	private void OnOpenAbout(object? sender, RoutedEventArgs e) {
-		new AboutWindow().ShowDialog(this);
+		new AboutWindow().Show(this);
 	}
 
 	private void OnCloseProject(object? sender, RoutedEventArgs e) {
