@@ -69,6 +69,23 @@ struct Reflect<{{ qualified_name }}> {
 {% endfor %}
 	{{ '}}' }};
 
+	inline static const std::array<const SignalInfo, {{ signals | length }}> signal_info = {{ '{{' }}
+{% for s in signals %}
+	{
+		.name = "{{ s.name }}",
+		.type = "{{ s.typename }}",
+		.args = {{ '{{' }}{% for a in s.arguments %}&typeid(std::decay_t<{{ a }}>){% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }},
+		.attributes = {{ '{{' }}{% for a in s.attrs_list %}{"{{ a.name }}", {{ '{' }}{% for v in a.args %}"{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}}{% if not loop.last %}, {% endif %}{% endfor %}{{ '}}' }},
+		.get = {{ s.typename }}::get<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
+		.connect = {{ s.typename }}::connect<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
+		.disconnect = {{ s.typename }}::disconnect<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
+		.clear_editor = {{ s.typename }}::clearEditor<{{ qualified_name }},&{{ qualified_name }}::{{ s.name }}>,
+	}{% if not loop.last %},{% endif %}
+
+{% endfor %}
+	{{ '}}' }};
+
+
 	inline static const std::array<const FieldInfo*, {{ global_field_indices | length }}> field_info = {{ '{{' }}
 {% for idx in global_field_indices %}
 		&_all_field_info[{{ idx }}],

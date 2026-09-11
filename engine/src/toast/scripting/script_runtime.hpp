@@ -128,6 +128,9 @@ public:
 	[[nodiscard]]
 	auto hasFunction(std::string_view fn_name) const noexcept -> bool;
 
+	[[nodiscard]]
+	auto functions() const noexcept -> std::vector<LuaFunctionDesc>;
+
 	void callWithLuaStack(std::string_view name, lua_State* l, int args_base, int n_args) noexcept;
 
 	/// Ccall with args provided as std::any values

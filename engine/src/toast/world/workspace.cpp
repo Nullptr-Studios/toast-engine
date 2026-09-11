@@ -23,6 +23,7 @@
 #include <toast/assets/assets.hpp>
 #include <toast/assets/prefab.hpp>
 #include <toast/engine.hpp>
+#include <toast/events/signals_events.hpp>
 #include <toast/log.hpp>
 #include <toast/renderer/vulkan_renderer.hpp>
 #include <toast/scripting/asset_proxy.hpp>
@@ -32,6 +33,7 @@
 #include <toast/time.hpp>
 #include <toast/window/window_events.hpp>
 #include <tuple>
+#include <unordered_map>
 
 namespace toast {
 
@@ -805,6 +807,164 @@ void Workspace::gizmoEndDrag() {
 }
 
 void Workspace::eventSubscriptions() {
+	auto find_signal = [this](UID node_uid, std::string_view declaring_type, std::string_view signal_name) {
+		auto node = findFrom(m_root_node, node_uid);
+		const SignalInfo* signal = node.exists() && node->info() ? node->info()->getSignal(declaring_type, signal_name) : nullptr;
+		return std::pair {node, signal};
+	};
+
+	auto send_signal_state = [this](UID node_uid) {
+		event::SignalState state;
+		state.node = node_uid;
+		auto node = findFrom(m_root_node, node_uid);
+		if (!node.exists() || !node->info()) {
+			state.error = "The selected node no longer exists";
+			event::send<event::SignalState>(state);
+			return;
+		}
+		node->info()->forEachSignal([&](const NodeInfo& owner, const SignalInfo& signal) {
+			auto& entry = state.signals.emplace_back();
+			entry.declaring_type = owner.type;
+			entry.signal = signal.name;
+			if (!signal.get) {
+				return;
+			}
+			for (const auto& connection : signal.get(&*node)) {
+				auto target = findFrom(m_root_node, connection.target);
+				auto& item = entry.connections.emplace_back();
+				item.target = connection.target;
+				item.target_name = target.exists() ? target->name() : "Missing node";
+				item.target_type = target.exists() && target->info() ? std::string(target->info()->type) : std::string {};
+				item.function = connection.function;
+				item.source = connection.source;
+				item.forwards_args = connection.forwards_args;
+			}
+		});
+		event::send<event::SignalState>(state);
+	};
+
+	m_listener.subscribe<event::RequestSignalState>([this, send_signal_state](const auto& e) {
+		if (!isActiveWorkspace()) {
+			return false;
+		}
+		send_signal_state(e.node);
+		return true;
+	});
+
+	m_listener.subscribe<event::RequestSignalCallables>([this, find_signal](const auto& e) {
+		if (!isActiveWorkspace()) {
+			return false;
+		}
+		event::SignalCallables response;
+		response.request = e.request;
+		response.target_node = e.target_node;
+		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
+		auto target = findFrom(m_root_node, e.target_node);
+		if (!source.exists() || !signal || !target.exists() || !target->info()) {
+			response.error = "The source signal or target node no longer exists";
+			event::send<event::SignalCallables>(response);
+			return true;
+		}
+
+		std::unordered_map<std::string, size_t> by_name;
+		for (auto* info = target->info(); info != nullptr; info = info->base_type) {
+			for (const auto& method : info->methods) {
+				if (by_name.contains(std::string(method.name))) {
+					continue;
+				}
+				auto& callable = response.callables.emplace_back();
+				callable.name = method.name;
+				callable.has_cpp = true;
+				callable.compatible = method.return_type_id && *method.return_type_id == typeid(void);
+				callable.forwards_args = !method.parameters.empty();
+				if (callable.compatible && !method.parameters.empty()) {
+					callable.compatible = method.parameters.size() == signal->args.size();
+					for (size_t i = 0; callable.compatible && i < method.parameters.size(); ++i) {
+						callable.compatible =
+						    method.parameters[i].type_id && signal->args[i] && *method.parameters[i].type_id == *signal->args[i];
+					}
+				}
+				for (const auto& parameter : method.parameters) {
+					callable.parameters.push_back({std::string(parameter.name), std::string(parameter.type)});
+				}
+				by_name.emplace(callable.name, response.callables.size() - 1);
+			}
+		}
+
+		if (auto* runtime = target->scriptRuntime()) {
+			for (const auto& function : runtime->functions()) {
+				auto found = by_name.find(function.name);
+				if (found != by_name.end()) {
+					response.callables[found->second].has_lua = true;
+					continue;
+				}
+				auto& callable = response.callables.emplace_back();
+				callable.name = function.name;
+				callable.has_lua = true;
+				callable.compatible = function.parameters.empty() || function.parameters.size() == signal->args.size() ||
+				                      (function.is_vararg && function.parameters.size() <= signal->args.size());
+				callable.forwards_args = !function.parameters.empty() || function.is_vararg;
+				for (const auto& name : function.parameters) {
+					callable.parameters.push_back({name, "any"});
+				}
+				by_name.emplace(callable.name, response.callables.size() - 1);
+			}
+		}
+
+		const auto connections = signal->get ? signal->get(&*source) : std::vector<signals::ConnectionInfo> {};
+		for (auto& callable : response.callables) {
+			callable.already_connected = std::ranges::any_of(connections, [&](const auto& connection) {
+				return connection.target == e.target_node && connection.function == callable.name;
+			});
+			if (callable.already_connected) {
+				callable.disabled_reason = "Already connected";
+			} else if (!callable.compatible) {
+				callable.disabled_reason = "The function signature is not compatible";
+			}
+		}
+		std::ranges::sort(response.callables, {}, &event::SignalCallable::name);
+		event::send<event::SignalCallables>(response);
+		return true;
+	});
+
+	m_listener.subscribe<event::AddSignalConnection>([this, find_signal, send_signal_state](const auto& e) {
+		if (!isActiveWorkspace()) {
+			return false;
+		}
+		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
+		auto target = findFrom(m_root_node, e.target_node);
+		if (source.exists() && signal && signal->connect && target.exists()) {
+			signal->connect(&*source, *target, e.function, e.forwards_args);
+		}
+		send_signal_state(e.source_node);
+		return true;
+	});
+
+	m_listener.subscribe<event::RemoveSignalConnection>([this, find_signal, send_signal_state](const auto& e) {
+		if (!isActiveWorkspace()) {
+			return false;
+		}
+		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
+		auto target = findFrom(m_root_node, e.target_node);
+		if (source.exists() && signal && signal->disconnect && target.exists()) {
+			signal->disconnect(&*source, *target, e.function);
+		}
+		send_signal_state(e.source_node);
+		return true;
+	});
+
+	m_listener.subscribe<event::ClearEditorSignalConnections>([this, find_signal, send_signal_state](const auto& e) {
+		if (!isActiveWorkspace()) {
+			return false;
+		}
+		auto [source, signal] = find_signal(e.source_node, e.declaring_type, e.signal);
+		if (source.exists() && signal && signal->clear_editor) {
+			signal->clear_editor(&*source);
+		}
+		send_signal_state(e.source_node);
+		return true;
+	});
+
 	m_listener.subscribe<event::RequestWorkspaceHistory>([this](const auto& e) {
 		if (e.workspace_handle != 0 && e.workspace_handle != m_handle.data()) {
 			return false;

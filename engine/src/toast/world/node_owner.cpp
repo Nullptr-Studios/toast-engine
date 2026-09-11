@@ -541,6 +541,35 @@ auto INodeOwner::buildTree(std::vector<Box<Node>>&& nodes, const assets::Handle<
 		}
 	}
 
+	// Signals are restored after every node has been allocated and indexed, so connection targets
+	// can be resolved regardless of their order in the prefab file.
+	for (size_t i = 0; i < nodes.size(); ++i) {
+		auto& node = nodes[i];
+		const auto& data = file->nodes[i];
+		const NodeInfo* info = node->info();
+		if (!info) {
+			continue;
+		}
+
+		for (const auto& signal_data : data.signals) {
+			const SignalInfo* signal = info->getSignal(signal_data.name);
+			if (!signal || !signal->connect) {
+				TOAST_WARN("World", "Prefab signal '{}' is not available on node '{}'", signal_data.name, node->name());
+				continue;
+			}
+			for (const auto& connection : signal_data.connections) {
+				auto target = uid_map.find(connection.target.data());
+				if (target == uid_map.end()) {
+					TOAST_WARN(
+					    "World", "Prefab signal '{}' on '{}' references missing UID {}", signal_data.name, node->name(), connection.target
+					);
+					continue;
+				}
+				signal->connect(&*node, *target->second, connection.function, true);
+			}
+		}
+	}
+
 #ifndef NDEBUG
 	if (not root.exists()) {
 		TOAST_ERROR("World", "Prefab contains no rootless node, the loaded tree has no root");

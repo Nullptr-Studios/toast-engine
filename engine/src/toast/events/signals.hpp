@@ -1,0 +1,89 @@
+/**
+ * @file signals.hpp
+ * @author Dante Harper
+ * @date 17 Jul 26
+ */
+
+#pragma once
+
+#include "signal_types.hpp"
+#include "toast/uid.hpp"
+#include "toast/world/box.hpp"
+
+#include <algorithm>
+#include <functional>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace toast {
+class Node;
+}
+
+namespace signals {
+namespace _detail { }
+
+template<typename F, typename... Args>
+concept SignalCallback = std::is_invocable_r_v<void, F, Args...> ||    //
+                         std::is_invocable_r_v<void, F>;               //
+
+template<typename... Args>
+class Signal {
+	using callback_t = std::function<void(Args...)>;
+
+	struct SigGroup {
+		toast::UID uid;
+		std::string identifier;
+		ConnectionSource source = ConnectionSource::unknown;
+		bool forwards_args = true;
+
+		toast::Box<toast::Node> node;
+		callback_t cb;
+	};
+
+	struct {
+		std::vector<SigGroup> listeners;
+	} m;
+
+public:
+	template<typename F>
+	  requires SignalCallback<F, Args...>
+	void subscribe(toast::Node& node, F&& cb);
+
+	void subscribe(toast::Node& node, std::string_view identifier);
+	void subscribe(toast::Node& node, std::string_view identifier, ConnectionSource source, bool forwards_args);
+
+	void unsubscribe(toast::Node& node, std::string_view identifier);
+	void unsubscribe(toast::Node& node, std::string_view identifier, ConnectionSource source);
+
+	void clear() { m.listeners.clear(); }
+
+	void clear(ConnectionSource source);
+
+	[[nodiscard]]
+	auto connections() const -> std::vector<ConnectionInfo>;
+
+	[[nodiscard]]
+	auto has(toast::UID node, std::string_view identifier) const -> bool;
+
+	void fire(Args... args);
+
+	template<typename NodeType, auto MemberPtr>
+	static auto get(void* signal) -> std::vector<ConnectionInfo>;
+
+	template<typename NodeType, auto MemberPtr>
+	static void connect(void* signal, toast::Node& target, std::string_view identifier, bool forwards_args);
+
+	template<typename NodeType, auto MemberPtr>
+	static void disconnect(void* signal, toast::Node& target, std::string_view identifier);
+
+	template<typename NodeType, auto MemberPtr>
+	static void clearEditor(void* signal);
+};
+
+}
+#ifndef NODEFILE
+#include <toast/events/signals.inl>
+#endif

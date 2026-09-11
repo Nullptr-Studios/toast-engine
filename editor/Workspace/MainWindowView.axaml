@@ -244,6 +244,10 @@
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding InspectorVisible, Mode=TwoWay}"
 					          InputGesture="Alt+D2" />
+					<MenuItem Header="_Signals"
+					          ToggleType="CheckBox"
+					          IsChecked="{Binding SignalsVisible, Mode=TwoWay}"
+					          InputGesture="Alt+D4" />
 					<MenuItem Header="_History"
 					          ToggleType="CheckBox"
 					          IsChecked="{Binding HistoryVisible, Mode=TwoWay}"

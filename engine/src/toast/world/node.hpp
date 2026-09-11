@@ -12,6 +12,7 @@
  */
 
 #pragma once
+#define NODEFILE
 #include "box.hpp"
 #include "control_box.hpp"
 
@@ -21,6 +22,7 @@
 #include <toast/assets/prefab.hpp>
 #include <toast/engine_defs.hpp>
 #include <toast/events/listener.hpp>
+#include <toast/events/signals.hpp>
 #include <toast/export.hpp>
 #include <toast/log.hpp>
 #include <toast/reflect/reflect_node.hpp>
@@ -430,4 +432,6 @@ auto reflect_cast(toast::Node* n) -> T* {    // NOLINT
 	return nullptr;
 }
 
+#undef NODEFILE
 #include <node.generated.hpp>
+#include <toast/events/signals.inl>
