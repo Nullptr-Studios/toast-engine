@@ -28,6 +28,13 @@ void Simulator::registerRigidbody(Rigidbody& node) {
 	if (instance->valid(node.m_body)) {
 		return;
 	}
+	
+	PhysicsMaterial material;
+	if (node.material.hasValue()) {
+		material.restitution = node.material->restitution();
+		material.static_friction = node.material->staticFriction();
+		material.dynamic_friction = node.material->dynamicFriction();
+	}
 
 	const std::vector<SphereShape> spheres = node.sphereShapes();
 	const BodyID body = instance->createBody(node.descriptor());
@@ -37,7 +44,7 @@ void Simulator::registerRigidbody(Rigidbody& node) {
 
 		size_t registered_shape_count = 0;
 		for (const SphereShape& sphere : spheres) {
-			const ShapeID shape = instance->createSphere(body, sphere);
+			const ShapeID shape = instance->createSphere(body, sphere, material);
 			if (not instance->valid(shape)) {
 				TOAST_WARN("Physics", "Sphere collider on rigidbody '{}' was not registered", node.name());
 				continue;
@@ -87,6 +94,7 @@ void Simulator::tick() {
 	// resolve
 	auto constraints = prepareConstraints(m_manifolds);
 	solveConstraints(constraints);
+	correctPositions(constraints);
 
 	// push poses after simulation settles
 	publishTransforms();
@@ -193,6 +201,39 @@ auto Simulator::solveFriction(Constraint& constraint, Body& body_a, Body& body_b
 	applyImpulse(body_a, body_b, constraint.r_a, constraint.r_b, constraint.tangent * applied_impulse);
 	
 	return true;
+}
+
+void Simulator::correctPositions(const std::vector<Constraint>& constraints) {
+	constexpr float penetration_slop = 0.005f;
+	constexpr float correction_beta = 0.2f;
+	constexpr float max_correction = 0.05f;
+	
+	for (const auto& c : constraints) {
+		auto* body_a = tryGetBody(c.body_a);
+		auto* body_b = tryGetBody(c.body_b);
+		
+		if (not body_a or not body_b) {
+			continue;
+		}
+		
+		float inv_mass = body_a->inverse_mass + body_b->inverse_mass;
+		if (not std::isfinite(inv_mass) || inv_mass <= 1.0e-8f) {
+			// both bodies are static
+			continue;
+		}
+		
+		// ignore tiny overlaps to prevent jitter
+		float excess_penetration = std::max(c.penetration - penetration_slop, 0.0f);
+		if (excess_penetration == 0.0f) {
+			continue;
+		}
+		
+		float correction_distance = std::min(correction_beta * excess_penetration, max_correction);
+		glm::vec3 correction = c.normal * (correction_distance / inv_mass);
+		
+		body_a->position -= correction * body_a->inverse_mass;
+		body_b->position += correction * body_b->inverse_mass;
+	}
 }
 
 void Simulator::integrate(float dt) {
@@ -327,7 +368,7 @@ void Simulator::destroyBody(BodyID body) {
 	m_free_body_slots.emplace_back(body.slot);
 }
 
-auto Simulator::createSphere(BodyID owner, const SphereShape& sphere) -> ShapeID {
+auto Simulator::createSphere(BodyID owner, const SphereShape& sphere, PhysicsMaterial material) -> ShapeID {
 	if (not valid(owner)) {
 		TOAST_WARN("Physics", "Rejected sphere registration for an invalid body");
 		return {};

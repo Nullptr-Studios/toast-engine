@@ -16,6 +16,12 @@
 
 namespace physics {
 
+struct PhysicsMaterial {
+	float restitution = 0.0f;
+	float static_friction = 0.6f;
+	float dynamic_friction = 0.4f;
+};
+
 struct ShapeID {
 	uint32_t slot = std::numeric_limits<uint32_t>::max();
 	uint32_t generation = 0;
@@ -50,6 +56,7 @@ struct CapsuleShape {
 struct Shape {
 	BodyID owner;
 	ShapeType type = ShapeType::sphere;
+	PhysicsMaterial material;
 
 	union {
 		SphereShape sphere;

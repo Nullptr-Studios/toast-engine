@@ -15,11 +15,12 @@ class [[ToastNode, Icon("RigidBody")]] TOAST_API DynamicRigidbody : public physi
 public:
 	DynamicRigidbody() : Rigidbody(BodyType::dynamic_body) { }
 
-	[[Reflect, Unit("kg"), ReadOnly]]
+	[[Reflect, Unit("kg")]]
 	float mass = 1.0f;
-	// physics material
-	[[Reflect, ReadOnly]]
+	[[Reflect]]
 	float gravity_scale = 1.0f;
+	
+	// TODO:
 	
 	[[Reflect, Group("Mass Distribution"), Unit("m"), ReadOnly]]
 	glm::vec3 center_of_mass = {};
@@ -28,7 +29,7 @@ public:
 	
 	[[Reflect, Group("Velocities"), Unit("m/s"), ReadOnly]]
 	glm::vec3 linear_velocity = {};
-	[[Reflect, Group("Velocities"), Unit("m/s"), ReadOnly]]
+	[[Reflect, Group("Velocities"), Unit("rad/s"), ReadOnly]]
 	glm::vec3 angular_velocity = {};
 	
 	[[Reflect, Group("Constant Forces"), Unit("N"), ReadOnly]]
@@ -36,6 +37,10 @@ public:
 	[[Reflect, Group("Constant Forces"), Unit("N•m"), ReadOnly]]
 	glm::vec3 constant_torque = {};
 private:
+	void configureBodyDescriptor(BodyDescriptor& descriptor) const override {
+		descriptor.mass = mass;
+		descriptor.gravity_scale = gravity_scale;
+	}
 };
 
 }

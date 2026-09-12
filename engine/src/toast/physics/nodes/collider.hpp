@@ -11,7 +11,7 @@
 
 namespace physics {
 
-class [[ToastNode, Hidden, Interface, Icon("Container"), Color("Green")]] TOAST_API Collider : public toast::Node3D {
+class [[ToastNode, Hidden, Interface, Color("Green")]] TOAST_API Collider : public toast::Node3D {
 public:
 	[[Reflect]]
 	bool disabled = false;

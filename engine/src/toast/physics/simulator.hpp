@@ -12,6 +12,7 @@
 #include "constraint.hpp"
 #include "manifold.hpp"
 #include "shape.hpp"
+#include "physics_material.hpp"
 
 #include <deque>
 #include <optional>
@@ -58,7 +59,7 @@ private:
 	};
 
 	[[nodiscard]]
-	auto createSphere(BodyID owner, const SphereShape& sphere) -> ShapeID;
+	auto createSphere(BodyID owner, const SphereShape& sphere, PhysicsMaterial material) -> ShapeID;
 	void destroyShape(ShapeID shape);
 	[[nodiscard]]
 	auto valid(ShapeID shape) const -> bool;
@@ -102,6 +103,7 @@ private:
 	static void applyImpulse(Body& body_a, Body& body_b, const glm::vec3& r_a, const glm::vec3& r_b, const glm::vec3& impulse);
 	static auto solveNormal(Constraint& constraint, Body& body_a, Body& body_b) -> bool;
 	static auto solveFriction(Constraint& constraint, Body& body_a, Body& body_b) -> bool;
+	void correctPositions(const std::vector<Constraint>& constraints);
 	
 	void collide(BroadPhasePair pair);
 

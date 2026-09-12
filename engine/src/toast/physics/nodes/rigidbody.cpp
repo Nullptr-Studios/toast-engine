@@ -47,6 +47,7 @@ auto Rigidbody::descriptor() const -> BodyDescriptor {
 	result.type = m_body_type;
 	result.position = world_position;
 	result.rotation = world_rotation;
+	configureBodyDescriptor(result);
 	return result;
 }
 

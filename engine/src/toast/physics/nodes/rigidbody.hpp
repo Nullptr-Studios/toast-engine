@@ -7,10 +7,11 @@
  */
 
 #pragma once
-#include <toast/physics/body.hpp>
-#include <toast/physics/shape.hpp>
-#include <toast/world/node_3d.hpp>
+#include "../physics_material.hpp"
+#include "../body.hpp"
+#include "../shape.hpp"
 
+#include <toast/world/node_3d.hpp>
 #include <vector>
 
 namespace physics {
@@ -22,18 +23,22 @@ class [[ToastNode, Hidden, Interface, Icon("PhysicsBody"), Color("Green")]] TOAS
 
 protected:
 	explicit Rigidbody(BodyType type) : m_body_type(type) { }
+	virtual void configureBodyDescriptor(BodyDescriptor& descriptor) const { }
+	
+	[[Reflect]]
+	assets::Handle<assets::PhysicsMaterial> material;
 
-	[[Reflect, Name("Lock x position"), ReadOnly]]
+	[[Reflect, Name("Lock X"), Group("Position Locks"), ReadOnly]]
 	bool lock_pos_x = false;
-	[[Reflect, Name("Lock y position"), ReadOnly]]
+	[[Reflect, Name("Lock Y"), Group("Position Locks"), ReadOnly]]
 	bool lock_pos_y = false;
-	[[Reflect, Name("Lock z position"), ReadOnly]]
+	[[Reflect, Name("Lock Z"), Group("Position Locks"), ReadOnly]]
 	bool lock_pos_z = false;
-	[[Reflect, Name("Lock x rotation"), ReadOnly]]
+	[[Reflect, Name("Lock X"), Group("Rotation Locks"), ReadOnly]]
 	bool lock_rot_x = false;
-	[[Reflect, Name("Lock y rotation"), ReadOnly]]
+	[[Reflect, Name("Lock Y"), Group("Rotation Locks"), ReadOnly]]
 	bool lock_rot_y = false;
-	[[Reflect, Name("Lock z rotation"), ReadOnly]]
+	[[Reflect, Name("Lock Z"), Group("Rotation Locks"), ReadOnly]]
 	bool lock_rot_z = false;
 
 private:
